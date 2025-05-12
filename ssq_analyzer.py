@@ -1554,7 +1554,7 @@ if __name__ == "__main__":
                 with SuppressOutput(suppress_stdout=True, capture_stderr=True):
                     full_freq_omission_data = analyze_frequency_omission(df)
                     full_pattern_analysis_data = analyze_patterns(df)
-                    full_association_rules = analyze_associations(df, ARM_MIN_SUPPORT, ARM_MIN_CONFIDENCE, ARM_LIFT)  # 在完整数据上分析关联
+                    full_association_rules = analyze_associations(df, ARM_MIN_SUPPORT, ARM_MIN_CONFIDENCE, ARM_MIN_LIFT)  # 在完整数据上分析关联
 
                 print("\n历史分析摘要（基于完整数据）:", file=sys.stdout)
                 print("\n频率和遗漏亮点:", file=sys.stdout)
