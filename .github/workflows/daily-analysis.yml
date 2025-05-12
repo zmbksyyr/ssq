@@ -29,6 +29,30 @@ jobs:
     - name: Run analysis script
       run: python ssqfx_v0.4.py
     
+    - name: Clean old reports - keep only latest 3
+      run: |
+        # 列出所有分析报告并按时间排序
+        reports=$(ls -t ssq_analysis_output_*.txt)
+        
+        # 计算需要删除的报告数量
+        count=$(echo "$reports" | wc -l)
+        delete_count=$((count - 3))
+        
+        # 只在有超过3个报告时执行删除
+        if [ $delete_count -gt 0 ]; then
+          # 取出需要删除的报告列表
+          delete_list=$(echo "$reports" | tail -n $delete_count)
+          
+          # 删除旧报告
+          echo "Deleting $delete_count old reports..."
+          for file in $delete_list; do
+            echo "Removing $file"
+            rm "$file"
+          done
+        else
+          echo "No need to clean reports, have $count (≤3) reports."
+        fi
+    
     - name: Configure Git
       run: |
         git config --local user.email "action@github.com"
@@ -36,15 +60,17 @@ jobs:
     
     - name: Commit updated files
       run: |
-        # 确保shuangseqiu.csv文件存在Git索引中
+        # 添加CSV文件
         git add shuangseqiu.csv
-        # 添加生成的分析报告
+        
+        # 添加保留的分析报告
         git add ssq_analysis_output_*.txt
-        # 尝试提交，如果没有更改则跳过
+        
+        # 提交更改，包括删除的旧报告
         git commit -m "Auto update: Daily analysis $(date +'%Y-%m-%d')" || echo "No changes to commit"
     
     - name: Push changes
       uses: ad-m/github-push-action@master
       with:
-        github_token: ${{ secrets.GITHUB_TOKEN }}
+        github_token: ${{ secrets.GITHUB_TOKEN }}  # 或使用您配置的 PAT
         branch: ${{ github.ref }}
