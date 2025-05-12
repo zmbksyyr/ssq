@@ -9,7 +9,9 @@ on:
 jobs:
   data_acquisition:
     runs-on: ubuntu-latest
-    
+    env: # Set timezone for all steps in this job
+      TZ: Asia/Shanghai
+      
     steps:
     - name: Checkout repository
       uses: actions/checkout@v2
@@ -48,7 +50,9 @@ jobs:
   analysis:
     needs: data_acquisition
     runs-on: ubuntu-latest
-    
+    env: # Set timezone for all steps in this job
+      TZ: Asia/Shanghai
+      
     steps:
     - name: Checkout repository
       uses: actions/checkout@v2
