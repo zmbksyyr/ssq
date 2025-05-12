@@ -111,14 +111,14 @@ LOGISTIC_REG_PARAMS = {
 # Parameters for SVC (adjust as needed, probability=True enables predict_proba but is expensive)
 # Using a linear kernel as a starting point for potentially better interpretability and less complexity than RBF
 SVC_PARAMS = {
-    'C': 0.8, # Regularization parameter. Smaller C means stronger regularization.
-    'kernel': 'linear', # 'rbf', 'poly', 'sigmoid' are other options. Linear is simpler.
-    'probability': True, # Enable probability estimates - makes SVC slower due to cross-validation
+    'C': 0.1,  # 大幅降低 C 值，增强正则化
+    'kernel': 'rbf',  # 改用 RBF 核，通常更灵活
+    'gamma': 'scale',  # 使用 'scale' 根据数据自动调整 gamma
+    'probability': True,  # 启用概率估计
     'random_state': 42,
-    'cache_size': 200, # Specify size of the kernel cache (in MB)
-    'max_iter': 10000,  # Increased max iterations significantly
-    'tol': 1e-3  # 添加容差参数，允许更早收敛
-    # SVC 对特征缩放敏感，在管道中使用 StandardScaler
+    'cache_size': 200,
+    'max_iter': 10000,
+    'tol': 1e-2  # 显著提高容差，允许更容易收敛
 }
 
 # Minimum number of positive samples required to train a classifier for a specific ball
