@@ -117,7 +117,8 @@ SVC_PARAMS = {
     'random_state': 42,
     'cache_size': 200, # Specify size of the kernel cache (in MB)
     'max_iter': 10000 # Increased max iterations significantly
-    # SVC is sensitive to feature scaling, StandardScaler is used in a pipeline
+    'tol': 1e-3  # 添加容差参数，允许更早收敛
+    # SVC 对特征缩放敏感，在管道中使用 StandardScaler
 }
 
 # Minimum number of positive samples required to train a classifier for a specific ball
