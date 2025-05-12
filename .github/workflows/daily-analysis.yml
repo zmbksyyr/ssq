@@ -11,102 +11,90 @@ jobs:
     runs-on: ubuntu-latest
     env: # Set timezone for all steps in this job
       TZ: Asia/Shanghai
-
+      
     steps:
     - name: Checkout repository
       uses: actions/checkout@v2
       with:
-        fetch-depth: 0 # 确保获取完整历史，以便进行 rebase
-
+        fetch-depth: 0
+    
     - name: Set up Python 3.9
       uses: actions/setup-python@v2
       with:
         python-version: 3.9
-
+    
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
         pip install -r requirements.txt
-
+    
     - name: Run data acquisition script
       run: python ssq_data_processor.py
-
+    
     - name: Configure Git
       run: |
         git config --local user.email "action@github.com"
         git config --local user.name "GitHub Action"
-
-    # -- 添加此步骤：拉取远程最新变化并进行变基 --
-    - name: Pull latest changes before commit
-      run: |
-        git fetch origin
-        git rebase origin/${{ github.ref }} || (git rebase --abort && exit 1) # 如果变基失败则中止并报错
-      # 注意：这里使用了 rebase，它会尝试将本地更改应用在远程最新提交之上。
-      # 如果有冲突且无法自动解决，工作流会失败。对于自动生成的文件，通常不会有复杂冲突。
-      # 也可以尝试使用 git pull origin ${{ github.ref }} --no-rebase 来进行合并（merge）。
-
+    
     - name: Commit updated CSV
       run: |
         git add shuangseqiu.csv
         git commit -m "Auto update: Data acquisition $(date +'%Y-%m-%d')" || echo "No changes to commit"
-
+    
     - name: Push changes
       uses: ad-m/github-push-action@master
       with:
         github_token: ${{ secrets.GITHUB_TOKEN }}
         branch: ${{ github.ref }}
-        # 注意：如果上述 pull/rebase 步骤成功，这里通常是 fast-forward 推送。
-        # 极少数情况下，如果在 pull 和 push 之间瞬间又有新的远程提交，仍可能失败。
-        # 不建议轻易添加 force: true，因为它会覆盖远程历史。
 
   analysis:
     needs: data_acquisition
     runs-on: ubuntu-latest
     env: # Set timezone for all steps in this job
       TZ: Asia/Shanghai
-
+      
     steps:
     - name: Checkout repository
       uses: actions/checkout@v2
       with:
-        fetch-depth: 0 # 确保获取完整历史，以便进行 rebase
-
+        fetch-depth: 0
+    
     - name: Set up Python 3.9
       uses: actions/setup-python@v2
       with:
         python-version: 3.9
-
+    
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
         pip install -r requirements.txt
-
+    
     - name: Run analysis script
       run: python ssq_analyzer.py
-
+    
     - name: Create fixed filename copy
       run: |
         # 找出最新的分析报告
         latest_report=$(ls -t ssq_analysis_output_*.txt | head -n 1)
-
+        
         # 创建固定文件名副本
         cp "$latest_report" "latest_ssq_analysis.txt"
         echo "Created fixed filename copy: latest_ssq_analysis.txt"
-
+    
     - name: Clean old reports - keep only latest 3
       run: |
         # 列出所有分析报告并按时间排序
         reports=$(ls -t ssq_analysis_output_*.txt)
-
+        
         # 计算需要删除的报告数量
         count=$(echo "$reports" | wc -l)
         delete_count=$((count - 3))
-
+        
         # 只在有超过3个报告时执行删除
         if [ $delete_count -gt 0 ]; then
           # 取出需要删除的报告列表
           delete_list=$(echo "$reports" | tail -n $delete_count)
-
+          
           # 删除旧报告
           echo "Deleting $delete_count old reports..."
           for file in $delete_list; do
@@ -116,28 +104,21 @@ jobs:
         else
           echo "No need to clean reports, have $count (≤3) reports."
         fi
-
+    
     - name: Configure Git
       run: |
         git config --local user.email "action@github.com"
         git config --local user.name "GitHub Action"
-
-    # -- 添加此步骤：拉取远程最新变化并进行变基 --
-    - name: Pull latest changes before commit
-      run: |
-        git fetch origin
-        git rebase origin/${{ github.ref }} || (git rebase --abort && exit 1) # 如果变基失败则中止并报错
-      # 注意：这里使用了 rebase，它会尝试将本地更改应用在远程最新提交之上。
-
+    
     - name: Commit updated files
       run: |
         # 添加保留的分析报告和固定文件名副本
         git add ssq_analysis_output_*.txt
         git add latest_ssq_analysis.txt
-
-        # 提交更改，包括删除的旧报告 (git add . 或 git add -A 也可以包括删除)
+        
+        # 提交更改，包括删除的旧报告
         git commit -m "Auto update: Analysis results $(date +'%Y-%m-%d')" || echo "No changes to commit"
-
+    
     - name: Push changes
       uses: ad-m/github-push-action@master
       with:
