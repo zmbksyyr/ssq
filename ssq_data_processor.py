@@ -7,6 +7,7 @@ from bs4 import BeautifulSoup
 import io
 import logging
 from contextlib import redirect_stdout, redirect_stderr
+import csv  # 导入csv模块
 
 # --- 配置 ---
 # 获取脚本目录
@@ -45,7 +46,7 @@ def show_progress(current, total, prefix='', suffix='', decimals=1, length=50, f
     percent = ("{0:." + str(decimals) + "f}").format(100 * (current / float(total)))
     filled_length = int(length * current // total)
     bar = fill * filled_length + '-' * (length - filled_length)
-    print(f'\r{prefix} |{bar}| {percent}% {suffix}', end='', file=sys.stdout, flush=True)
+    print(f'\r{bar}| {percent}% {suffix}', end='', file=sys.stdout, flush=True)
     if current >= total:
         print(file=sys.stdout, flush=True)
 
@@ -252,6 +253,99 @@ def fetch_latest_data(url: str = "https://www.17500.cn/chart/ssq-tjb.html") -> l
         return []
 
 
+def fetch_data_from_txt(url='http://data.17500.cn/ssq_asc.txt'):
+    """从txt文件下载数据并解析"""
+    try:
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+        response.encoding = 'utf-8'
+        data_lines = response.text.strip().split('\n')
+        return data_lines
+    except requests.exceptions.HTTPError as err:
+        if "429" in str(err):
+            logger.error("错误：请求过于频繁，请稍后再试。")
+        else:
+            logger.error(f"HTTP错误：{err}")
+    except Exception as e:
+        logger.error(f"数据下载失败：{e}")
+    return None
+
+
+def parse_txt_data(data_lines):
+    """解析txt数据，提取所需字段"""
+    parsed_data = []
+    for line in data_lines:
+        fields = line.strip().split()
+        if len(fields) < 9:
+            logger.warning(f"忽略无效行：{line}")
+            continue
+        try:
+            qihao = fields[0]
+            date = fields[1]
+            red_balls = ",".join(fields[2:8])
+            blue_ball = fields[8]
+            parsed_data.append([qihao, date, f'"{red_balls}"', blue_ball])
+        except IndexError:
+            logger.warning(f"数据格式异常：{line}")
+            continue
+    return parsed_data
+
+
+def update_csv_with_txt_data(csv_file_path, txt_data):
+    """使用txt数据更新CSV文件，重点更新日期"""
+    if not txt_data:
+        logger.info("没有获取到txt数据，CSV文件保持不变")
+        return False
+
+    try:
+        parsed_data = parse_txt_data(txt_data)
+        if not parsed_data:
+            logger.info("Txt数据解析后为空，CSV文件保持不变")
+            return False
+
+        # 读取现有CSV文件
+        existing_df = pd.DataFrame(columns=['期号', '日期', '红球', '蓝球'])
+        if os.path.exists(csv_file_path) and os.path.getsize(csv_file_path) > 0:
+            try:
+                existing_df = pd.read_csv(csv_file_path, encoding='utf-8')
+            except UnicodeDecodeError:
+                try:
+                    existing_df = pd.read_csv(csv_file_path, encoding='gbk')
+                except UnicodeDecodeError:
+                    try:
+                        existing_df = pd.read_csv(csv_file_path, encoding='latin-1')
+                    except Exception as e:
+                        logger.error(f"尝试多种编码读取CSV失败: {e}")
+                        existing_df = pd.DataFrame(columns=['期号', '日期', '红球', '蓝球'])
+            except pd.errors.EmptyDataError:
+                logger.warning("现有CSV文件为空。")
+                existing_df = pd.DataFrame(columns=['期号', '日期', '红球', '蓝球'])
+
+        new_data_df = pd.DataFrame(parsed_data, columns=['期号', '日期', '红球', '蓝球'])
+
+        # 将期号转换为相同的类型以便比较
+        existing_df['期号'] = pd.to_numeric(existing_df['期号'], errors='coerce')
+        new_data_df['期号'] = pd.to_numeric(new_data_df['期号'], errors='coerce')
+
+        # 更新或添加数据
+        merged_df = pd.merge(existing_df, new_data_df, on='期号', how='outer', suffixes=('_old', '_new'))
+
+        for col in ['日期', '红球', '蓝球']:
+            merged_df[col] = merged_df[f'{col}_new'].where(merged_df[f'{col}_new'].notna(), merged_df[f'{col}_old'])
+            merged_df.drop(columns=[f'{col}_old', f'{col}_new'], inplace=True)
+
+        final_df = merged_df[['期号', '日期', '红球', '蓝球']].sort_values('期号').reset_index(drop=True)
+
+        # 保存到CSV
+        final_df.to_csv(csv_file_path, index=False, encoding='utf-8')
+        logger.info("CSV文件已成功更新。")
+        return True
+
+    except Exception as e:
+        logger.error(f"更新CSV文件时出错: {e}")
+        return False
+
+
 def update_csv_with_latest_data(csv_file_path: str):
     """获取最新数据并更新CSV文件"""
     logger.info("正在检查并更新最新双色球数据...")
@@ -294,60 +388,3 @@ def update_csv_with_latest_data(csv_file_path: str):
 
         # 创建新数据DataFrame
         new_df = pd.DataFrame(latest_data)
-        if '期号' not in new_df.columns:
-             logger.error("获取的数据没有'期号'列。")
-             return False
-
-        # 将新数据的'期号'转换为整数，处理潜在错误
-        try:
-            new_df['期号'] = pd.to_numeric(new_df['期号'], errors='coerce').astype('Int64')  # 使用可空整数类型
-            new_df.dropna(subset=['期号'], inplace=True)
-            new_df['期号'] = new_df['期号'].astype(int)
-        except Exception as e:
-             logger.error(f"将获取数据中的'期号'转换为整数时失败: {e}")
-             return False
-
-        # 查找新条目（在new_df中但不在existing_df中，基于'期号'）
-        existing_periods = set(existing_df['期号'])
-        new_entries_df = new_df[~new_df['期号'].isin(existing_periods)].copy()
-
-        # 如果有新数据，追加并保存
-        if not new_entries_df.empty:
-            # 合并前确保列匹配
-            # 如果existing_df为空或重置，使用new_entries_df的列
-            if existing_df.empty:
-                combined_df = new_entries_df
-            else:
-                # 确保两个dataframes具有相同顺序的相同列
-                common_cols = list(existing_df.columns.intersection(new_entries_df.columns))
-                combined_df = pd.concat([existing_df[common_cols], new_entries_df[common_cols]], ignore_index=True)
-
-            combined_df = combined_df.sort_values(by='期号', ascending=True).drop_duplicates(subset=['期号'], keep='last')  # 排序并去除重复项
-            combined_df.reset_index(drop=True, inplace=True)
-
-            # 保存更新的数据 - 始终使用utf-8以保持一致性
-            combined_df.to_csv(csv_file_path, index=False, encoding='utf-8')
-            logger.info(f"成功添加了 {len(new_entries_df)} 期新数据到CSV文件")
-            return True
-        else:
-            logger.info("没有找到新的期号数据，CSV文件保持不变")
-            return False
-
-    except Exception as e:
-        logger.error(f"更新CSV文件时出错: {e}")
-        return False
-
-
-# 如果直接运行此脚本
-if __name__ == "__main__":
-    # 更新数据
-    update_result = update_csv_with_latest_data(CSV_FILE_PATH)
-    if update_result:
-        logger.info("成功更新了CSV数据。")
-    else:
-        logger.info("CSV数据未更新，或更新过程中出错。")
-    
-    # 获取当前日期时间作为时间戳
-    now = datetime.datetime.now()
-    timestamp = now.strftime("%Y-%m-%d %H:%M:%S")
-    logger.info(f"数据获取完成，运行时间: {timestamp}")
