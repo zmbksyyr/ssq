@@ -116,7 +116,7 @@ SVC_PARAMS = {
     'probability': True, # Enable probability estimates - makes SVC slower due to cross-validation
     'random_state': 42,
     'cache_size': 200, # Specify size of the kernel cache (in MB)
-    'max_iter': 10000 # Increased max iterations significantly
+    'max_iter': 10000,  # Increased max iterations significantly
     'tol': 1e-3  # 添加容差参数，允许更早收敛
     # SVC 对特征缩放敏感，在管道中使用 StandardScaler
 }
