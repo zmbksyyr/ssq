@@ -47,34 +47,34 @@ RED_ZONES = {
     'Zone3': (23, 33)
 }
 NUM_COMBINATIONS_TO_GENERATE = 5  # 最终推荐的号码组合数量 (单式或小复式)
-TOP_N_RED_FOR_CANDIDATE = 33  # 用于生成组合的红球候选池大小（按分数从高到低选择，预测概率后可以扩大池）
-TOP_N_BLUE_FOR_CANDIDATE = 16  # 用于生成组合的蓝球候选池大小（按分数从高到低选择，预测概率后可以扩大池）
+TOP_N_RED_FOR_CANDIDATE = 25  # 用于生成组合的红球候选池大小（按分数从高到低选择，预测概率后可以扩大池）
+TOP_N_BLUE_FOR_CANDIDATE = 12  # 用于生成组合的蓝球候选池大小（按分数从高到低选择，预测概率后可以扩大池）
 ML_LAG_FEATURES = [1, 3, 5, 10]  # ML模型使用的滞后特征期数，例如 [1, 3, 5] 表示使用前1期、前3期、前5期的数据作为特征
-BACKTEST_PERIODS_COUNT = 200  # 回测使用的最近历史期数 (This will be maximum periods if data is sufficient)
+BACKTEST_PERIODS_COUNT = 100  # 回测使用的最近历史期数 (This will be maximum periods if data is sufficient)
 SHOW_PLOTS = False  # 是否显示分析过程中生成的图表 (True 显示, False 屏蔽)
 
 # 关联规则挖掘配置 (可按需调整)
-ARM_MIN_SUPPORT = 0.005
-ARM_MIN_CONFIDENCE = 0.3
+ARM_MIN_SUPPORT = 0.008
+ARM_MIN_CONFIDENCE = 0.35
 ARM_MIN_LIFT = 1.0
 
 # 评分权重 (启发式 - 可调整)
-FREQ_SCORE_WEIGHT = 20 # 降低频率权重，增加ML概率权重
-OMISSION_SCORE_WEIGHT = 15 # 降低遗漏权重
+FREQ_SCORE_WEIGHT = 15 # 降低频率权重，增加ML概率权重
+OMISSION_SCORE_WEIGHT = 10 # 降低遗漏权重
 # Removed ODD_EVEN_TENDENCY_BONUS, ZONE_TENDENCY_BONUS_MULTIPLIER as ML predicts individual probabilities
-BLUE_FREQ_SCORE_WEIGHT = 25 # 降低蓝球频率权重
-BLUE_OMISSION_SCORE_WEIGHT = 10 # 降低蓝球遗漏权重
+BLUE_FREQ_SCORE_WEIGHT = 20 # 降低蓝球频率权重
+BLUE_OMISSION_SCORE_WEIGHT = 8 # 降低蓝球遗漏权重
 # Removed BLUE_ODD_TENDENCY_BONUS, BLUE_SIZE_TENDENCY_BONUS
 
 # New weights for ML predicted probability score
-ML_PROB_SCORE_WEIGHT_RED = 65 # ML预测红球概率的权重
-ML_PROB_SCORE_WEIGHT_BLUE = 65 # ML预测蓝球概率的权重
+ML_PROB_SCORE_WEIGHT_RED = 70 # ML预测红球概率的权重
+ML_PROB_SCORE_WEIGHT_BLUE = 70 # ML预测蓝球概率的权重
 
 # Combination bonus based on matching HISTORICAL patterns (still useful for structure)
-COMBINATION_ODD_COUNT_MATCH_BONUS = 20  # 组合匹配历史最常见奇数数量的奖励
-COMBINATION_BLUE_ODD_MATCH_BONUS = 15  # 组合匹配历史最常见蓝球奇偶的奖励
-COMBINATION_ZONE_MATCH_BONUS = 15  # 组合匹配历史最常见区域模式的奖励
-COMBINATION_BLUE_SIZE_MATCH_BONUS = 10  # 组合匹配历史最常见蓝球大小的奖励
+COMBINATION_ODD_COUNT_MATCH_BONUS = 15  # 组合匹配历史最常见奇数数量的奖励
+COMBINATION_BLUE_ODD_MATCH_BONUS = 10  # 组合匹配历史最常见蓝球奇偶的奖励
+COMBINATION_ZONE_MATCH_BONUS = 10  # 组合匹配历史最常见区域模式的奖励
+COMBINATION_BLUE_SIZE_MATCH_BONUS = 8  # 组合匹配历史最常见蓝球大小的奖励
 
 
 # ML模型参数 (新增或修改)
@@ -83,14 +83,14 @@ COMBINATION_BLUE_SIZE_MATCH_BONUS = 10  # 组合匹配历史最常见蓝球大�
 LGBM_PARAMS = {
     'objective': 'binary', # Binary classification for ball presence
     'metric': 'binary_logloss',
-    'n_estimators': 200,   # Number of boosting rounds, increase slightly
-    'learning_rate': 0.03, # Reduce learning rate
+    'n_estimators': 120,   # Number of boosting rounds, increase slightly
+    'learning_rate': 0.05, # Reduce learning rate
     'feature_fraction': 0.7, # Fraction of features considered per iteration (column sampling)
-    'bagging_fraction': 0.7, # Fraction of data sampled per iteration (row sampling)
-    'bagging_freq': 1,
-    'lambda_l1': 0.2, # L1 regularization - increase
-    'lambda_l2': 0.2, # L2 regularization - increase
-    'num_leaves': 20, # Maximum number of leaves in one tree (controls tree complexity) - decrease
+    'bagging_fraction': 0.8, # Fraction of data sampled per iteration (row sampling)
+    'bagging_freq': 5,
+    'lambda_l1': 0.1, # L1 regularization - increase
+    'lambda_l2': 0.1, # L2 regularization - increase
+    'num_leaves': 16, # Maximum number of leaves in one tree (controls tree complexity) - decrease
     'verbose': -1, # Suppress verbose output
     'n_jobs': -1, # Use all available cores
     'seed': 42,
@@ -101,27 +101,27 @@ LGBM_PARAMS = {
 # Parameters for Logistic Regression (adjust as needed)
 LOGISTIC_REG_PARAMS = {
     'penalty': 'l2', # L2 regularization
-    'C': 0.5, # Inverse of regularization strength; smaller values specify stronger regularization - decrease C for stronger regularization
-    'solver': 'liblinear', # Good for small datasets, supports L1/L2
+    'C': 1.0, # Inverse of regularization strength; smaller values specify stronger regularization - decrease C for stronger regularization
+    'solver': 'saga', # Good for small datasets, supports L1/L2
     'random_state': 42,
-    'max_iter': 2000 # Increased max iterations for convergence
+    'max_iter': 1000 # Increased max iterations for convergence
     # Removed 'n_jobs' as it has no effect with 'liblinear'
 }
 
 # Parameters for SVC (adjust as needed, probability=True enables predict_proba but is expensive)
 # Using a linear kernel as a starting point for potentially better interpretability and less complexity than RBF
 SVC_PARAMS = {
-    'C': 1.0, # Regularization parameter. Smaller C means stronger regularization.
+    'C': 0.8, # Regularization parameter. Smaller C means stronger regularization.
     'kernel': 'linear', # 'rbf', 'poly', 'sigmoid' are other options. Linear is simpler.
     'probability': True, # Enable probability estimates - makes SVC slower due to cross-validation
     'random_state': 42,
-    'cache_size': 500, # Specify size of the kernel cache (in MB)
-    'max_iter': 100000 # Increased max iterations significantly
+    'cache_size': 200, # Specify size of the kernel cache (in MB)
+    'max_iter': 10000 # Increased max iterations significantly
     # SVC is sensitive to feature scaling, StandardScaler is used in a pipeline
 }
 
 # Minimum number of positive samples required to train a classifier for a specific ball
-MIN_POSITIVE_SAMPLES_FOR_ML = 10 # Increased threshold slightly for robustness
+MIN_POSITIVE_SAMPLES_FOR_ML = 8 # Increased threshold slightly for robustness
 
 # --- 配置日志系统
 logging.basicConfig(
@@ -1299,12 +1299,12 @@ def generate_combinations(scores_data: dict, pattern_analysis_data: dict, num_co
 
 
     # Revised generation strategy: Generate a large pool from the candidates, score/rank, pick top N
-    large_pool_size = num_combinations * 2000 # Increased pool size multiplier for more diversity
-    if large_pool_size < 1000: large_pool_size = 1000 # Ensure minimum pool size
+    large_pool_size = num_combinations * 1000 # Increased pool size multiplier for more diversity
+    if large_pool_size < 500: large_pool_size = 500 # Ensure minimum pool size
 
     generated_pool = []
     attempts = 0
-    max_attempts_multiplier = 100 # Increased attempts multiplier relative to pool size
+    max_attempts_multiplier = 50 # Increased attempts multiplier relative to pool size
     max_attempts_pool = large_pool_size * max_attempts_multiplier
 
     # Calculate probabilities based on scores from the candidate pool
