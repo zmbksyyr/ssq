@@ -1459,6 +1459,8 @@ def plot_analysis_results(freq_omission_data: dict, pattern_analysis_data: dict)
 
 # --- 主执行流程 ---
 
+# ... (previous code) ...
+
 if __name__ == "__main__":
     # --- 配置输出文件 ---
     now = datetime.datetime.now()
@@ -1511,19 +1513,29 @@ if __name__ == "__main__":
                     logger.error("数据加载失败或导致空数据。")
                     print("\n错误: 数据加载失败。无法继续分析。", file=sys.stdout)
 
+
         if df is not None and not df.empty:
-            # 提取数据范围信息
+            # 提取数据范围信息和最后期号/日期
             min_period = df['期号'].min()
             max_period = df['期号'].max()
             total_periods = len(df)
-            # 获取最后日期
-            last_drawing_date = df['日期'].iloc[-1] if '日期' in df.columns and not df.empty else "未知"
 
-            # 在报告开头添加数据范围信息和最后日期
+            last_period = "未知"
+            last_drawing_date = "未知"
+
+            if not df.empty:
+                last_row = df.iloc[-1]
+                if '期号' in last_row:
+                    last_period = last_row['期号']
+                if '日期' in last_row:
+                    last_drawing_date = last_row['日期']
+
+
+            # 在报告开头添加数据范围信息和最后日期 (Modified line)
             print(f"\n数据概况:", file=sys.stdout)
             print(f"  数据期数范围: 第 {min_period} 期 至 第 {max_period} 期", file=sys.stdout)
             print(f"  总数据条数: {total_periods} 期", file=sys.stdout)
-            print(f"  最后日期: {last_drawing_date}", file=sys.stdout) # Added this line
+            print(f"  最后日期: {last_drawing_date}({last_period})", file=sys.stdout) # Modified line
             print("\n", file=sys.stdout)
 
             # 检查是否有足够的数据用于分析
@@ -1542,7 +1554,7 @@ if __name__ == "__main__":
                 with SuppressOutput(suppress_stdout=True, capture_stderr=True):
                     full_freq_omission_data = analyze_frequency_omission(df)
                     full_pattern_analysis_data = analyze_patterns(df)
-                    full_association_rules = analyze_associations(df, ARM_MIN_SUPPORT, ARM_MIN_CONFIDENCE, ARM_MIN_LIFT)  # 在完整数据上分析关联
+                    full_association_rules = analyze_associations(df, ARM_MIN_SUPPORT, ARM_MIN_CONFIDENCE, ARM_LIFT)  # 在完整数据上分析关联
 
                 print("\n历史分析摘要（基于完整数据）:", file=sys.stdout)
                 print("\n频率和遗漏亮点:", file=sys.stdout)
@@ -1564,6 +1576,7 @@ if __name__ == "__main__":
                         print(f"  {set(rule['antecedents'])} -> {set(rule['consequents'])} (支持度: {rule['support']:.4f}, 置信度: {rule['confidence']:.2f}, 提升度: {rule['lift']:.2f})", file=sys.stdout)
                 else:
                     print("\n以当前阈值未找到显著关联规则。", file=sys.stdout)
+
 
                 print("="*50, file=sys.stdout)
                 print(" 历史分析完成 ", file=sys.stdout)
@@ -1592,12 +1605,14 @@ if __name__ == "__main__":
                      if periods_with_results > 0:
                           print(f"每期生成的组合数(平均): {len(backtest_results) / periods_with_results:.2f}", file=sys.stdout)
 
+
                      avg_red_hits = backtest_results['red_hits'].mean()
                      print(f"每个组合的平均红球命中数: {avg_red_hits:.2f}", file=sys.stdout)
 
                      blue_hit_by_period = backtest_results.groupby('period')['blue_hit'].any()
                      blue_hit_rate_per_period = blue_hit_by_period.mean() if not blue_hit_by_period.empty else 0.0
                      print(f"至少一个组合击中蓝球的测试期百分比: {blue_hit_rate_per_period:.2%}", file=sys.stdout)
+
 
                      print("\n中奖层级命中情况(每个组合):", file=sys.stdout)
                      print(f"  6红+蓝: {len(backtest_results[(backtest_results['red_hits'] == 6) & (backtest_results['blue_hit'] == True)])}", file=sys.stdout)
@@ -1615,12 +1630,14 @@ if __name__ == "__main__":
                      print(f"  纯随机每组合的期望平均红球命中数: ~{expected_avg_red_hits_random:.2f}", file=sys.stdout)
                      print(f"  纯随机每组合的期望蓝球命中数: ~{expected_blue_hits_random:.4f}", file=sys.stdout)
 
+
                 else:
                      print("没有可总结的回测结果。", file=sys.stdout)
 
                 print("="*50, file=sys.stdout)
                 print(" 回测摘要完成 ", file=sys.stdout)
                 print("="*50, file=sys.stdout)
+
 
                 # 4. 为下一期生成最终推荐组合
                 print("\n" + "="*50, file=sys.stdout)
@@ -1659,6 +1676,7 @@ if __name__ == "__main__":
                      final_analysis_data.get('patterns', {}),
                      {}  # 使用空字典
                 )
+
 
                 red_scores_for_7_7 = final_scores_data.get('red_scores', {})
                 blue_scores_for_7_7 = final_scores_data.get('blue_scores', {})
