@@ -1,4 +1,4 @@
-name: Shuangseqiu Data and Analysis - Merged and Consolidated Push
+name: Shuangseqiu Data and Analysis - Merged and Consolidated Push (Sort by Filename Timestamp)
 
 on:
   schedule:
@@ -31,37 +31,36 @@ jobs:
     - name: Run data acquisition script
       run: python ssq_data_processor.py
 
-    # Removed the separate commit and push for shuangseqiu.csv here
-
     - name: Run analysis script
       run: python ssq_analyzer.py
 
     - name: Create fixed filename copy
       run: |
-        # 找出最新的分析报告
-        latest_report=$(ls -t ssq_analysis_output_*.txt | head -n 1)
+        # 找出最新的分析报告 (按文件名时间戳排序)
+        latest_report=$(ls ssq_analysis_output_*.txt | sort -r | head -n 1)
 
         # 创建固定文件名副本
         cp "$latest_report" "latest_ssq_analysis.txt"
         echo "Created fixed filename copy: latest_ssq_analysis.txt"
 
-    - name: Clean old reports - keep only latest 3
+    - name: Clean old reports - keep only latest 3 by filename timestamp
       run: |
-        # 列出所有分析报告并按时间排序
-        reports=$(ls -t ssq_analysis_output_*.txt)
+        # 列出所有分析报告并按文件名时间戳排序 (默认 ls 按字母顺序，即时间戳旧到新)
+        all_reports=$(ls ssq_analysis_output_*.txt)
 
-        # 计算需要删除的报告数量
-        count=$(echo "$reports" | wc -l)
+        # 计算文件总数
+        count=$(echo "$all_reports" | wc -l)
         delete_count=$((count - 3))
 
         # 只在有超过3个报告时执行删除
         if [ $delete_count -gt 0 ]; then
-          # 取出需要删除的报告列表
-          delete_list=$(echo "$reports" | tail -n $delete_count)
+          # 从按文件名时间戳排序（旧到新）的列表中，取出最旧的 $delete_count 个文件
+          # ls 默认按字母顺序（旧到新），head -n 删除最前面（最旧）的几个
+          delete_list=$(echo "$all_reports" | head -n $delete_count)
 
           # 删除旧报告
-          echo "Deleting $delete_count old reports..."
-          for file in $delete_list; do
+          echo "Deleting $delete_count old reports based on filename timestamp..."
+          echo "$delete_list" | while read file; do
             echo "Removing $file"
             rm "$file"
           done
@@ -79,7 +78,7 @@ jobs:
         # 添加 shuangseqiu.csv
         git add shuangseqiu.csv
         # 添加保留的分析报告和固定文件名副本
-        git add ssq_analysis_output_*.txt
+        git add ssq_analysis_output_*.txt # 确保只添加剩下的文件
         git add latest_ssq_analysis.txt
 
         # 提交更改，包括删除的旧报告
