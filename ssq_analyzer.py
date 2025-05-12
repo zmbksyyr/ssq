@@ -1492,7 +1492,7 @@ if __name__ == "__main__":
             else:
                 logger.warning("处理好的数据文件加载失败或为空。尝试加载原始数据文件。")
                 processed_data_exists = False
-        
+
         # 如果没有处理好的数据或加载失败，使用原始数据
         if not processed_data_exists:
             with SuppressOutput(suppress_stdout=False, capture_stderr=True):
@@ -1516,13 +1516,16 @@ if __name__ == "__main__":
             min_period = df['期号'].min()
             max_period = df['期号'].max()
             total_periods = len(df)
-            
-            # 在报告开头添加数据范围信息
+            # 获取最后开奖日期
+            last_drawing_date = df['开奖日期'].iloc[-1] if '开奖日期' in df.columns and not df.empty else "未知"
+
+            # 在报告开头添加数据范围信息和最后开奖日期
             print(f"\n数据概况:", file=sys.stdout)
             print(f"  数据期数范围: 第 {min_period} 期 至 第 {max_period} 期", file=sys.stdout)
             print(f"  总数据条数: {total_periods} 期", file=sys.stdout)
+            print(f"  最后开奖日期: {last_drawing_date}", file=sys.stdout) # Added this line
             print("\n", file=sys.stdout)
-            
+
             # 检查是否有足够的数据用于分析
             max_lag = max(ML_LAG_FEATURES) if ML_LAG_FEATURES else 0
             min_periods_needed = max(max_lag + 1, 10)
@@ -1573,13 +1576,13 @@ if __name__ == "__main__":
 
                 print("\n" + "="*50, file=sys.stdout)
                 print(" 回测摘要 ", file=sys.stdout)
-                
+
                 # 如果有回测结果，显示回测的期号范围
                 if not backtest_results.empty:
                     start_period = backtest_results.attrs.get('start_period', '未知')
                     end_period = backtest_results.attrs.get('end_period', '未知')
                     print(f" (基于第 {start_period} 期至第 {end_period} 期数据) ", file=sys.stdout)
-                
+
                 print("="*50, file=sys.stdout)
                 if not backtest_results.empty:
                      # 打印回测摘要到文件
@@ -1685,6 +1688,7 @@ if __name__ == "__main__":
                      logger.info(f"选择的7个蓝球: {sorted(top_7_blue_balls)}")
                      logger.info("此7+7选择覆盖49个组合。")
 
+
                 print("="*50, file=sys.stdout)
                 print(" 7+7选择完成 ", file=sys.stdout)
                 print("="*50, file=sys.stdout)
@@ -1711,7 +1715,6 @@ if __name__ == "__main__":
         print(f"\n执行过程中发生意外错误: {e}", file=sys.stdout)
         # 同时将traceback打印到文件
         import traceback
-        print("\n--- 错误跟踪 ---", file=sys.stdout)
         traceback.print_exc(file=sys.stdout)
         print("--- 错误跟踪结束 ---", file=sys.stdout)
 
