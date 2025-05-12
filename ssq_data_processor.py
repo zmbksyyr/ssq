@@ -13,7 +13,8 @@ import csv  # 导入csv模块
 # 获取脚本目录
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 # 构建CSV文件的完整路径
-CSV_FILE_PATH = os.path.join(SCRIPT_DIR, 'shuangseqiu.csv')  # 假设shuangseqiu.csv与脚本在同一目录
+# 假设shuangseqiu.csv与脚本在同一目录，如果您想使用 ssq_results.csv (ssq.py 默认文件名) 请修改此处
+CSV_FILE_PATH = os.path.join(SCRIPT_DIR, 'shuangseqiu.csv') # 您可以根据需要修改此处为 'ssq_results.csv'
 
 # 配置日志系统
 logging.basicConfig(
@@ -97,10 +98,10 @@ class SuppressOutput:
         return False
 
 
-# --- 从网站获取最新数据 ---
+# --- 从网站获取最新数据 (此函数不获取日期) ---
 
 def fetch_latest_data(url: str = "https://www.17500.cn/chart/ssq-tjb.html") -> list:
-    """从指定网站获取最新双色球数据"""
+    """从指定网站获取最新双色球数据 (不含日期)"""
     logger.info("正在从网站获取最新双色球数据...")
     data = []
     try:
@@ -252,14 +253,17 @@ def fetch_latest_data(url: str = "https://www.17500.cn/chart/ssq-tjb.html") -> l
         logger.error(f"获取网站数据时出错: {e}")
         return []
 
+# --- 从txt文件获取并解析数据 (已存在) ---
 
 def fetch_data_from_txt(url='http://data.17500.cn/ssq_asc.txt'):
     """从txt文件下载数据并解析"""
+    logger.info(f"尝试从 {url} 下载数据...")
     try:
         response = requests.get(url, timeout=10)
         response.raise_for_status()
         response.encoding = 'utf-8'
         data_lines = response.text.strip().split('\n')
+        logger.info(f"成功下载 {len(data_lines)} 行数据。")
         return data_lines
     except requests.exceptions.HTTPError as err:
         if "429" in str(err):
@@ -273,118 +277,198 @@ def fetch_data_from_txt(url='http://data.17500.cn/ssq_asc.txt'):
 
 def parse_txt_data(data_lines):
     """解析txt数据，提取所需字段"""
+    if not data_lines:
+        return []
+    logger.info("正在解析txt数据...")
     parsed_data = []
     for line in data_lines:
         fields = line.strip().split()
         if len(fields) < 9:
-            logger.warning(f"忽略无效行：{line}")
+            # logger.warning(f"忽略无效行：{line}") # 避免日志过多
             continue
         try:
             qihao = fields[0]
             date = fields[1]
             red_balls = ",".join(fields[2:8])
             blue_ball = fields[8]
-            parsed_data.append([qihao, date, f'"{red_balls}"', blue_ball])
+            parsed_data.append([qihao, date, f'{red_balls}', blue_ball]) # 移除额外的引号，csv writer会处理
         except IndexError:
             logger.warning(f"数据格式异常：{line}")
             continue
+    logger.info(f"解析出 {len(parsed_data)} 条有效数据。")
     return parsed_data
 
 
-def update_csv_with_txt_data(csv_file_path, txt_data):
+def update_csv_with_txt_data(csv_file_path, txt_data_parsed):
     """使用txt数据更新CSV文件，重点更新日期"""
-    if not txt_data:
-        logger.info("没有获取到txt数据，CSV文件保持不变")
+    if not txt_data_parsed:
+        logger.info("没有获取到txt解析数据，CSV文件保持不变")
         return False
 
     try:
-        parsed_data = parse_txt_data(txt_data)
-        if not parsed_data:
-            logger.info("Txt数据解析后为空，CSV文件保持不变")
-            return False
+        # 将txt解析数据转换为DataFrame
+        new_data_df = pd.DataFrame(txt_data_parsed, columns=['期号', '日期', '红球', '蓝球'])
+        # 确保期号是字符串类型，以便后续合并
+        new_data_df['期号'] = new_data_df['期号'].astype(str)
 
         # 读取现有CSV文件
         existing_df = pd.DataFrame(columns=['期号', '日期', '红球', '蓝球'])
         if os.path.exists(csv_file_path) and os.path.getsize(csv_file_path) > 0:
             try:
-                existing_df = pd.read_csv(csv_file_path, encoding='utf-8')
+                existing_df = pd.read_csv(csv_file_path, dtype={'期号': str}, encoding='utf-8')
             except UnicodeDecodeError:
                 try:
-                    existing_df = pd.read_csv(csv_file_path, encoding='gbk')
+                    existing_df = pd.read_csv(csv_file_path, dtype={'期号': str}, encoding='gbk')
                 except UnicodeDecodeError:
                     try:
-                        existing_df = pd.read_csv(csv_file_path, encoding='latin-1')
+                        existing_df = pd.read_csv(csv_file_path, dtype={'期号': str}, encoding='latin-1')
                     except Exception as e:
                         logger.error(f"尝试多种编码读取CSV失败: {e}")
-                        existing_df = pd.DataFrame(columns=['期号', '日期', '红球', '蓝球'])
+                        existing_df = pd.DataFrame(columns=['期号', '日期', '红球', '蓝球'], dtype=str)
             except pd.errors.EmptyDataError:
                 logger.warning("现有CSV文件为空。")
-                existing_df = pd.DataFrame(columns=['期号', '日期', '红球', '蓝球'])
+                existing_df = pd.DataFrame(columns=['期号', '日期', '红球', '蓝球'], dtype=str)
+        else:
+             logger.info("CSV文件不存在或为空，将创建新文件。")
+             existing_df = pd.DataFrame(columns=['期号', '日期', '红球', '蓝球'], dtype=str)
 
-        new_data_df = pd.DataFrame(parsed_data, columns=['期号', '日期', '红球', '蓝球'])
-
-        # 将期号转换为相同的类型以便比较
-        existing_df['期号'] = pd.to_numeric(existing_df['期号'], errors='coerce')
-        new_data_df['期号'] = pd.to_numeric(new_data_df['期号'], errors='coerce')
-
-        # 更新或添加数据
+        # 使用merge进行外连接，保留所有期号
+        # on='期号' 是合并的关键
         merged_df = pd.merge(existing_df, new_data_df, on='期号', how='outer', suffixes=('_old', '_new'))
 
+        # 更新列：如果 _new 列有数据，则使用 _new 列的数据，否则使用 _old 列的数据
+        # 这实现了优先使用txt数据更新
         for col in ['日期', '红球', '蓝球']:
-            merged_df[col] = merged_df[f'{col}_new'].where(merged_df[f'{col}_new'].notna(), merged_df[f'{col}_old'])
-            merged_df.drop(columns=[f'{col}_old', f'{col}_new'], inplace=True)
+             # 使用fillna合并数据，优先使用_new列
+             merged_df[col] = merged_df[f'{col}_new'].fillna(merged_df[f'{col}_old'])
+             # 删除旧的和新的临时列
+             merged_df.drop(columns=[f'{col}_old', f'{col}_new'], inplace=True)
 
-        final_df = merged_df[['期号', '日期', '红球', '蓝球']].sort_values('期号').reset_index(drop=True)
+        # 确保所有需要的列都在最终的DataFrame中
+        final_columns = ['期号', '日期', '红球', '蓝球']
+        for col in final_columns:
+            if col not in merged_df.columns:
+                merged_df[col] = None # 或者设置为合适的默认值，如空字符串或 NaN
+
+        # 重新排列列的顺序并排序
+        final_df = merged_df[final_columns].sort_values('期号').reset_index(drop=True)
 
         # 保存到CSV
-        final_df.to_csv(csv_file_path, index=False, encoding='utf-8')
-        logger.info("CSV文件已成功更新。")
-        return True
+        try:
+            # 使用csv模块写入，以便更好地控制引号和格式，特别是红球列
+            final_df.to_csv(csv_file_path, index=False, encoding='utf-8', quoting=csv.QUOTE_MINIMAL)
+            logger.info(f"CSV文件已成功更新至：{csv_file_path}。")
+            return True
+        except Exception as e:
+             logger.error(f"保存CSV文件时出错: {e}")
+             return False
+
+    except Exception as e:
+        logger.error(f"更新CSV文件时出错: {e}")
+        return False
+
+# --- 从网站获取最新数据并更新CSV (此函数不再是主要更新日期的方式) ---
+# 保留此函数可能用于获取非txt文件中的数据，但用户要求重点更新日期依赖txt
+
+def update_csv_with_latest_data(csv_file_path: str):
+    """
+    从网站获取最新数据并更新CSV文件。
+    注意：此函数获取的数据不包含日期，日期的更新应优先使用txt文件。
+    """
+    logger.info("正在检查并更新最新双色球数据 (不含日期)...")
+    latest_data = fetch_latest_data() # 此函数不获取日期
+    if not latest_data:
+        logger.info("没有获取到网站新数据，CSV文件保持不变 (非日期部分)。")
+        return False
+
+    try:
+        # 读取现有CSV文件，保留日期列
+        existing_df = pd.DataFrame(columns=['期号', '日期', '红球', '蓝球'])
+        if os.path.exists(csv_file_path) and os.path.getsize(csv_file_path) > 0:
+            try:
+                existing_df = pd.read_csv(csv_file_path, dtype={'期号': str}, encoding='utf-8')
+            except UnicodeDecodeError:
+                 try:
+                     existing_df = pd.read_csv(csv_file_path, dtype={'期号': str}, encoding='gbk')
+                 except UnicodeDecodeError:
+                      try:
+                          existing_df = pd.read_csv(csv_file_path, dtype={'期号': str}, encoding='latin-1')
+                      except Exception as e:
+                           logger.error(f"尝试多种编码读取CSV失败: {e}")
+                           existing_df = pd.DataFrame(columns=['期号', '日期', '红球', '蓝球'], dtype=str)
+            except pd.errors.EmptyDataError:
+                 logger.warning("现有CSV文件为空。")
+                 existing_df = pd.DataFrame(columns=['期号', '日期', '红球', '蓝球'], dtype=str)
+        else:
+             logger.info("CSV文件不存在或为空，将创建新文件。")
+             existing_df = pd.DataFrame(columns=['期号', '日期', '红球', '蓝球'], dtype=str)
+
+
+        # 创建新数据DataFrame (来自网站，无日期)
+        new_df = pd.DataFrame(latest_data)
+        # 确保期号是字符串类型
+        new_df['期号'] = new_df['期号'].astype(str)
+        # 添加一个空的日期列，以便与现有数据合并
+        new_df['日期'] = None # 或设置为pd.NA 或 ''
+
+        # 使用merge进行外连接
+        merged_df = pd.merge(existing_df, new_df, on='期号', how='outer', suffixes=('_old', '_new'))
+
+        # 更新列：红球和蓝球优先使用新数据，日期保留旧数据（因为网站数据没有日期）
+        # 注意这里的优先级逻辑：对于日期，我们希望保留来自txt的（_old），如果_old是空的才考虑其他来源（但这个函数没有其他日期来源）
+        # 对于红蓝球，优先使用网站获取的 (_new)
+        merged_df['红球'] = merged_df['红球_new'].fillna(merged_df['红球_old'])
+        merged_df['蓝球'] = merged_df['蓝球_new'].fillna(merged_df['蓝球_old'])
+        # 日期列直接使用_old，因为_new是空的
+        merged_df['日期'] = merged_df['日期_old']
+
+
+        # 删除旧的和新的临时列
+        merged_df.drop(columns=[f'{col}_old' for col in ['日期', '红球', '蓝球']], inplace=True)
+        merged_df.drop(columns=[f'{col}_new' for col in ['日期', '红球', '蓝球']], inplace=True)
+
+        # 确保所有需要的列都在最终的DataFrame中
+        final_columns = ['期号', '日期', '红球', '蓝球']
+        for col in final_columns:
+            if col not in merged_df.columns:
+                merged_df[col] = None # 或者设置为合适的默认值
+
+        # 重新排列列的顺序并排序
+        final_df = merged_df[final_columns].sort_values('期号').reset_index(drop=True)
+
+        # 保存到CSV
+        try:
+            final_df.to_csv(csv_file_path, index=False, encoding='utf-8', quoting=csv.QUOTE_MINIMAL)
+            logger.info(f"CSV文件已成功更新非日期部分至：{csv_file_path}。")
+            return True
+        except Exception as e:
+             logger.error(f"保存CSV文件时出错: {e}")
+             return False
 
     except Exception as e:
         logger.error(f"更新CSV文件时出错: {e}")
         return False
 
 
-def update_csv_with_latest_data(csv_file_path: str):
-    """获取最新数据并更新CSV文件"""
-    logger.info("正在检查并更新最新双色球数据...")
-    latest_data = fetch_latest_data()
-    if not latest_data:
-        logger.info("没有获取到新数据，CSV文件保持不变")
-        return False
+# --- 主执行逻辑 ---
+if __name__ == "__main__":
+    logger.info("开始执行双色球数据处理...")
 
-    try:
-        # 读取现有CSV文件
-        existing_df = pd.DataFrame(columns=['期号', '红球', '蓝球'])  # 如果文件不存在或为空，则以空DataFrame开始
-        if os.path.exists(csv_file_path) and os.path.getsize(csv_file_path) > 0:
-            try:
-                existing_df = pd.read_csv(csv_file_path, encoding='utf-8')
-            except UnicodeDecodeError:
-                try:
-                    existing_df = pd.read_csv(csv_file_path, encoding='gbk')
-                except UnicodeDecodeError:
-                    try:
-                        existing_df = pd.read_csv(csv_file_path, encoding='latin-1')
-                    except Exception as e:
-                        logger.error(f"尝试多种编码读取CSV失败: {e}")
-                        existing_df = pd.DataFrame(columns=['期号', '红球', '蓝球'])  # 读取错误时回退为空DataFrame
-            except pd.errors.EmptyDataError:
-                 logger.warning("现有CSV文件为空。")
-                 existing_df = pd.DataFrame(columns=['期号', '红球', '蓝球'])  # 处理空文件
-
-        # 确保'期号'存在且可以转换为整数
-        if '期号' not in existing_df.columns:
-             logger.warning("现有CSV没有'期号'列。使用最新数据重新开始。")
-             existing_df = pd.DataFrame(columns=['期号', '红球', '蓝球'])
+    # 1. 尝试从 ssq_asc.txt 获取数据并更新CSV (优先，尤其用于更新日期)
+    txt_data_lines = fetch_data_from_txt()
+    if txt_data_lines:
+        txt_parsed_data = parse_txt_data(txt_data_lines)
+        if txt_parsed_data:
+            logger.info("使用ssq_asc.txt数据更新CSV文件...")
+            update_csv_with_txt_data(CSV_FILE_PATH, txt_parsed_data)
         else:
-            try:
-                existing_df['期号'] = pd.to_numeric(existing_df['期号'], errors='coerce').astype('Int64')  # 使用可空整数类型
-                existing_df.dropna(subset=['期号'], inplace=True)  # 删除无法转换的行
-                existing_df['期号'] = existing_df['期号'].astype(int)  # 删除NaN后转换为标准int
-            except Exception as e:
-                logger.error(f"将现有CSV中的'期号'转换为整数时失败: {e}。重新开始。")
-                existing_df = pd.DataFrame(columns=['期号', '红球', '蓝球'])
+            logger.warning("从ssq_asc.txt解析到的数据为空。")
+    else:
+        logger.warning("未能从ssq_asc.txt获取到数据，跳过txt更新步骤。")
+        # 如果txt获取失败，可以选择是否尝试从网站获取其他数据
+        # logger.info("尝试从网站获取最新数据作为补充...")
+        # update_csv_with_latest_data(CSV_FILE_PATH) # 如果需要从网站获取红蓝球信息，可以启用此行
+        # 注意：从网站获取的数据不含日期，如果txt是日期唯一来源，失败则日期无法更新
 
-        # 创建新数据DataFrame
-        new_df = pd.DataFrame(latest_data)
+
+    logger.info("双色球数据处理完成。")
