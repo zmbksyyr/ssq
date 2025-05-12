@@ -7,7 +7,7 @@ from bs4 import BeautifulSoup
 import io
 import logging
 from contextlib import redirect_stdout, redirect_stderr
-import csv  # 导入csv模块
+import csv
 
 # --- 配置 ---
 # 获取脚本目录
@@ -256,10 +256,19 @@ def fetch_latest_data(url: str = "https://www.17500.cn/chart/ssq-tjb.html") -> l
 # --- 从txt文件获取并解析数据 (已存在) ---
 
 def fetch_data_from_txt(url='http://data.17500.cn/ssq_asc.txt'):
-    """从txt文件下载数据并解析"""
+    """从txt文件下载数据并解析，尝试模拟浏览器头部"""
     logger.info(f"尝试从 {url} 下载数据...")
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/;q=0.8',
+        'Accept-Language': 'zh-CN,zh;q=0.8,en-US;q=0.5,en;q=0.3',
+        'Connection': 'keep-alive',
+        # 'Referer': 'http://data.17500.cn/', # 有时添加 Referer 有帮助
+        # 'Pragma': 'no-cache',
+        # 'Cache-Control': 'no-cache',
+    }
     try:
-        response = requests.get(url, timeout=10)
+        response = requests.get(url, headers=headers, timeout=10) # 添加 headers 参数
         response.raise_for_status()
         response.encoding = 'utf-8'
         data_lines = response.text.strip().split('\n')
@@ -267,7 +276,7 @@ def fetch_data_from_txt(url='http://data.17500.cn/ssq_asc.txt'):
         return data_lines
     except requests.exceptions.HTTPError as err:
         if "429" in str(err):
-            logger.error("错误：请求过于频繁，请稍后再试。")
+            logger.error("错误：请求过于频繁，请稍后再试。请检查网站的访问限制或稍后再运行。")
         else:
             logger.error(f"HTTP错误：{err}")
     except Exception as e:
