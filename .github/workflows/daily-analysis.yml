@@ -1,0 +1,50 @@
+name: Daily Shuangseqiu Analysis
+
+on:
+  schedule:
+    # 每天北京时间上午9点运行 (UTC+8，所以在UTC时间是1点)
+    - cron: '0 1 * * *'
+  workflow_dispatch:  # 允许手动触发
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v2
+      with:
+        fetch-depth: 0
+    
+    - name: Set up Python 3.9
+      uses: actions/setup-python@v2
+      with:
+        python-version: 3.9
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install pandas numpy matplotlib seaborn scikit-learn mlxtend requests beautifulsoup4
+    
+    - name: Run analysis script
+      run: python ssqfx_v0.4.py
+    
+    - name: Configure Git
+      run: |
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+    
+    - name: Commit updated files
+      run: |
+        # 确保shuangseqiu.csv文件存在Git索引中
+        git add shuangseqiu.csv
+        # 添加生成的分析报告
+        git add ssq_analysis_output_*.txt
+        # 尝试提交，如果没有更改则跳过
+        git commit -m "Auto update: Daily analysis $(date +'%Y-%m-%d')" || echo "No changes to commit"
+    
+    - name: Push changes
+      uses: ad-m/github-push-action@master
+      with:
+        github_token: ${{ secrets.GITHUB_TOKEN }}
+        branch: ${{ github.ref }}
