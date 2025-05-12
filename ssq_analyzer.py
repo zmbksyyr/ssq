@@ -151,7 +151,7 @@ class SuppressOutput:
 def load_data(file_path: str) -> Optional[pd.DataFrame]:
     """从CSV加载数据。"""
     try:
-        # 假设CSV有如'期号', '开奖日期', '红球', '蓝球'等列
+        # 假设CSV有如'期号', '日期', '红球', '蓝球'等列
         # 如果默认utf-8失败，尝试不同的编码
         try:
              df = pd.read_csv(file_path, encoding='utf-8')
@@ -307,8 +307,8 @@ def clean_and_structure(df: pd.DataFrame) -> Optional[pd.DataFrame]:
 
              # 如果到达这里，该行有效。添加到parsed_rows_data。
              row_data = {'期号': int(period_val)}  # 确保期号为int
-             if '开奖日期' in row:  # 如果存在，包含'开奖日期'
-                 row_data['开奖日期'] = row['开奖日期']
+             if '日期' in row:  # 如果存在，包含'日期'
+                 row_data['日期'] = row['日期']
              # 添加排序后的红球和蓝球
              for i in range(6):
                  row_data[f'red{i+1}'] = reds[i]
@@ -1516,14 +1516,14 @@ if __name__ == "__main__":
             min_period = df['期号'].min()
             max_period = df['期号'].max()
             total_periods = len(df)
-            # 获取最后开奖日期
-            last_drawing_date = df['开奖日期'].iloc[-1] if '开奖日期' in df.columns and not df.empty else "未知"
+            # 获取最后日期
+            last_drawing_date = df['日期'].iloc[-1] if '日期' in df.columns and not df.empty else "未知"
 
-            # 在报告开头添加数据范围信息和最后开奖日期
+            # 在报告开头添加数据范围信息和最后日期
             print(f"\n数据概况:", file=sys.stdout)
             print(f"  数据期数范围: 第 {min_period} 期 至 第 {max_period} 期", file=sys.stdout)
             print(f"  总数据条数: {total_periods} 期", file=sys.stdout)
-            print(f"  最后开奖日期: {last_drawing_date}", file=sys.stdout) # Added this line
+            print(f"  最后日期: {last_drawing_date}", file=sys.stdout) # Added this line
             print("\n", file=sys.stdout)
 
             # 检查是否有足够的数据用于分析
