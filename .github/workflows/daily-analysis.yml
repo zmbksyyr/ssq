@@ -1,4 +1,4 @@
-name: Shuangseqiu Data and Analysis - Merged and Consolidated Push (Sort by Filename Timestamp)
+name: Shuangseqiu Data and Analysis - Merged and Consolidated Push (Sort by Filename Timestamp with Debug)
 
 on:
   schedule:
@@ -43,30 +43,58 @@ jobs:
         cp "$latest_report" "latest_ssq_analysis.txt"
         echo "Created fixed filename copy: latest_ssq_analysis.txt"
 
-    - name: Clean old reports - keep only latest 3 by filename timestamp
+    - name: Clean old reports - keep only latest 3 by filename timestamp (Debug)
       run: |
-        # 列出所有分析报告并按文件名时间戳排序 (默认 ls 按字母顺序，即时间戳旧到新)
-        all_reports=$(ls ssq_analysis_output_*.txt)
+        echo "--- Debugging File Cleanup ---"
+        echo "Current directory:"
+        pwd
+        echo "Listing all analysis reports before cleanup:"
+        # 使用 find 代替 ls 以确保更可靠地查找文件，即使文件名有空格等特殊字符 (尽管此处文件名格式固定)
+        # 并且可以更容易地获取完整路径
+        find . -maxdepth 1 -name 'ssq_analysis_output_*.txt' | sort
 
+        # 获取文件列表并计数
+        # 同样使用 find 配合 while 循环处理文件列表
+        file_list_cmd="find . -maxdepth 1 -name 'ssq_analysis_output_*.txt' | sort"
+        
         # 计算文件总数
-        count=$(echo "$all_reports" | wc -l)
+        count=$(eval "$file_list_cmd" | wc -l)
+        echo "Total number of reports found: $count"
+        
         delete_count=$((count - 3))
+        echo "Number of reports to delete: $delete_count"
 
-        # 只在有超过3个报告时执行删除
         if [ $delete_count -gt 0 ]; then
-          # 从按文件名时间戳排序（旧到新）的列表中，取出最旧的 $delete_count 个文件
-          # ls 默认按字母顺序（旧到新），head -n 删除最前面（最旧）的几个
-          delete_list=$(echo "$all_reports" | head -n $delete_count)
-
-          # 删除旧报告
-          echo "Deleting $delete_count old reports based on filename timestamp..."
-          echo "$delete_list" | while read file; do
-            echo "Removing $file"
-            rm "$file"
+          echo "Calculating list of reports to delete (oldest $delete_count by filename timestamp):"
+          # 获取要删除的文件列表 (最旧的 $delete_count 个文件，按文件名时间戳排序)
+          delete_files=$(eval "$file_list_cmd" | head -n $delete_count)
+          echo "Files to delete:"
+          echo "$delete_files"
+          
+          echo "Deleting $delete_count old reports..."
+          echo "$delete_files" | while read file; do
+            if [ -f "$file" ]; then # 再次检查文件是否存在
+              echo "Attempting to remove: $file"
+              rm "$file"
+              exit_status=$?
+              if [ $exit_status -ne 0 ]; then
+                echo "Error removing $file. Exit status: $exit_status"
+              else
+                echo "Successfully removed: $file"
+              fi
+            else
+              echo "File not found, skipping removal: $file"
+            fi
           done
+          echo "Deletion process finished."
         else
           echo "No need to clean reports, have $count (≤3) reports."
         fi
+        
+        echo "Listing analysis reports after cleanup attempt:"
+        find . -maxdepth 1 -name 'ssq_analysis_output_*.txt' | sort
+        echo "--- End Debugging ---"
+
 
     - name: Configure Git
       run: |
@@ -75,14 +103,24 @@ jobs:
 
     - name: Commit updated files (CSV and Analysis Reports)
       run: |
+        echo "--- Debugging Commit Step ---"
+        echo "Files staged before commit:"
+        git status --porcelain
+        
         # 添加 shuangseqiu.csv
         git add shuangseqiu.csv
         # 添加保留的分析报告和固定文件名副本
-        git add ssq_analysis_output_*.txt # 确保只添加剩下的文件
+        # 使用 find 来确保只添加当前目录下的文件
+        find . -maxdepth 1 -name 'ssq_analysis_output_*.txt' -print0 | xargs -0 git add
         git add latest_ssq_analysis.txt
 
-        # 提交更改，包括删除的旧报告
+        echo "Files staged after add:"
+        git status --porcelain
+        
+        # 提交更改，包括删除的旧报告 (Git 会自动处理已删除文件的暂存)
         git commit -m "Auto update: Data and Analysis results $(date +'%Y-%m-%d')" || echo "No changes to commit"
+        echo "--- End Debugging Commit Step ---"
+
 
     - name: Push changes
       uses: ad-m/github-push-action@master
