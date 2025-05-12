@@ -2,14 +2,13 @@ name: Shuangseqiu Data and Analysis - Merged and Consolidated Push (Sort by File
 
 on:
   schedule:
-    # 每天北京时间上午9点运行 (UTC+8，所以在UTC时间是1点)
     - cron: '0 1 * * *'
-  workflow_dispatch:  # 允许手动触发
+  workflow_dispatch:
 
 jobs:
   daily_process:
     runs-on: ubuntu-latest
-    env: # Set timezone for all steps in this job
+    env:
       TZ: Asia/Shanghai
 
     steps:
@@ -36,10 +35,7 @@ jobs:
 
     - name: Create fixed filename copy
       run: |
-        # 找出最新的分析报告 (按文件名时间戳排序)
         latest_report=$(ls ssq_analysis_output_*.txt | sort -r | head -n 1)
-
-        # 创建固定文件名副本
         cp "$latest_report" "latest_ssq_analysis.txt"
         echo "Created fixed filename copy: latest_ssq_analysis.txt"
 
@@ -49,15 +45,9 @@ jobs:
         echo "Current directory:"
         pwd
         echo "Listing all analysis reports before cleanup:"
-        # 使用 find 代替 ls 以确保更可靠地查找文件，即使文件名有空格等特殊字符 (尽管此处文件名格式固定)
-        # 并且可以更容易地获取完整路径
         find . -maxdepth 1 -name 'ssq_analysis_output_*.txt' | sort
 
-        # 获取文件列表并计数
-        # 同样使用 find 配合 while 循环处理文件列表
         file_list_cmd="find . -maxdepth 1 -name 'ssq_analysis_output_*.txt' | sort"
-        
-        # 计算文件总数
         count=$(eval "$file_list_cmd" | wc -l)
         echo "Total number of reports found: $count"
         
@@ -65,15 +55,13 @@ jobs:
         echo "Number of reports to delete: $delete_count"
 
         if [ $delete_count -gt 0 ]; then
-          echo "Calculating list of reports to delete (oldest $delete_count by filename timestamp):"
-          # 获取要删除的文件列表 (最旧的 $delete_count 个文件，按文件名时间戳排序)
           delete_files=$(eval "$file_list_cmd" | head -n $delete_count)
           echo "Files to delete:"
           echo "$delete_files"
           
           echo "Deleting $delete_count old reports..."
           echo "$delete_files" | while read file; do
-            if [ -f "$file" ]; then # 再次检查文件是否存在
+            if [ -f "$file" ]; then
               echo "Attempting to remove: $file"
               rm "$file"
               exit_status=$?
@@ -86,7 +74,6 @@ jobs:
               echo "File not found, skipping removal: $file"
             fi
           done
-          echo "Deletion process finished."
         else
           echo "No need to clean reports, have $count (≤3) reports."
         fi
@@ -94,7 +81,6 @@ jobs:
         echo "Listing analysis reports after cleanup attempt:"
         find . -maxdepth 1 -name 'ssq_analysis_output_*.txt' | sort
         echo "--- End Debugging ---"
-
 
     - name: Configure Git
       run: |
@@ -107,20 +93,20 @@ jobs:
         echo "Files staged before commit:"
         git status --porcelain
         
-        # 添加 shuangseqiu.csv
+        # 关键修复：自动暂存所有已跟踪文件的删除和修改
+        git add -u
+        
+        # 添加可能需要的新生成文件
         git add shuangseqiu.csv
-        # 添加保留的分析报告和固定文件名副本
-        # 使用 find 来确保只添加当前目录下的文件
         find . -maxdepth 1 -name 'ssq_analysis_output_*.txt' -print0 | xargs -0 git add
         git add latest_ssq_analysis.txt
 
         echo "Files staged after add:"
         git status --porcelain
         
-        # 提交更改，包括删除的旧报告 (Git 会自动处理已删除文件的暂存)
+        # 提交所有变更（包括删除）
         git commit -m "Auto update: Data and Analysis results $(date +'%Y-%m-%d')" || echo "No changes to commit"
         echo "--- End Debugging Commit Step ---"
-
 
     - name: Push changes
       uses: ad-m/github-push-action@master
