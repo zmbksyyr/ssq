@@ -2,7 +2,8 @@ name: Shuangseqiu Data and Analysis - Merged and Consolidated Push (Sort by File
 
 on:
   schedule:
-    - cron: '0 1 * * *'
+    # UTC时间周日、周二、周四的 22:00，对应北京时间周一、周三、周五的 6:00
+    - cron: '0 22 * * 0,2,4'
   workflow_dispatch:
 
 jobs:
