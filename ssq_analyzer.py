@@ -21,7 +21,9 @@ try:
     from lightgbm import LGBMClassifier
 except ImportError:
     LGBMClassifier = None # Use None as a flag if import fails
-
+    print("错误: 缺少 LightGBM 库。请运行 'pip install lightgbm' 进行安装。")
+    exit(1) 
+    
 from sklearn.metrics import accuracy_score, mean_squared_error
 from typing import Union, Optional, List, Dict, Tuple, Any
 
