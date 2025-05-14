@@ -31,8 +31,11 @@ jobs:
     - name: Run data acquisition script
       run: python ssq_data_processor.py
 
+    # - name: Run analysis script
+    #   run: python ssq_analyzer.py
+
     - name: Run analysis script
-      run: python ssq_analyzer.py
+      run: python ssq_bonus_calculation.py
 
     - name: Create fixed filename copy
       run: |
