@@ -172,16 +172,16 @@ def calculate_prize(tickets, prize_red, prize_blue):
         matched_red = len(set(red) & prize_red_set)
         matched_blue = blue == prize_blue
         
-        if matched_red ==6:
-            level =1 if matched_blue else2
-        elif matched_red ==5:
-            level =3 if matched_blue else4
-        elif matched_red ==4:
-            level =4 if matched_blue else5
-        elif matched_red ==3 and matched_blue:
-            level =5
+        if matched_red == 6:
+            level = 1 if matched_blue else 2
+        elif matched_red == 5:
+            level = 3 if matched_blue else 4
+        elif matched_red == 4:
+            level = 4 if matched_blue else 5
+        elif matched_red == 3 and matched_blue:
+            level = 5
         elif matched_blue:
-            level =6
+            level = 6
         else:
             continue
         
