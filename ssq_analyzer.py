@@ -15,13 +15,16 @@ from sklearn.svm import SVC # Added SVC
 from sklearn.preprocessing import StandardScaler # Added StandardScaler
 from sklearn.pipeline import Pipeline # Added Pipeline
 
+# Import for multi-threading
+import concurrent.futures
+import time
 
 # Try importing LightGBM, provide fallback if not installed
 try:
     from lightgbm import LGBMClassifier
 except ImportError:
     LGBMClassifier = None # Use None as a flag if import fails
-    
+
 from sklearn.metrics import accuracy_score, mean_squared_error
 from typing import Union, Optional, List, Dict, Tuple, Any
 
@@ -874,22 +877,79 @@ def create_lagged_features(df: pd.DataFrame, lags: List[int]) -> Optional[pd.Dat
     return df_lagged[feature_cols]
 
 
+# Helper function for parallel training
+def train_single_model(model_type, ball_type, ball_number, X, y, params, SuppressOutput, logger, StandardScaler, Pipeline, LGBMClassifier, SVC):
+    """Helper function to train a single model for a specific ball."""
+    try:
+        # Ensure enough positive samples before training
+        positive_count = y.sum()
+        if len(y.unique()) < 2 or positive_count < MIN_POSITIVE_SAMPLES_FOR_ML:
+             logger.warning(f"{ball_type.capitalize()}球 {ball_number} 在训练数据中正样本({positive_count})不足或类别不平衡，无法训练可靠的分类器进行概率预测。跳过。")
+             return None, None # Return model, key (None if skipped)
+
+        model = None
+        model_key = None
+
+        with SuppressOutput(suppress_stdout=True, capture_stderr=True):
+             if model_type == 'lgbm' and LGBMClassifier is not None:
+                 model = LGBMClassifier(**params)
+                 model.fit(X, y)
+                 model_key = f'lgbm_{ball_number}'
+             elif model_type == 'logreg':
+                  # Logistic Regression always uses Pipeline with StandardScaler
+                  model = Pipeline([('scaler', StandardScaler()), ('logreg', LogisticRegression(**params))])
+                  model.fit(X, y)
+                  model_key = f'logreg_{ball_number}'
+             elif model_type == 'svc':
+                 # SVC also uses Pipeline with StandardScaler
+                 model = Pipeline([('scaler', StandardScaler()), ('svc', SVC(**params))])
+
+                 # SVC training can be slow, potentially suppress output
+                 model.fit(X, y)
+
+                 # Check if probability is enabled and model has predict_proba
+                 if hasattr(model, 'predict_proba'):
+                      svc_estimator = model.named_steps.get('svc')
+                      if svc_estimator is not None and hasattr(svc_estimator, 'probability') and svc_estimator.probability:
+                          model_key = f'svc_{ball_number}'
+                      else:
+                         # logger.warning(f"警告: {ball_type.capitalize()}球 {ball_number} 的 SVC 模型未启用概率预测。跳过存储。") # Too noisy
+                         model = None # Discard model if probability not enabled
+                 else:
+                      # logger.warning(f"警告: {ball_type.capitalize()}球 {ball_number} 的 SVC pipeline没有predict_proba方法。跳过存储。") # Too noisy
+                      model = None
+
+
+        if model is not None:
+             # logger.info(f"成功训练 {ball_type}球 {ball_number} 的 {model_type} 模型。") # Avoid excessive logging
+             pass
+
+        return model, model_key # Return the trained model and its key
+
+    except Exception as e:
+         logger.warning(f"警告: 训练 {ball_type}球 {ball_number} 的 {model_type} 模型失败: {e}")
+         return None, None # Return None if training fails
+
+
 def train_prediction_models(df_train_raw: pd.DataFrame, lags: List[int]) -> Optional[dict]:
     """训练ML模型以预测下一期单个号码出现的概率。"""
+
+    logger.info("开始训练ML模型预测单个号码概率...")
+    # 记录开始时间
+    start_time = time.time()
 
     # 从训练数据创建滞后特征。create_lagged_features 返回的DF只包含特征X
     X = create_lagged_features(df_train_raw.copy(), lags)
 
     if X is None or X.empty:
         logger.warning("无法创建滞后特征，ML模型无法训练。")
-        return None  # 如果无法训练则返回None
+        return None
 
     # 目标(y) 是当前期（与滞后特征对齐的期）的开奖号码。
     # create_lagged_features 丢弃了由滞后引入的开始的行。
     # 我们需要从 df_train_raw 中获取与 X 对齐的实际开奖数据
     # X 的索引对应于 df_train_raw.loc[X.index]
     target_df = df_train_raw.loc[X.index].copy()
-
 
     if target_df.empty:
          logger.warning("目标DataFrame为空，ML模型无法训练。")
@@ -913,133 +973,58 @@ def train_prediction_models(df_train_raw: pd.DataFrame, lags: List[int]) -> Opti
         'blue': {}
     }
 
-    logger.info("开始训练ML模型预测单个号码概率...")
+    # 使用 ThreadPoolExecutor 来并行训练模型
+    # max_workers=None 会使用默认的工作线程数，通常是 CPU 核心数的几倍（取决于 GIL 的释放程度）
+    # 或者您可以指定一个具体的数字，例如 os.cpu_count() * 2
+    # 如果使用 ProcessPoolExecutor, 可能会有更好的 CPU 密集型任务性能，但内存开销大
+    # from concurrent.futures import ProcessPoolExecutor
+    # with ProcessPoolExecutor(max_workers=os.cpu_count()) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=None) as executor:
+        # Future 对象的列表
+        future_to_ball = {}
 
-    # 红球模型
-    for ball in RED_BALL_RANGE:
-        # 创建目标变量 y_red: 1 如果红球出现在本期，0 否则
-        y_red = target_df[red_cols].apply(lambda row: ball in row.values, axis=1).astype(int)
+        # 提交红球模型的训练任务
+        for ball in RED_BALL_RANGE:
+            y_red = target_df[red_cols].apply(lambda row: ball in row.values, axis=1).astype(int)
+            # Pass necessary globals to the helper function
+            if LGBMClassifier is not None:
+                future = executor.submit(train_single_model, 'lgbm', '红', ball, X, y_red, LGBM_PARAMS, SuppressOutput, logger, StandardScaler, Pipeline, LGBMClassifier, SVC)
+                future_to_ball[future] = ('red', 'lgbm', ball)
+            future = executor.submit(train_single_model, 'logreg', '红', ball, X, y_red, LOGISTIC_REG_PARAMS, SuppressOutput, logger, StandardScaler, Pipeline, LGBMClassifier, SVC)
+            future_to_ball[future] = ('red', 'logreg', ball)
+            future = executor.submit(train_single_model, 'svc', '红', ball, X, y_red, SVC_PARAMS, SuppressOutput, logger, StandardScaler, Pipeline, LGBMClassifier, SVC)
+            future_to_ball[future] = ('red', 'svc', ball)
 
-        if y_red.empty or len(y_red) != len(X):
-            logger.warning(f"红球 {ball} 的目标变量Y ({len(y_red)}) 与特征X ({len(X)}) 长度不匹配或为空，跳过训练。")
-            continue
 
-        # 检查目标变量的类别分布，确保至少有两个类别且正样本足够多才能训练分类器
-        positive_count = y_red.sum()
-        if len(y_red.unique()) < 2 or positive_count < MIN_POSITIVE_SAMPLES_FOR_ML:
-             logger.warning(f"红球 {ball} 在训练数据中正样本({positive_count})不足或类别不平衡，无法训练可靠的分类器进行概率预测。跳过此球模型训练。")
-             continue
+        # 提交蓝球模型的训练任务
+        for ball in BLUE_BALL_RANGE:
+            y_blue = (target_df['blue'] == ball).astype(int)
+            # Pass necessary globals to the helper function
+            if LGBMClassifier is not None:
+                future = executor.submit(train_single_model, 'lgbm', '蓝', ball, X, y_blue, LGBM_PARAMS, SuppressOutput, logger, StandardScaler, Pipeline, LGBMClassifier, SVC)
+                future_to_ball[future] = ('blue', 'lgbm', ball)
+            future = executor.submit(train_single_model, 'logreg', '蓝', ball, X, y_blue, LOGISTIC_REG_PARAMS, SuppressOutput, logger, StandardScaler, Pipeline, LGBMClassifier, SVC)
+            future_to_ball[future] = ('blue', 'logreg', ball)
+            future = executor.submit(train_single_model, 'svc', '蓝', ball, X, y_blue, SVC_PARAMS, SuppressOutput, logger, StandardScaler, Pipeline, LGBMClassifier, SVC)
+            future_to_ball[future] = ('blue', 'svc', ball)
 
-        # Train LightGBM
-        if LGBMClassifier is not None:
+
+        # 收集结果
+        for future in concurrent.futures.as_completed(future_to_ball):
+            ball_type, model_type, ball_number = future_to_ball[future]
             try:
-                # Create a pipeline for LGBM (optional but good practice, though less sensitive to scaling)
-                # lgbm_pipeline = Pipeline([('scaler', StandardScaler()), ('lgbm', LGBMClassifier(**LGBM_PARAMS))])
-                # Silence potential LightGBM stdout/stderr during training
-                with SuppressOutput(suppress_stdout=True, capture_stderr=True):
-                     lgbm_model = LGBMClassifier(**LGBM_PARAMS)
-                     lgbm_model.fit(X, y_red) # Fit directly, scaling handled if needed before create_lagged_features
-                # 这里引用了未定义的svc_pipeline变量，应该改为lgbm_model
-                trained_models['red'][f'lgbm_{ball}'] = lgbm_model
-            except Exception as e:
-                logger.warning(f"警告: 训练红球 {ball} 的 LightGBM 模型失败: {e}")
-        # else:
-             # logger.info("LightGBM 未安装，跳过 LightGBM 模型训练。")
-             # Logged once globally is enough
+                model, model_key = future.result() # 获取 helper 函数的返回值
+                if model is not None and model_key is not None:
+                     if ball_type == 'red':
+                         trained_models['red'][model_key] = model
+                     elif ball_type == 'blue':
+                         trained_models['blue'][model_key] = model
+            except Exception as exc:
+                logger.warning(f'{ball_type}球 {ball_number} 的 {model_type} 模型训练生成异常: {exc}')
 
-
-        # Train Logistic Regression
-        try:
-            # Create a pipeline for Logistic Regression including scaling
-            logreg_pipeline = Pipeline([('scaler', StandardScaler()), ('logreg', LogisticRegression(**LOGISTIC_REG_PARAMS))])
-            with SuppressOutput(suppress_stdout=True, capture_stderr=True):
-                 logreg_pipeline.fit(X, y_red)
-            trained_models['red'][f'logreg_{ball}'] = logreg_pipeline # Store the pipeline
-        except Exception as e:
-             logger.warning(f"警告: 训练红球 {ball} 的 Logistic Regression 模型失败: {e}")
-
-        # Train SVC
-        try:
-            # Create a pipeline for SVC including scaling
-            svc_pipeline = Pipeline([('scaler', StandardScaler()), ('svc', SVC(**SVC_PARAMS))])
-            
-            # SVC training can be slow, potentially suppress output
-            with SuppressOutput(suppress_stdout=True, capture_stderr=True):
-                svc_pipeline.fit(X, y_red)
-            
-            # 首先确保SVC模型存在且有predict_proba方法
-            if hasattr(svc_pipeline, 'predict_proba'):
-                # 检查SVC模型是否启用了概率输出
-                svc_estimator = svc_pipeline.named_steps.get('svc')
-                if svc_estimator is not None and hasattr(svc_estimator, 'probability') and svc_estimator.probability:
-                    trained_models['red'][f'svc_{ball}'] = svc_pipeline  # Store the pipeline
-                else:
-                    logger.warning(f"警告: 红球 {ball} 的 SVC 模型未启用概率预测。")
-            else:
-                logger.warning(f"警告: 红球 {ball} 的 SVC pipeline没有predict_proba方法。")
-                
-        except Exception as e:
-            logger.warning(f"警告: 训练红球 {ball} 的 SVC 模型失败: {e}")
-
-
-    # 蓝球模型
-    for ball in BLUE_BALL_RANGE:
-        # Create target variable y_blue: 1 if blue ball is the one for this period, 0 otherwise
-        y_blue = (target_df['blue'] == ball).astype(int)
-
-        if y_blue.empty or len(y_blue) != len(X):
-            logger.warning(f"蓝球 {ball} 的目标变量Y ({len(y_blue)}) 与特征X ({len(X)}) 长度不匹配或为空，跳过训练。")
-            continue
-
-        # Check target variable balance
-        positive_count = y_blue.sum()
-        if len(y_blue.unique()) < 2 or positive_count < MIN_POSITIVE_SAMPLES_FOR_ML:
-             logger.warning(f"蓝球 {ball} 在训练数据中正样本({positive_count})不足或类别不平衡，无法训练可靠的分类器进行概率预测。跳过此球模型训练。")
-             continue
-
-
-         # 训练 LightGBM
-        if LGBMClassifier is not None:
-            try:
-                 with SuppressOutput(suppress_stdout=True, capture_stderr=True):
-                     lgbm_model = LGBMClassifier(**LGBM_PARAMS)
-                     lgbm_model.fit(X, y_blue) # Fit directly
-                 trained_models['blue'][f'lgbm_{ball}'] = lgbm_model
-            except Exception as e:
-                 logger.warning(f"警告: 训练蓝球 {ball} 的 LightGBM 模型失败: {e}")
-
-        # 训练 Logistic Regression
-        try:
-             logreg_pipeline = Pipeline([('scaler', StandardScaler()), ('logreg', LogisticRegression(**LOGISTIC_REG_PARAMS))])
-             with SuppressOutput(suppress_stdout=True, capture_stderr=True):
-                 logreg_pipeline.fit(X, y_blue)
-             trained_models['blue'][f'logreg_{ball}'] = logreg_pipeline # Store the pipeline
-        except Exception as e:
-             logger.warning(f"警告: 训练蓝球 {ball} 的 Logistic Regression 模型失败: {e}")
-
-        # Train SVC
-        try:
-            # Create a pipeline for SVC including scaling
-            svc_pipeline = Pipeline([('scaler', StandardScaler()), ('svc', SVC(**SVC_PARAMS))])
-            
-            # Suppress output during training
-            with SuppressOutput(suppress_stdout=True, capture_stderr=True):
-                svc_pipeline.fit(X, y_blue)
-            
-            # 首先确保SVC模型存在且有predict_proba方法
-            if hasattr(svc_pipeline, 'predict_proba'):
-                # 检查SVC模型是否启用了概率输出
-                svc_estimator = svc_pipeline.named_steps.get('svc')
-                if svc_estimator is not None and hasattr(svc_estimator, 'probability') and svc_estimator.probability:
-                    trained_models['blue'][f'svc_{ball}'] = svc_pipeline  # Store the pipeline
-                else:
-                    logger.warning(f"警告: 蓝球 {ball} 的 SVC 模型未启用概率预测。")
-            else:
-                logger.warning(f"警告: 蓝球 {ball} 的 SVC pipeline没有predict_proba方法。")
-                
-        except Exception as e:
-            logger.warning(f"警告: 训练蓝球 {ball} 的 SVC 模型失败: {e}")
-
+    # 记录结束时间
+    end_time = time.time()
+    elapsed_time = end_time - start_time
 
     if not trained_models['red'] and not trained_models['blue']:
         logger.warning("没有模型成功训练。")
@@ -1047,7 +1032,7 @@ def train_prediction_models(df_train_raw: pd.DataFrame, lags: List[int]) -> Opti
 
     trained_models['feature_cols'] = X.columns.tolist() # Store feature columns from X
 
-    logger.info(f"ML模型训练完成。成功训练红球模型 {len(trained_models['red'])} 个，蓝球模型 {len(trained_models['blue'])} 个。")
+    logger.info(f"ML模型训练完成。成功训练红球模型 {len(trained_models['red'])} 个，蓝球模型 {len(trained_models['blue'])} 个。耗时: {elapsed_time:.2f} 秒。")
 
     return trained_models
 
@@ -1131,7 +1116,7 @@ def predict_next_draw_probabilities(df_historical: pd.DataFrame, trained_models:
                  logger.warning(f"Warning: SVC prediction for red ball {ball} failed: {e}") # Log SVC prediction failures
 
 
-        # Combine predictions (e.g., average)
+        # Combine predictions (e.e., average)
         if predictions:
             predicted_probabilities['red'][ball] = np.mean(predictions)
         # If no models were available or succeeded, probability defaults to 0.0 (already initialized)
@@ -1328,31 +1313,42 @@ def generate_combinations(scores_data: dict, pattern_analysis_data: dict, num_co
 
     # Ensure probabilities sum to exactly 1 (handle floating point inaccuracies)
     if len(red_probabilities) > 0: # Avoid index error on empty array
+        # Sum the rest and subtract from 1 to make the last element adjust for floating point errors
         red_probabilities[-1] = 1.0 - np.sum(red_probabilities[:-1])
+        # Ensure it's not negative due to floating point issues if the sum was slightly > 1 before correction
+        red_probabilities[-1] = max(0, red_probabilities[-1])
+        # Re-normalize one last time if the correction made one value negative or zero
+        if np.sum(red_probabilities) < 1 - 1e-9 or np.sum(red_probabilities) > 1 + 1e-9:
+             red_probabilities = np.ones(len(red_candidate_pool)) / len(red_candidate_pool) if len(red_candidate_pool) > 0 else np.array([]) # Fallback to uniform
+
     if len(blue_probabilities) > 0: # Avoid index error on empty array
+        # Sum the rest and subtract from 1
         blue_probabilities[-1] = 1.0 - np.sum(blue_probabilities[:-1])
+         # Ensure it's not negative
+        blue_probabilities[-1] = max(0, blue_probabilities[-1])
+         # Re-normalize one last time
+        if np.sum(blue_probabilities) < 1 - 1e-9 or np.sum(blue_probabilities) > 1 + 1e-9:
+             blue_probabilities = np.ones(len(blue_candidate_pool)) / len(blue_candidate_pool) if len(blue_candidate_pool) > 0 else np.array([]) # Fallback to uniform
+
 
     # Check if probabilities are valid after adjustment (can happen with very few candidates or zero weights)
     if np.any(red_probabilities < 0) or not np.isclose(np.sum(red_probabilities), 1.0) or np.isnan(red_probabilities).any():
-         logger.warning(f"Adjusted red probabilities are invalid. Using uniform probability. Sum: {np.sum(red_probabilities):.4f}, Negatives: {np.any(red_probabilities < 0)}.")
+         logger.warning(f"Adjusted red probabilities are invalid ({np.sum(red_probabilities):.4f}). Using uniform probability for red balls.")
          red_probabilities = np.ones(len(red_candidate_pool)) / len(red_candidate_pool) if len(red_candidate_pool) > 0 else np.array([]) # Fallback to uniform
     if np.any(blue_probabilities < 0) or not np.isclose(np.sum(blue_probabilities), 1.0) or np.isnan(blue_probabilities).any():
-         logger.warning(f"Adjusted blue probabilities are invalid. Using uniform probability. Sum: {np.sum(blue_probabilities):.4f}, Negatives: {np.any(blue_probabilities < 0)}.")
+         logger.warning(f"Adjusted blue probabilities are invalid ({np.sum(blue_probabilities):.4f}). Using uniform probability for blue balls.")
          blue_probabilities = np.ones(len(blue_candidate_pool)) / len(blue_candidate_pool) if len(blue_candidate_pool) > 0 else np.array([]) # Fallback to uniform
+
+
+    # Ensure pools are not empty before sampling
+    if not red_candidate_pool or len(red_candidate_pool) < 6 or not blue_candidate_pool or len(blue_candidate_pool) < 1:
+         logger.warning("Red or blue candidate pool is too small to generate combinations.")
+         return [], []
 
 
     while len(generated_pool) < large_pool_size and attempts < max_attempts_pool:
          attempts += 1
          try:
-              # Check if candidate pools are large enough for sampling before attempting
-              if len(red_candidate_pool) < 6:
-                   logger.warning(f"Red candidate pool size {len(red_candidate_pool)} < 6. Cannot sample 6 distinct balls.")
-                   break # Cannot generate combinations
-              if len(blue_candidate_pool) < 1:
-                   logger.warning(f"Blue candidate pool size {len(blue_candidate_pool)} < 1. Cannot sample 1 ball.")
-                   break # Cannot generate combinations
-
-
               # Use calculated probabilities from candidate pool
               # Check probability validity before sampling
               if np.any(red_probabilities < 0) or not np.isclose(np.sum(red_probabilities), 1.0) or np.isnan(red_probabilities).any():
@@ -1360,20 +1356,35 @@ def generate_combinations(scores_data: dict, pattern_analysis_data: dict, num_co
                    sampled_red_balls = sorted(random.sample(red_candidate_pool, 6))
                    # logger.warning(f"Invalid red probabilities detected during sampling attempt {attempts}. Using random.sample.") # Too noisy
               else:
-                  sampled_red_balls = sorted(np.random.choice(
-                      red_candidate_pool, size=6, replace=False, p=red_probabilities
-                  ).tolist())
+                  # Use try-except around np.random.choice as it can still raise errors with edge cases
+                  try:
+                       sampled_red_balls = sorted(np.random.choice(
+                           red_candidate_pool, size=6, replace=False, p=red_probabilities
+                       ).tolist())
+                  except ValueError as e_np:
+                       logger.warning(f"np.random.choice for red balls failed on attempt {attempts} with probabilities issue: {e_np}. Probabilities sum: {np.sum(red_probabilities):.4f}. Falling back to random.sample.")
+                       sampled_red_balls = sorted(random.sample(red_candidate_pool, 6))
+
 
               if np.any(blue_probabilities < 0) or not np.isclose(np.sum(blue_probabilities), 1.0) or np.isnan(blue_probabilities).any():
                    # Fallback to simple random if probabilities are bad
                    sampled_blue_ball = random.choice(blue_candidate_pool)
                    # logger.warning(f"Invalid blue probabilities detected during sampling attempt {attempts}. Using random.choice.") # Too noisy
               else:
-                  sampled_blue_ball = np.random.choice(
-                       blue_candidate_pool, size=1, replace=False, p=blue_probabilities
-                  ).tolist()[0]
+                   try:
+                       sampled_blue_ball = np.random.choice(
+                            blue_candidate_pool, size=1, replace=False, p=blue_probabilities
+                       ).tolist()[0]
+                   except ValueError as e_np:
+                        logger.warning(f"np.random.choice for blue ball failed on attempt {attempts} with probabilities issue: {e_np}. Probabilities sum: {np.sum(blue_probabilities):.4f}. Falling back to random.choice.")
+                        sampled_blue_ball = random.choice(blue_candidate_pool)
 
-              generated_pool.append({'red': sampled_red_balls, 'blue': sampled_blue_ball})
+
+              # Ensure no duplicates in generated pool (simple check for small pools)
+              current_combo = {'red': sampled_red_balls, 'blue': sampled_blue_ball}
+              if current_combo not in generated_pool:
+                   generated_pool.append(current_combo)
+
 
          except ValueError as e:
              # This might happen if probabilities are zero for all options in the pool or other sampling issues
@@ -1391,7 +1402,10 @@ def generate_combinations(scores_data: dict, pattern_analysis_data: dict, num_co
                   else:
                        sampled_blue_ball = random.choice(list(BLUE_BALL_RANGE))
 
-                  generated_pool.append({'red': sampled_red_balls, 'blue': sampled_blue_ball})
+                  current_combo = {'red': sampled_red_balls, 'blue': sampled_blue_ball}
+                  if current_combo not in generated_pool:
+                       generated_pool.append(current_combo)
+
              except ValueError as e_fallback:
                  logger.error(f"Fallback random sampling failed on attempt {attempts}: {e_fallback}. Stopping combination generation attempts.")
                  break # If even fallback fails, give up
@@ -1527,6 +1541,7 @@ def analyze_and_recommend(
     if len(df_historical) >= min_periods_for_ml:
          if train_ml:
              # Train ML models on the provided historical data
+             # The train_prediction_models function now handles parallel training internally
              current_trained_models = train_prediction_models(df_historical, lags)
              # Check if any models were successfully trained
              if current_trained_models and (current_trained_models.get('red', {}) or current_trained_models.get('blue', {})):
@@ -1635,7 +1650,7 @@ def backtest(df: pd.DataFrame, lags: List[int], num_combinations_per_period: int
 
     # Display initial progress bar - only to console, not report file
     total_steps = end_prediction_index - backtest_evaluation_start_index + 1
-    
+
     # Save the current stdout before redirecting
     original_stdout = sys.stdout
 
@@ -1661,6 +1676,7 @@ def backtest(df: pd.DataFrame, lags: List[int], num_combinations_per_period: int
         actual_row_index = i
         # Ensure the actual row exists in the dataframe
         if actual_row_index not in df.index:
+             actual_period = df.loc[i, '期号'] if i < len(df) and '期号' in df.columns else 'N/A' # Try to get period number for logging
              logger.error(f"DataFrame中找不到期索引{actual_row_index}(期号: {actual_period})的实际结果。跳过此期预测。")
              continue
 
@@ -1928,6 +1944,12 @@ if __name__ == "__main__":
                 # A robust check would be to see if feature columns exist, but for simplicity,
                 # assume it's ready or needs reprocessing if the original wasn't used.
                 # If you change feature engineering, you might need to force reprocessing.
+                # Add a basic check for some expected feature columns
+                expected_features_check = ['red_sum', 'red_odd_count', 'blue_is_odd']
+                if not all(col in df.columns for col in expected_features_check):
+                     logger.warning("处理好的数据文件似乎缺少特征列，重新运行特征工程。")
+                     processed_data_exists = False # Force reprocessing
+
             else:
                 logger.warning("处理好的数据文件加载失败或为空。尝试加载原始数据文件并重新处理。")
                 processed_data_exists = False
