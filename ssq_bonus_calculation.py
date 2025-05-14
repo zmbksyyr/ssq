@@ -8,7 +8,7 @@ from datetime import datetime
 # 配置参数
 REPORT_PATTERN = "ssq_analysis_output_*.txt"
 CSV_FILE = "shuangseqiu.csv"
-MAIN_REPORT_FILE = "ssq_master_report.txt"
+MAIN_REPORT_FILE = "latest_ssq_calculation.txt"
 MAX_NORMAL_RECORDS = 10 # 主报告保留的普通记录数量
 MAX_ERROR_LOGS = 20    # 主报告保留的错误日志数量
 
