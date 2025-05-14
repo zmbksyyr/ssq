@@ -1,4 +1,4 @@
-name: Shuangseqiu Data and Analysis - Merged and Consolidated Push (Sort by Filename Timestamp with Debug)
+name: Shuangseqiu Data and Analysis
 
 on:
   schedule:
@@ -104,7 +104,7 @@ jobs:
         git add shuangseqiu.csv
         find . -maxdepth 1 -name 'ssq_analysis_output_*.txt' -print0 | xargs -0 git add
         git add latest_ssq_analysis.txt
-        git add ssq_master_report.txt
+        git add latest_ssq_calculation.txt
 
         echo "Files staged after add:"
         git status --porcelain
