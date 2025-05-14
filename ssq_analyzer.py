@@ -15,9 +15,10 @@ from sklearn.svm import SVC # Added SVC
 from sklearn.preprocessing import StandardScaler # Added StandardScaler
 from sklearn.pipeline import Pipeline # Added Pipeline
 
-# Import for multi-threading
+# Import for multi-processing
 import concurrent.futures
 import time
+import os # Need os.cpu_count() for ProcessPoolExecutor
 
 # Try importing LightGBM, provide fallback if not installed
 try:
@@ -30,7 +31,6 @@ from typing import Union, Optional, List, Dict, Tuple, Any
 
 import sys
 import datetime
-import os
 import io
 import logging
 from contextlib import redirect_stdout, redirect_stderr
@@ -95,7 +95,7 @@ LGBM_PARAMS = {
     'lambda_l2': 0.1, # L2 regularization - increase
     'num_leaves': 16, # Maximum number of leaves in one tree (controls tree complexity) - decrease
     'verbose': -1, # Suppress verbose output
-    'n_jobs': -1, # Use all available cores
+    'n_jobs': 1, # Set to 1 as multiprocessing handles parallelism
     'seed': 42,
     'boosting_type': 'gbdt',
     # 'max_depth': -1, # No limit by default in LGBM, num_leaves is main control
@@ -108,7 +108,7 @@ LOGISTIC_REG_PARAMS = {
     'solver': 'saga', # Good for small datasets, supports L1/L2
     'random_state': 42,
     'max_iter': 1000 # Increased max iterations for convergence
-    # Removed 'n_jobs' as it has no effect with 'liblinear'
+    # 'n_jobs': -1 # Removing n_jobs for LogReg when using multiprocessing
 }
 
 # Parameters for SVC (adjust as needed, probability=True enables predict_proba but is expensive)
@@ -158,9 +158,10 @@ def show_progress(current, total, prefix='', suffix='', decimals=1, length=50, f
     percent = ("{0:." + str(decimals) + "f}").format(100 * (current / float(total)))
     filled_length = int(length * current // total)
     bar = fill * filled_length + '-' * (length - filled_length)
-    print(f'\r{prefix} |{bar}| {percent}% {suffix}', end='', file=sys.stdout, flush=True)  # 确保输出到stdout并刷新
+    # Ensure progress is written to the actual console stdout, not the redirected one
+    print(f'\r{prefix} |{bar}| {percent}% {suffix}', end='', file=sys.__stdout__, flush=True)
     if current >= total:
-        print(file=sys.stdout, flush=True)
+        print(file=sys.__stdout__, flush=True)
 
 
 # 创建上下文管理器来暂时重定向输出，并捕获stderr
@@ -168,6 +169,7 @@ class SuppressOutput:
     """
     上下文管理器：暂时抑制标准输出，捕获标准错误输出到StringIO对象。
     退出时可以将捕获的stderr写入日志。
+    Note: May not work as expected with multiprocessing where subprocesses have their own std streams.
     """
     def __init__(self, suppress_stdout=True, capture_stderr=True):
         self.suppress_stdout = suppress_stdout
@@ -877,64 +879,70 @@ def create_lagged_features(df: pd.DataFrame, lags: List[int]) -> Optional[pd.Dat
     return df_lagged[feature_cols]
 
 
-# Helper function for parallel training
-def train_single_model(model_type, ball_type, ball_number, X, y, params, SuppressOutput, logger, StandardScaler, Pipeline, LGBMClassifier, SVC):
+# Helper function for parallel training (TOP-LEVEL FUNCTION FOR MULTIPROCESSING)
+# Removed logger and SuppressOutput as they are not easily pickleable or managed across processes
+def train_single_model(model_type, ball_type, ball_number, X, y, params, MIN_POSITIVE_SAMPLES_FOR_ML, LGBMClassifier_ref, SVC_ref, StandardScaler_ref, Pipeline_ref):
     """Helper function to train a single model for a specific ball."""
     try:
         # Ensure enough positive samples before training
         positive_count = y.sum()
         if len(y.unique()) < 2 or positive_count < MIN_POSITIVE_SAMPLES_FOR_ML:
-             logger.warning(f"{ball_type.capitalize()}球 {ball_number} 在训练数据中正样本({positive_count})不足或类别不平衡，无法训练可靠的分类器进行概率预测。跳过。")
+             # In multiprocessing, logging directly from helper might be complex.
+             # Instead, we can return an indicator or let the main process handle logging based on return value/exception.
+             # print(f"Warning: {ball_type.capitalize()}球 {ball_number} 在训练数据中正样本({positive_count})不足或类别不平衡，跳过。") # Direct print for debugging
              return None, None # Return model, key (None if skipped)
 
         model = None
         model_key = None
 
-        with SuppressOutput(suppress_stdout=True, capture_stderr=True):
-             if model_type == 'lgbm' and LGBMClassifier is not None:
-                 model = LGBMClassifier(**params)
-                 model.fit(X, y)
-                 model_key = f'lgbm_{ball_number}'
-             elif model_type == 'logreg':
-                  # Logistic Regression always uses Pipeline with StandardScaler
-                  model = Pipeline([('scaler', StandardScaler()), ('logreg', LogisticRegression(**params))])
-                  model.fit(X, y)
-                  model_key = f'logreg_{ball_number}'
-             elif model_type == 'svc':
-                 # SVC also uses Pipeline with StandardScaler
-                 model = Pipeline([('scaler', StandardScaler()), ('svc', SVC(**params))])
+        # No SuppressOutput in multiprocessing helper easily
 
-                 # SVC training can be slow, potentially suppress output
-                 model.fit(X, y)
+        if model_type == 'lgbm' and LGBMClassifier_ref is not None:
+            model = LGBMClassifier_ref(**params)
+            model.fit(X, y)
+            model_key = f'lgbm_{ball_number}'
+        elif model_type == 'logreg':
+             # Logistic Regression always uses Pipeline with StandardScaler
+             model = Pipeline_ref([('scaler', StandardScaler_ref()), ('logreg', LogisticRegression(**params))])
+             model.fit(X, y)
+             model_key = f'logreg_{ball_number}'
+        elif model_type == 'svc':
+            # SVC also uses Pipeline with StandardScaler
+            model = Pipeline_ref([('scaler', StandardScaler_ref()), ('svc', SVC_ref(**params))])
 
-                 # Check if probability is enabled and model has predict_proba
-                 if hasattr(model, 'predict_proba'):
-                      svc_estimator = model.named_steps.get('svc')
-                      if svc_estimator is not None and hasattr(svc_estimator, 'probability') and svc_estimator.probability:
-                          model_key = f'svc_{ball_number}'
-                      else:
-                         # logger.warning(f"警告: {ball_type.capitalize()}球 {ball_number} 的 SVC 模型未启用概率预测。跳过存储。") # Too noisy
-                         model = None # Discard model if probability not enabled
+            # SVC training can be slow, output is not suppressed here in subprocess
+            model.fit(X, y)
+
+            # Check if probability is enabled and model has predict_proba
+            if hasattr(model, 'predict_proba'):
+                 svc_estimator = model.named_steps.get('svc')
+                 if svc_estimator is not None and hasattr(svc_estimator, 'probability') and svc_estimator.probability:
+                     model_key = f'svc_{ball_number}'
                  else:
-                      # logger.warning(f"警告: {ball_type.capitalize()}球 {ball_number} 的 SVC pipeline没有predict_proba方法。跳过存储。") # Too noisy
-                      model = None
+                     # print(f"Warning: {ball_type.capitalize()}球 {ball_number} 的 SVC 模型未启用概率预测。跳过存储。") # Direct print for debugging
+                     model = None # Discard model if probability not enabled
+            else:
+                 # print(f"Warning: {ball_type.capitalize()}球 {ball_number} 的 SVC pipeline没有predict_proba方法。跳过存储。") # Direct print for debugging
+                 model = None
 
 
         if model is not None:
-             # logger.info(f"成功训练 {ball_type}球 {ball_number} 的 {model_type} 模型。") # Avoid excessive logging
-             pass
+             # print(f"Successfully trained {ball_type} ball {ball_number} {model_type} model.") # Direct print for debugging
+             pass # Avoid excessive printing from processes
 
         return model, model_key # Return the trained model and its key
 
     except Exception as e:
-         logger.warning(f"警告: 训练 {ball_type}球 {ball_number} 的 {model_type} 模型失败: {e}")
-         return None, None # Return None if training fails
+         # print(f"Warning: Training {ball_type} ball {ball_number} {model_type} model failed: {e}") # Direct print for debugging
+         # Raise the exception or return specific error info for the main process to handle
+         raise RuntimeError(f"Training {ball_type} ball {ball_number} {model_type} failed") from e # Re-raise with context
+         # return None, None # Alternative: return None on error
 
 
 def train_prediction_models(df_train_raw: pd.DataFrame, lags: List[int]) -> Optional[dict]:
     """训练ML模型以预测下一期单个号码出现的概率。"""
 
-    logger.info("开始训练ML模型预测单个号码概率...")
+    logger.info("开始训练ML模型预测单个号码概率 (多进程)...")
     # 记录开始时间
     start_time = time.time()
 
@@ -973,54 +981,60 @@ def train_prediction_models(df_train_raw: pd.DataFrame, lags: List[int]) -> Opti
         'blue': {}
     }
 
-    # 使用 ThreadPoolExecutor 来并行训练模型
-    # max_workers=None 会使用默认的工作线程数，通常是 CPU 核心数的几倍（取决于 GIL 的释放程度）
-    # 或者您可以指定一个具体的数字，例如 os.cpu_count() * 2
-    # 如果使用 ProcessPoolExecutor, 可能会有更好的 CPU 密集型任务性能，但内存开销大
-    # from concurrent.futures import ProcessPoolExecutor
-    # with ProcessPoolExecutor(max_workers=os.cpu_count()) as executor:
-    with concurrent.futures.ThreadPoolExecutor(max_workers=None) as executor:
+    # 使用 ProcessPoolExecutor 来并行训练模型
+    # max_workers=None defaults to os.cpu_count()
+    # You can specify a number, e.g., os.cpu_count() or a fixed number
+    with concurrent.futures.ProcessPoolExecutor(max_workers=os.cpu_count()) as executor:
         # Future 对象的列表
         future_to_ball = {}
 
-        # 提交红球模型的训练任务
+        # Submit red ball training tasks
         for ball in RED_BALL_RANGE:
             y_red = target_df[red_cols].apply(lambda row: ball in row.values, axis=1).astype(int)
-            # Pass necessary globals to the helper function
+            # Pass necessary classes and parameters to the helper function
             if LGBMClassifier is not None:
-                future = executor.submit(train_single_model, 'lgbm', '红', ball, X, y_red, LGBM_PARAMS, SuppressOutput, logger, StandardScaler, Pipeline, LGBMClassifier, SVC)
+                future = executor.submit(train_single_model, 'lgbm', '红', ball, X, y_red, LGBM_PARAMS, MIN_POSITIVE_SAMPLES_FOR_ML, LGBMClassifier, SVC, StandardScaler, Pipeline)
                 future_to_ball[future] = ('red', 'lgbm', ball)
-            future = executor.submit(train_single_model, 'logreg', '红', ball, X, y_red, LOGISTIC_REG_PARAMS, SuppressOutput, logger, StandardScaler, Pipeline, LGBMClassifier, SVC)
+
+            future = executor.submit(train_single_model, 'logreg', '红', ball, X, y_red, LOGISTIC_REG_PARAMS, MIN_POSITIVE_SAMPLES_FOR_ML, LGBMClassifier, SVC, StandardScaler, Pipeline)
             future_to_ball[future] = ('red', 'logreg', ball)
-            future = executor.submit(train_single_model, 'svc', '红', ball, X, y_red, SVC_PARAMS, SuppressOutput, logger, StandardScaler, Pipeline, LGBMClassifier, SVC)
+
+            future = executor.submit(train_single_model, 'svc', '红', ball, X, y_red, SVC_PARAMS, MIN_POSITIVE_SAMPLES_FOR_ML, LGBMClassifier, SVC, StandardScaler, Pipeline)
             future_to_ball[future] = ('red', 'svc', ball)
 
 
-        # 提交蓝球模型的训练任务
+        # Submit blue ball training tasks
         for ball in BLUE_BALL_RANGE:
             y_blue = (target_df['blue'] == ball).astype(int)
-            # Pass necessary globals to the helper function
+            # Pass necessary classes and parameters to the helper function
             if LGBMClassifier is not None:
-                future = executor.submit(train_single_model, 'lgbm', '蓝', ball, X, y_blue, LGBM_PARAMS, SuppressOutput, logger, StandardScaler, Pipeline, LGBMClassifier, SVC)
+                future = executor.submit(train_single_model, 'lgbm', '蓝', ball, X, y_blue, LGBM_PARAMS, MIN_POSITIVE_SAMPLES_FOR_ML, LGBMClassifier, SVC, StandardScaler, Pipeline)
                 future_to_ball[future] = ('blue', 'lgbm', ball)
-            future = executor.submit(train_single_model, 'logreg', '蓝', ball, X, y_blue, LOGISTIC_REG_PARAMS, SuppressOutput, logger, StandardScaler, Pipeline, LGBMClassifier, SVC)
+
+            future = executor.submit(train_single_model, 'logreg', '蓝', ball, X, y_blue, LOGISTIC_REG_PARAMS, MIN_POSITIVE_SAMPLES_FOR_ML, LGBMClassifier, SVC, StandardScaler, Pipeline)
             future_to_ball[future] = ('blue', 'logreg', ball)
-            future = executor.submit(train_single_model, 'svc', '蓝', ball, X, y_blue, SVC_PARAMS, SuppressOutput, logger, StandardScaler, Pipeline, LGBMClassifier, SVC)
+
+            future = executor.submit(train_single_model, 'svc', '蓝', ball, X, y_blue, SVC_PARAMS, MIN_POSITIVE_SAMPLES_FOR_ML, LGBMClassifier, SVC, StandardScaler, Pipeline)
             future_to_ball[future] = ('blue', 'svc', ball)
 
 
-        # 收集结果
+        # Collect results
         for future in concurrent.futures.as_completed(future_to_ball):
             ball_type, model_type, ball_number = future_to_ball[future]
             try:
-                model, model_key = future.result() # 获取 helper 函数的返回值
+                model, model_key = future.result() # Get the return value from the helper function
                 if model is not None and model_key is not None:
                      if ball_type == 'red':
                          trained_models['red'][model_key] = model
                      elif ball_type == 'blue':
                          trained_models['blue'][model_key] = model
+                elif model is None and model_key is None:
+                     # This indicates the task was skipped gracefully (e.g., insufficient positive samples)
+                     logger.warning(f'{ball_type}球 {ball_number} 的 {model_type} 模型训练被跳过 (样本不足或其他)。')
             except Exception as exc:
-                logger.warning(f'{ball_type}球 {ball_number} 的 {model_type} 模型训练生成异常: {exc}')
+                # Exceptions raised in the helper function will be caught here
+                logger.warning(f'处理 {ball_type}球 {ball_number} 的 {model_type} 模型训练结果时发生异常: {exc}')
+
 
     # 记录结束时间
     end_time = time.time()
@@ -1032,7 +1046,7 @@ def train_prediction_models(df_train_raw: pd.DataFrame, lags: List[int]) -> Opti
 
     trained_models['feature_cols'] = X.columns.tolist() # Store feature columns from X
 
-    logger.info(f"ML模型训练完成。成功训练红球模型 {len(trained_models['red'])} 个，蓝球模型 {len(trained_models['blue'])} 个。耗时: {elapsed_time:.2f} 秒。")
+    logger.info(f"ML模型训练完成 (多进程)。成功训练红球模型 {len(trained_models['red'])} 个，蓝球模型 {len(trained_models['blue'])} 个。耗时: {elapsed_time:.2f} 秒。")
 
     return trained_models
 
@@ -1239,7 +1253,7 @@ def calculate_scores(freq_omission_data: dict, pattern_analysis_data: dict, pred
         # Combine factors
         blue_scores[num] = freq_score + omission_score + ml_prob_score
 
-    # Normalize scores to a fixed range (e.g., 0-100)
+    # Normalize scores to a fixed range (e.e., 0-100)
     # Ensure there's at least one score to avoid division by zero
     all_scores = list(red_scores.values()) + list(blue_scores.values())
     if all_scores:
@@ -1329,15 +1343,6 @@ def generate_combinations(scores_data: dict, pattern_analysis_data: dict, num_co
          # Re-normalize one last time
         if np.sum(blue_probabilities) < 1 - 1e-9 or np.sum(blue_probabilities) > 1 + 1e-9:
              blue_probabilities = np.ones(len(blue_candidate_pool)) / len(blue_candidate_pool) if len(blue_candidate_pool) > 0 else np.array([]) # Fallback to uniform
-
-
-    # Check if probabilities are valid after adjustment (can happen with very few candidates or zero weights)
-    if np.any(red_probabilities < 0) or not np.isclose(np.sum(red_probabilities), 1.0) or np.isnan(red_probabilities).any():
-         logger.warning(f"Adjusted red probabilities are invalid ({np.sum(red_probabilities):.4f}). Using uniform probability for red balls.")
-         red_probabilities = np.ones(len(red_candidate_pool)) / len(red_candidate_pool) if len(red_candidate_pool) > 0 else np.array([]) # Fallback to uniform
-    if np.any(blue_probabilities < 0) or not np.isclose(np.sum(blue_probabilities), 1.0) or np.isnan(blue_probabilities).any():
-         logger.warning(f"Adjusted blue probabilities are invalid ({np.sum(blue_probabilities):.4f}). Using uniform probability for blue balls.")
-         blue_probabilities = np.ones(len(blue_candidate_pool)) / len(blue_candidate_pool) if len(blue_candidate_pool) > 0 else np.array([]) # Fallback to uniform
 
 
     # Ensure pools are not empty before sampling
@@ -1902,6 +1907,12 @@ def plot_analysis_results(freq_omission_data: dict, pattern_analysis_data: dict)
 # --- 主执行流程 ---
 
 if __name__ == "__main__":
+    # Need to add the check for multiprocessing on Windows in the main block
+    # This is because spawning processes on Windows needs the main part of the script
+    # to be protected by if __name__ == "__main__":
+    # This is already the case, but it's important to note why.
+    # No specific code change needed here, just awareness.
+
     # --- 配置输出文件 ---
     now = datetime.datetime.now()
     timestamp = now.strftime("%Y%m%d_%H%M%S")
