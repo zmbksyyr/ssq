@@ -32,10 +32,10 @@ jobs:
       run: python ssq_data_processor.py
 
     - name: Run analysis script
-      run: python ssq_analyzer.py
-
-    - name: Run analysis script
       run: python ssq_bonus_calculation.py
+      
+    - name: Run analysis script
+      run: python ssq_analyzer.py
 
     - name: Create fixed filename copy
       run: |
