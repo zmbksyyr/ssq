@@ -105,6 +105,7 @@ jobs:
         find . -maxdepth 1 -name 'ssq_analysis_output_*.txt' -print0 | xargs -0 git add
         git add latest_ssq_analysis.txt
         git add latest_ssq_calculation.txt
+        git add weights_config.json
 
         echo "Files staged after add:"
         git status --porcelain
