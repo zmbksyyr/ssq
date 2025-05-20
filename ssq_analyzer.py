@@ -1,34 +1,22 @@
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
-import seaborn as sns
-from collections import Counter
+from collections import Counter, OrderedDict # OrderedDict for prize sorting
 import itertools
 import random
 from mlxtend.preprocessing import TransactionEncoder
 from mlxtend.frequent_patterns import apriori, association_rules
-from sklearn.model_selection import train_test_split
-# Removed RandomForestClassifier as we are adding others for probability prediction
-# from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
-from sklearn.svm import SVC # Added SVC
-from sklearn.preprocessing import StandardScaler # Added StandardScaler
-from sklearn.pipeline import Pipeline # Added Pipeline
-
-# Import for multi-processing
+from sklearn.svm import SVC
+from sklearn.preprocessing import StandardScaler
+from sklearn.pipeline import Pipeline
 import concurrent.futures
 import time
-import os # Need os.cpu_count() for ProcessPoolExecutor
-
-# Try importing LightGBM, provide fallback if not installed
-try:
-    from lightgbm import LGBMClassifier
-except ImportError:
-    LGBMClassifier = None # Use None as a flag if import fails
-
-from sklearn.metrics import accuracy_score, mean_squared_error
+import os
+import json
+from lightgbm import LGBMClassifier
+import xgboost as xgb
+import optuna
 from typing import Union, Optional, List, Dict, Tuple, Any
-
 import sys
 import datetime
 import io
@@ -36,2211 +24,1371 @@ import logging
 from contextlib import redirect_stdout, redirect_stderr
 
 # --- 配置 ---
-# 获取脚本目录
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-# 构建CSV文件的完整路径
-CSV_FILE_PATH = os.path.join(SCRIPT_DIR, 'shuangseqiu.csv')  # 假设shuangseqiu.csv与脚本在同一目录
-PROCESSED_CSV_PATH = os.path.join(SCRIPT_DIR, 'shuangseqiu_processed.csv')  # 处理后的数据文件路径
+CSV_FILE_PATH = os.path.join(SCRIPT_DIR, 'shuangseqiu.csv')
+PROCESSED_CSV_PATH = os.path.join(SCRIPT_DIR, 'shuangseqiu_processed.csv')
+WEIGHTS_CONFIG_FILE = os.path.join(SCRIPT_DIR, 'weights_config.json')
 
 RED_BALL_RANGE = range(1, 34)
 BLUE_BALL_RANGE = range(1, 17)
-RED_ZONES = {
-    'Zone1': (1, 11),
-    'Zone2': (12, 22),
-    'Zone3': (23, 33)
+RED_ZONES = {'Zone1': (1, 11), 'Zone2': (12, 22), 'Zone3': (23, 33)}
+
+ML_LAG_FEATURES = [1, 3, 5, 10]
+BACKTEST_PERIODS_COUNT = 100
+OPTIMIZATION_BACKTEST_PERIODS = 30
+OPTIMIZATION_TRIALS = 50
+RECENT_FREQ_WINDOW = 20
+
+CANDIDATE_POOL_SCORE_THRESHOLDS = {'High': 70, 'Medium': 40}
+CANDIDATE_POOL_SEGMENT_NAMES = ['High', 'Medium', 'Low']
+
+DEFAULT_WEIGHTS = {
+    'NUM_COMBINATIONS_TO_GENERATE': 10,
+    'TOP_N_RED_FOR_CANDIDATE': 18,
+    'TOP_N_BLUE_FOR_CANDIDATE': 8,
+    'FREQ_SCORE_WEIGHT': 18.0,
+    'OMISSION_SCORE_WEIGHT': 14.0,
+    'MAX_OMISSION_RATIO_SCORE_WEIGHT_RED': 10.0,
+    'RECENT_FREQ_SCORE_WEIGHT_RED': 10.0,
+    'BLUE_FREQ_SCORE_WEIGHT': 25.0,
+    'BLUE_OMISSION_SCORE_WEIGHT': 15.0,
+    'ML_PROB_SCORE_WEIGHT_RED': 23.0,
+    'ML_PROB_SCORE_WEIGHT_BLUE': 25.0,
+    'COMBINATION_ODD_COUNT_MATCH_BONUS': 14.0,
+    'COMBINATION_BLUE_ODD_MATCH_BONUS': 7.0,
+    'COMBINATION_ZONE_MATCH_BONUS': 11.0,
+    'COMBINATION_BLUE_SIZE_MATCH_BONUS': 6.0,
+    'ARM_MIN_SUPPORT': 0.008,
+    'ARM_MIN_CONFIDENCE': 0.35,
+    'ARM_MIN_LIFT': 1.1,
+    'ARM_COMBINATION_BONUS_WEIGHT': 10.0,
+    'ARM_BONUS_LIFT_FACTOR': 0.2,
+    'ARM_BONUS_CONF_FACTOR': 0.1,
+    'CANDIDATE_POOL_PROPORTIONS_HIGH': 0.5,
+    'CANDIDATE_POOL_PROPORTIONS_MEDIUM': 0.3,
+    'CANDIDATE_POOL_MIN_PER_SEGMENT': 2,
+    'DIVERSITY_MIN_DIFFERENT_REDS': 3,
+    'DIVERSITY_SELECTION_MAX_ATTEMPTS': 20,
 }
-NUM_COMBINATIONS_TO_GENERATE = 5  # 最终推荐的号码组合数量 (单式或小复式)
-TOP_N_RED_FOR_CANDIDATE = 25  # 用于生成组合的红球候选池大小（按分数从高到低选择，预测概率后可以扩大池）
-TOP_N_BLUE_FOR_CANDIDATE = 12  # 用于生成组合的蓝球候选池大小（按分数从高到低选择，预测概率后可以扩大池）
-ML_LAG_FEATURES = [1, 3, 5, 10]  # ML模型使用的滞后特征期数，例如 [1, 3, 5] 表示使用前1期、前3期、前5期的数据作为特征
-BACKTEST_PERIODS_COUNT = 100  # 回测使用的最近历史期数 (This will be maximum periods if data is sufficient)
-SHOW_PLOTS = False  # 是否显示分析过程中生成的图表 (True 显示, False 屏蔽)
+CURRENT_WEIGHTS = DEFAULT_WEIGHTS.copy()
 
-# 关联规则挖掘配置 (可按需调整)
-ARM_MIN_SUPPORT = 0.008
-ARM_MIN_CONFIDENCE = 0.35
-ARM_MIN_LIFT = 1.0
+SCORE_SEGMENT_BOUNDARIES = [0, 25, 50, 75, 100]
+SCORE_SEGMENT_LABELS = [f'{SCORE_SEGMENT_BOUNDARIES[i]+1}-{SCORE_SEGMENT_BOUNDARIES[i+1]}'
+                        for i in range(len(SCORE_SEGMENT_BOUNDARIES)-1)]
+SCORE_SEGMENT_LABELS[0] = f'{SCORE_SEGMENT_BOUNDARIES[0]}-{SCORE_SEGMENT_BOUNDARIES[1]}'
+if len(SCORE_SEGMENT_LABELS) != len(SCORE_SEGMENT_BOUNDARIES) - 1:
+     raise ValueError("分数段标签数量与边界数量不匹配，请检查配置。")
 
-# 评分权重 (启发式 - 可调整)
-FREQ_SCORE_WEIGHT = 15 # 降低频率权重，增加ML概率权重
-OMISSION_SCORE_WEIGHT = 10 # 降低遗漏权重
-# Removed ODD_EVEN_TENDENCY_BONUS, ZONE_TENDENCY_BONUS_MULTIPLIER as ML predicts individual probabilities
-BLUE_FREQ_SCORE_WEIGHT = 20 # 降低蓝球频率权重
-BLUE_OMISSION_SCORE_WEIGHT = 8 # 降低蓝球遗漏权重
-# Removed BLUE_ODD_TENDENCY_BONUS, BLUE_SIZE_TENDENCY_BONUS
+LGBM_PARAMS = {'objective': 'binary', 'metric': 'binary_logloss', 'n_estimators': 100, 'learning_rate': 0.04, 'feature_fraction': 0.7, 'bagging_fraction': 0.8, 'bagging_freq': 5, 'lambda_l1': 0.15, 'lambda_l2': 0.15, 'num_leaves': 15, 'min_child_samples': 15, 'verbose': -1, 'n_jobs': 1, 'seed': 42, 'boosting_type': 'gbdt'}
+LOGISTIC_REG_PARAMS = {'penalty': 'l2', 'C': 0.1, 'solver': 'lbfgs', 'random_state': 42, 'max_iter': 5000, 'tol': 1e-3}
+SVC_PARAMS = {'C': 0.1, 'kernel': 'rbf', 'gamma': 'scale', 'probability': True, 'random_state': 42, 'cache_size': 200, 'max_iter': 25000, 'tol': 1e-3}
+XGB_PARAMS = {'objective': 'binary:logistic', 'eval_metric': 'logloss', 'n_estimators': 100, 'learning_rate': 0.04, 'max_depth': 3, 'subsample': 0.7, 'colsample_bytree': 0.7, 'gamma': 0.1, 'lambda': 0.15, 'alpha': 0.15, 'seed': 42, 'n_jobs': 1}
+MIN_POSITIVE_SAMPLES_FOR_ML = 25
 
-# New weights for ML predicted probability score
-ML_PROB_SCORE_WEIGHT_RED = 70 # ML预测红球概率的权重
-ML_PROB_SCORE_WEIGHT_BLUE = 70 # ML预测蓝球概率的权重
-
-# Combination bonus based on matching HISTORICAL patterns (still useful for structure)
-COMBINATION_ODD_COUNT_MATCH_BONUS = 15  # 组合匹配历史最常见奇数数量的奖励
-COMBINATION_BLUE_ODD_MATCH_BONUS = 10  # 组合匹配历史最常见蓝球奇偶的奖励
-COMBINATION_ZONE_MATCH_BONUS = 10  # 组合匹配历史最常见区域模式的奖励
-COMBINATION_BLUE_SIZE_MATCH_BONUS = 8  # 组合匹配历史最常见蓝球大小的奖励
-
-
-# ML模型参数 (新增或修改)
-# Parameters for LightGBM (adjust as needed, these are examples focusing on regularization)
-# Adjust parameters here to control overfitting
-LGBM_PARAMS = {
-    'objective': 'binary', # Binary classification for ball presence
-    'metric': 'binary_logloss',
-    'n_estimators': 120,   # Number of boosting rounds, increase slightly
-    'learning_rate': 0.05, # Reduce learning rate
-    'feature_fraction': 0.7, # Fraction of features considered per iteration (column sampling)
-    'bagging_fraction': 0.8, # Fraction of data sampled per iteration (row sampling)
-    'bagging_freq': 5,
-    'lambda_l1': 0.1, # L1 regularization - increase
-    'lambda_l2': 0.1, # L2 regularization - increase
-    'num_leaves': 16, # Maximum number of leaves in one tree (controls tree complexity) - decrease
-    'verbose': -1, # Suppress verbose output
-    'n_jobs': 1, # Set to 1 as multiprocessing handles parallelism
-    'seed': 42,
-    'boosting_type': 'gbdt',
-    # 'max_depth': -1, # No limit by default in LGBM, num_leaves is main control
-}
-
-# Parameters for Logistic Regression (adjust as needed)
-LOGISTIC_REG_PARAMS = {
-    'penalty': 'l2', # L2 regularization
-    'C': 1.0, # Inverse of regularization strength; smaller values specify stronger regularization - decrease C for stronger regularization
-    'solver': 'saga', # Good for small datasets, supports L1/L2
-    'random_state': 42,
-    'max_iter': 1000 # Increased max iterations for convergence
-    # 'n_jobs': -1 # Removing n_jobs for LogReg when using multiprocessing
-}
-
-# Parameters for SVC (adjust as needed, probability=True enables predict_proba but is expensive)
-# Using a linear kernel as a starting point for potentially better interpretability and less complexity than RBF
-SVC_PARAMS = {
-    'C': 0.1,  # 大幅降低 C 值，增强正则化
-    'kernel': 'rbf',  # 改用 RBF 核，通常更灵活
-    'gamma': 'scale',  # 使用 'scale' 根据数据自动调整 gamma
-    'probability': True,  # 启用概率估计
-    'random_state': 42,
-    'cache_size': 200,
-    'max_iter': 10000,
-    'tol': 1e-2  # 显著提高容差，允许更容易收敛
-}
-
-# Minimum number of positive samples required to train a classifier for a specific ball
-MIN_POSITIVE_SAMPLES_FOR_ML = 8 # Increased threshold slightly for robustness
-
-# --- 配置日志系统
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(sys.stdout)  # 输出到控制台stdout
-    ]
-)
+console_formatter = logging.Formatter('%(message)s')
+detailed_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger('ssq_analyzer')
+logger.setLevel(logging.DEBUG) # Set base level to DEBUG for logger, handlers control output
+logger.propagate = False
 
-# 添加进度条显示函数
-def show_progress(current, total, prefix='', suffix='', decimals=1, length=50, fill='█'):
-    """
-    显示进度条
-    @param current: 当前进度
-    @param total: 总进度
-    @param prefix: 前缀字符串
-    @param suffix: 后缀字符串
-    @param decimals: 小数位数
-    @param length: 进度条长度
-    @param fill: 进度条填充字符
-    """
-    if total <= 0:
-        print(f'\r{prefix} |{fill * length}| 100.0% {suffix}', end='')
-        if current >= total:
-            print()
-        return
+# Global console handler, its level will be changed dynamically
+global_console_handler = logging.StreamHandler(sys.stdout)
+global_console_handler.setFormatter(console_formatter) # Default to simple
+logger.addHandler(global_console_handler) # Add it once
 
-    percent = ("{0:." + str(decimals) + "f}").format(100 * (current / float(total)))
-    filled_length = int(length * current // total)
-    bar = fill * filled_length + '-' * (length - filled_length)
-    # Ensure progress is written to the actual console stdout, not the redirected one
-    print(f'\r{prefix} |{bar}| {percent}% {suffix}', end='', file=sys.__stdout__, flush=True)
-    if current >= total:
-        print(file=sys.__stdout__, flush=True)
+def set_console_verbosity(level=logging.INFO, use_simple_formatter=False):
+    global_console_handler.setLevel(level)
+    if use_simple_formatter:
+        global_console_handler.setFormatter(console_formatter)
+    else:
+        global_console_handler.setFormatter(detailed_formatter)
 
-
-# 创建上下文管理器来暂时重定向输出，并捕获stderr
 class SuppressOutput:
-    """
-    上下文管理器：暂时抑制标准输出，捕获标准错误输出到StringIO对象。
-    退出时可以将捕获的stderr写入日志。
-    Note: May not work as expected with multiprocessing where subprocesses have their own std streams.
-    """
     def __init__(self, suppress_stdout=True, capture_stderr=True):
-        self.suppress_stdout = suppress_stdout
-        self.capture_stderr = capture_stderr
-        self.stdout_redirect = None
-        self.stderr_redirect = None
-        self.old_stdout = None
-        self.old_stderr = None
-        self.stderr_io = None
-
+        self.suppress_stdout = suppress_stdout; self.capture_stderr = capture_stderr
+        self.old_stdout = None; self.old_stderr = None; self.stderr_io = None
     def __enter__(self):
-        if self.suppress_stdout:
-            self.old_stdout = sys.stdout
-            # 将stdout重定向到/dev/null或等效位置
-            sys.stdout = open(os.devnull, 'w')
-
-        if self.capture_stderr:
-            self.old_stderr = sys.stderr
-            self.stderr_io = io.StringIO()
-            sys.stderr = self.stderr_io
-
+        if self.suppress_stdout: self.old_stdout = sys.stdout; sys.stdout = open(os.devnull, 'w')
+        if self.capture_stderr: self.old_stderr = sys.stderr; self.stderr_io = io.StringIO(); sys.stderr = self.stderr_io
         return self
-
     def __exit__(self, exc_type, exc_val, exc_tb):
-        # 先恢复stderr
         if self.capture_stderr and self.old_stderr:
             sys.stderr = self.old_stderr
             captured_stderr_content = self.stderr_io.getvalue()
-            if captured_stderr_content.strip():  # 如果捕获的stderr不为空，则记录日志
-                 logger.warning(f"Captured stderr:\n{captured_stderr_content.strip()}")
-
-        # 恢复stdout
+            if captured_stderr_content.strip(): logger.warning(f"捕获到的标准错误输出:\n{captured_stderr_content.strip()}")
         if self.suppress_stdout and self.old_stdout:
-            if sys.stdout and not sys.stdout.closed:  # 在关闭前检查重定向对象是否有效
-                 sys.stdout.close()
+            if sys.stdout and not sys.stdout.closed: sys.stdout.close()
             sys.stdout = self.old_stdout
-
-        # 不抑制异常
         return False
 
+def load_weights_from_file(filepath: str, defaults: Dict) -> Dict:
+    try:
+        with open(filepath, 'r') as f:
+            loaded_weights = json.load(f)
+        merged_weights = defaults.copy()
+        for key in defaults:
+            if key in loaded_weights:
+                if isinstance(defaults[key], (int, float)) and isinstance(loaded_weights[key], (int, float)):
+                    merged_weights[key] = type(defaults[key])(loaded_weights[key])
+                elif isinstance(defaults[key], str) and isinstance(loaded_weights[key], str):
+                     merged_weights[key] = loaded_weights[key]
 
-# --- 数据准备与基本处理 ---
+        for key_default in defaults:
+            if key_default not in merged_weights:
+                logger.info(f"权重文件 {filepath} 缺少键 '{key_default}'。将使用该键的默认值。")
+                merged_weights[key_default] = defaults[key_default]
+
+        prop_h = merged_weights.get('CANDIDATE_POOL_PROPORTIONS_HIGH', 0.5)
+        prop_m = merged_weights.get('CANDIDATE_POOL_PROPORTIONS_MEDIUM', 0.3)
+        if not (0 <= prop_h <= 1 and 0 <= prop_m <= 1 and (prop_h + prop_m) <= 1):
+            logger.warning(f"CANDIDATE_POOL_PROPORTIONS 无效 (H:{prop_h}, M:{prop_m})。恢复为默认值。")
+            merged_weights['CANDIDATE_POOL_PROPORTIONS_HIGH'] = defaults['CANDIDATE_POOL_PROPORTIONS_HIGH']
+            merged_weights['CANDIDATE_POOL_PROPORTIONS_MEDIUM'] = defaults['CANDIDATE_POOL_PROPORTIONS_MEDIUM']
+
+        logger.info(f"权重已从 {filepath} 成功加载并合并。")
+        return merged_weights
+    except FileNotFoundError:
+        logger.info(f"权重配置文件 {filepath} 未找到。")
+        return defaults.copy()
+    except json.JSONDecodeError:
+        logger.error(f"权重文件 {filepath} 格式错误。")
+        return defaults.copy()
+    except Exception as e:
+        logger.error(f"加载权重时发生未知错误: {e}。")
+        return defaults.copy()
+
+def save_weights_to_file(filepath: str, weights_to_save: Dict):
+    try:
+        with open(filepath, 'w') as f:
+            json.dump(weights_to_save, f, indent=4)
+        logger.info(f"权重已成功保存到 {filepath}")
+    except Exception as e:
+        logger.error(f"保存权重时出错: {e}")
 
 def load_data(file_path: str) -> Optional[pd.DataFrame]:
-    """从CSV加载数据。"""
     try:
-        # 假设CSV有如'期号', '日期', '红球', '蓝球'等列
-        # 如果默认utf-8失败，尝试不同的编码
-        try:
-             df = pd.read_csv(file_path, encoding='utf-8')
-        except UnicodeDecodeError:
-             try:
-                 df = pd.read_csv(file_path, encoding='gbk')
-             except UnicodeDecodeError:
-                 df = pd.read_csv(file_path, encoding='latin-1')  # 回退到latin-1或其他编码
-        logger.info("数据加载成功。")
-        logger.info(f"读取总期数: {len(df)}")
-        return df
-    except FileNotFoundError:
-        logger.error(f"错误: 在 {file_path} 找不到文件")
+        encodings = ['utf-8', 'gbk', 'latin-1']
+        for enc in encodings:
+            try:
+                df = pd.read_csv(file_path, encoding=enc)
+                return df
+            except UnicodeDecodeError:
+                continue
+        logger.error(f"无法使用任何尝试的编码打开文件 {file_path}。")
         return None
-    except pd.errors.EmptyDataError:
-        logger.error(f"错误: {file_path} 文件为空")
-        return None
-    except Exception as e:
-        logger.error(f"从 {file_path} 加载数据时发生错误: {e}")
-        return None
-
+    except FileNotFoundError: logger.error(f"错误: {file_path} 找不到"); return None
+    except pd.errors.EmptyDataError: logger.error(f"错误: {file_path} 为空"); return None
+    except Exception as e: logger.error(f"加载 {file_path} 出错: {e}"); return None
 
 def clean_and_structure(df: pd.DataFrame) -> Optional[pd.DataFrame]:
-    """清理数据并结构化红球/蓝球。"""
-    if df is None or df.empty:
-        logger.warning("没有数据可清理和结构化。")
-        return None
-
-    initial_rows = len(df)
-    # 删除缺少'期号', '红球'或'蓝球'的行
+    if df is None or df.empty: return None
     df.dropna(subset=['期号', '红球', '蓝球'], inplace=True)
-    if len(df) < initial_rows:
-        logger.warning(f"删除了 {initial_rows - len(df)} 行缺少必要值的数据。")
-        initial_rows = len(df)  # 更新用于后续检查
-
-    if df.empty:
-        logger.warning("删除缺少必要值的行后没有剩余数据。")
-        return None
-
-    # 确保'期号'为整数并按其排序
+    if df.empty: return None
     try:
-        df['期号'] = pd.to_numeric(df['期号'], errors='coerce').astype('Int64')  # 使用可空整数类型
-        df.dropna(subset=['期号'], inplace=True)  # 删除转换失败的行
-        df['期号'] = df['期号'].astype(int)  # 转换为标准int
-        df.sort_values(by='期号', ascending=True, inplace=True)
-        df.reset_index(drop=True, inplace=True)  # 排序后重置索引
-    except Exception as e:
-        logger.error(f"错误: '期号'列无法清理或转换为整数。 {e}")
-        return None
-
-    if df.empty:
-        logger.warning("清理'期号'后没有剩余数据。")
-        return None
-
-    parsed_rows_data = []
-    rows_skipped_parsing = 0
-
-    # 重新从解析的数据构建DataFrame以增强健壮性
-    for index, row in df.iterrows():
-         try:
-             red_str = row.get('红球')  # 使用.get以保安全
-             blue_val = row.get('蓝球')
-             period_val = row.get('期号')
-
-             if not isinstance(red_str, str) or pd.isna(blue_val) or pd.isna(period_val):
-                  rows_skipped_parsing += 1
-                  continue  # 如果基本数据缺失或类型错误则跳过
-
-             # 提前处理潜在的非整数蓝球数据
-             blue_num = int(blue_val)
-             if not (1 <= blue_num <= 16):
-                 rows_skipped_parsing += 1
-                 continue
-
-             # 在蓝球验证后处理红球
-             reds = sorted([int(x) for x in red_str.split(',')])  # 排序的红球
-             if len(reds) != 6 or not all(1 <= r <= 33 for r in reds):
-                 rows_skipped_parsing += 1
-                 continue
-
-             # 如果到达这里，该行有效。添加到parsed_rows_data。
-             row_data = {'期号': int(period_val)}  # 确保期号为int
-             if '日期' in row:  # 如果存在，包含'日期'
-                 row_data['日期'] = row['日期']
-             # 添加排序后的红球和蓝球
-             for i in range(6):
-                 row_data[f'red{i+1}'] = reds[i]
-                 # red_pos columns are identical to sorted red columns
-                 row_data[f'red_pos{i+1}'] = reds[i]
-             row_data['blue'] = blue_num
-
-             parsed_rows_data.append(row_data)
-
-         except (ValueError, AttributeError) as e:
-             rows_skipped_parsing += 1
-             period_val_safe = row.get('期号', 'N/A')
-             # logger.warning(f"Parsing error for period {period_val_safe}: {e}. Skipping row.") # Too noisy, log count later
-             continue
-         except Exception as e:
-             rows_skipped_parsing += 1
-             period_val_safe = row.get('期号', 'N/A')
-             logger.warning(f"General error processing period {period_val_safe}: {e}. Skipping row.")
-             continue
-
-    if rows_skipped_parsing > 0:
-         logger.warning(f"由于解析错误，跳过了 {rows_skipped_parsing} 行。")
-
-    if not parsed_rows_data:
-         logger.error("全面解析后没有有效的数据行。")
-         return None
-
-    processed_df = pd.DataFrame(parsed_rows_data)
-
-    # 确保按期号排序并重置索引
-    processed_df.sort_values(by='期号', ascending=True, inplace=True)
-    processed_df.reset_index(drop=True, inplace=True)
-
-    logger.info(f"数据已清理和结构化。剩余有效期数: {len(processed_df)}")
-    return processed_df
-
+        df['期号'] = pd.to_numeric(df['期号'], errors='coerce').astype('Int64')
+        df.dropna(subset=['期号'], inplace=True)
+        df['期号'] = df['期号'].astype(int)
+        df.sort_values(by='期号', ascending=True, inplace=True); df.reset_index(drop=True, inplace=True)
+    except Exception: return None
+    if df.empty: return None
+    parsed_rows = []
+    for _, row in df.iterrows():
+        try:
+            rs, bv, pv = str(row.get('红球','')), row.get('蓝球'), row.get('期号')
+            if not rs or pd.isna(bv) or pd.isna(pv): continue
+            bn = int(bv);
+            if not (1 <= bn <= 16): continue
+            reds_str = rs.split(',')
+            if len(reds_str) != 6: continue
+            reds_int = sorted([int(x) for x in reds_str if 1 <= int(x) <= 33])
+            if len(reds_int) != 6: continue
+            rd = {'期号': int(pv)};
+            if '日期' in row and pd.notna(row['日期']): rd['日期'] = str(row['日期']).strip()
+            for i in range(6):
+                rd[f'red{i+1}'] = reds_int[i]
+                rd[f'red_pos{i+1}'] = reds_int[i]
+            rd['blue'] = bn; parsed_rows.append(rd)
+        except Exception: continue
+    return pd.DataFrame(parsed_rows).sort_values(by='期号').reset_index(drop=True) if parsed_rows else None
 
 def feature_engineer(df: pd.DataFrame) -> Optional[pd.DataFrame]:
-    """从结构化数据中提取特征。"""
-    if df is None or df.empty:
-        logger.warning("没有数据可进行特征工程。")
-        return None
-
-    # 确保清理/结构化后存在必要的列
+    if df is None or df.empty: return None
     red_cols = [f'red{i+1}' for i in range(6)]
-    red_pos_cols = [f'red_pos{i+1}' for i in range(6)]
-    essential_cols = red_cols + red_pos_cols + ['blue', '期号'] # Add 期号 as essential
-    if not all(col in df.columns for col in essential_cols):
-        missing = [col for col in essential_cols if col not in df.columns]
-        logger.error(f"清理后缺少特征工程所需的必要列: {missing}。")
-        return None
+    if not all(c in df.columns for c in red_cols + ['blue', '期号']): return None
+    df_fe = df.copy()
+    for r_col in red_cols: df_fe[r_col] = pd.to_numeric(df_fe[r_col], errors='coerce')
+    df_fe.dropna(subset=red_cols, inplace=True)
 
-    df_fe = df.copy()  # 使用副本
-
-    # 红球和
     df_fe['red_sum'] = df_fe[red_cols].sum(axis=1)
-
-    # 红球跨度
     df_fe['red_span'] = df_fe[red_cols].max(axis=1) - df_fe[red_cols].min(axis=1)
 
-    # 红球奇偶计数
-    df_fe['red_odd_count'] = df_fe[red_cols].apply(lambda row: sum(x % 2 != 0 for x in row), axis=1)
-    df_fe['red_even_count'] = 6 - df_fe['red_odd_count']
-
-    # 红球区域计数
-    for zone, (start, end) in RED_ZONES.items():
-        df_fe[f'red_{zone}_count'] = df_fe[red_cols].apply(lambda row: sum(start <= x <= end for x in row), axis=1)
-
-    # 连续数字计数（使用排序球的简单对计数）
-    def count_consecutive_pairs(row):
-        count = 0
-        # 使用表示排序位置的red_pos_cols
-        # Check for potential NaN or empty values in the row slice before accessing
-        if row[red_pos_cols].isnull().any() or row[red_pos_cols].empty:
-             return 0
-        # Ensure values are integers before comparison
-        pos_balls = row[red_pos_cols].astype(int).tolist()
-        for i in range(5):
-            if pos_balls[i] + 1 == pos_balls[i+1]:
-                count += 1
-        return count
-
-    # 仅当df_fe不为空时应用
-    if not df_fe.empty:
-        # Ensure red_pos_cols are numeric before applying function
-        try:
-             df_fe[red_pos_cols] = df_fe[red_pos_cols].astype(int)
-             df_fe['red_consecutive_pairs'] = df_fe.apply(count_consecutive_pairs, axis=1)
-        except ValueError as e:
-             logger.error(f"Error converting red_pos_cols to int during feature engineering: {e}. red_consecutive_pairs will be NaN.")
-             df_fe['red_consecutive_pairs'] = np.nan # Assign NaN if conversion fails
+    if pd.api.types.is_numeric_dtype(df_fe[red_cols].values.dtype):
+         df_fe['red_odd_count'] = df_fe[red_cols].apply(lambda r: sum(int(x) % 2 != 0 for x in r), axis=1)
+         for zone, (start, end) in RED_ZONES.items():
+             df_fe[f'red_{zone}_count'] = df_fe[red_cols].apply(lambda r: sum(start <= int(x) <= end for x in r), axis=1)
+         df_fe['current_reds_str'] = df_fe[red_cols].astype(int).astype(str).agg(','.join, axis=1)
+         df_fe['prev_reds_str'] = df_fe['current_reds_str'].shift(1)
+         df_fe['red_repeat_count'] = df_fe.apply(lambda r: len(set(int(x) for x in r['prev_reds_str'].split(',')) & set(int(x) for x in r['current_reds_str'].split(','))) if pd.notna(r['prev_reds_str']) and pd.notna(r['current_reds_str']) else 0, axis=1)
+         df_fe.drop(columns=['current_reds_str', 'prev_reds_str'], inplace=True, errors='ignore')
     else:
-         df_fe['red_consecutive_pairs'] = pd.Series(dtype=int)
+        df_fe['red_odd_count'] = np.nan; df_fe['red_repeat_count'] = np.nan
+        for zone in RED_ZONES: df_fe[f'red_{zone}_count'] = np.nan
 
+    red_pos_cols = [f'red_pos{i+1}' for i in range(6)]
+    if not df_fe.empty and all(c in df_fe.columns for c in red_pos_cols) and pd.api.types.is_numeric_dtype(df_fe[red_pos_cols].values.dtype):
+        df_fe['red_consecutive_pairs'] = df_fe.apply(lambda r: sum(1 for i in range(5) if int(r[red_pos_cols[i]]) + 1 == int(r[red_pos_cols[i+1]])), axis=1)
+    else: df_fe['red_consecutive_pairs'] = np.nan
 
-    # 与上期重复（红球）
-    # 需要处理第一行。先添加shift，然后计算。
-    # Create a string representation of the sorted red balls for easy comparison
-    df_fe['current_reds_str'] = df_fe[red_cols].astype(str).agg(','.join, axis=1)
-    df_fe['prev_reds_str'] = df_fe['current_reds_str'].shift(1)
-
-    df_fe['red_repeat_count'] = 0  # Initialize
-    if len(df_fe) > 1:
-        for i in range(1, len(df_fe)):
-            prev_reds_str = df_fe.loc[i, 'prev_reds_str']
-            current_reds_str = df_fe.loc[i, 'current_reds_str']
-
-            if pd.notna(prev_reds_str) and pd.notna(current_reds_str):
-                 try:
-                     prev_reds = set(int(x) for x in prev_reds_str.split(','))
-                     current_reds = set(int(x) for x in current_reds_str.split(','))
-                     df_fe.loc[i, 'red_repeat_count'] = len(prev_reds.intersection(current_reds))
-                 except ValueError:
-                     # Should not happen after robust cleaning, but as a safeguard
-                     logger.warning(f"Error parsing red ball strings for repeat count at index {i}. Setting repeat count to 0.")
-                     df_fe.loc[i, 'red_repeat_count'] = 0
-            else:
-                 # First row or missing previous data
-                 df_fe.loc[i, 'red_repeat_count'] = 0
-
-
-    df_fe.drop(columns=['current_reds_str', 'prev_reds_str'], errors='ignore', inplace=True)
-
-
-    # 蓝球特征
-    df_fe['blue_is_odd'] = df_fe['blue'] % 2 != 0
-    df_fe['blue_is_large'] = df_fe['blue'] > 8  # 1-8 小，9-16 大
-    # 添加蓝球质数状态（简化）
-    primes = {2, 3, 5, 7, 11, 13}
-    df_fe['blue_is_prime'] = df_fe['blue'].apply(lambda x: x in primes)
-
-    logger.info("特征工程完成。")
+    if 'blue' in df_fe.columns and pd.api.types.is_numeric_dtype(df_fe['blue']):
+        df_fe['blue'] = pd.to_numeric(df_fe['blue'], errors='coerce').dropna().astype(int)
+        df_fe['blue_is_odd'] = df_fe['blue'] % 2 != 0
+        df_fe['blue_is_large'] = df_fe['blue'] > 8
+        primes = {2, 3, 5, 7, 11, 13}; df_fe['blue_is_prime'] = df_fe['blue'].apply(lambda x: x in primes if pd.notna(x) else False)
+    else: df_fe['blue_is_odd'] = np.nan; df_fe['blue_is_large'] = np.nan; df_fe['blue_is_prime'] = np.nan
     return df_fe
 
-# --- 历史统计与模式分析 ---
-
-def analyze_frequency_omission(df: pd.DataFrame) -> dict:
-    """分析每个号码和位置的频率和当前遗漏。"""
-    if df is None or df.empty:
-        logger.warning("没有数据可分析频率和遗漏。")
-        return {}  # 返回空字典
-
+def analyze_frequency_omission(df: pd.DataFrame, weights_config: Dict) -> dict:
+    if df is None or df.empty: return {}
     red_cols = [f'red{i+1}' for i in range(6)]
-    red_pos_cols = [f'red_pos{i+1}' for i in range(6)] # Assuming red_pos are sorted red balls
-    # Use *current* index to calculate omission relative to the latest period in this df slice
-    most_recent_period_index_in_df = len(df) - 1
+    most_recent_idx = len(df) - 1
+    if most_recent_idx < 0: return {}
 
-    if most_recent_period_index_in_df < 0:
-        logger.warning("DataFrame is empty in analyze_frequency_omission after checks.")
-        return {}
+    num_red_cols = [c for c in red_cols if c in df.columns and pd.api.types.is_numeric_dtype(df[c])]
+    num_blue_col = 'blue' if 'blue' in df.columns and pd.api.types.is_numeric_dtype(df['blue']) else None
+    if not num_red_cols and not num_blue_col: return {}
 
-    # Ensure ball columns are numeric
-    try:
-        df[red_cols + ['blue']] = df[red_cols + ['blue']].astype(int)
-        # df[red_pos_cols] = df[red_pos_cols].astype(int) # red_pos should be same as red_cols after cleaning
-    except ValueError as e:
-        logger.error(f"Error converting ball columns to int for frequency/omission analysis: {e}. Skipping analysis.")
-        return {}
-
-
-    all_reds = df[red_cols].values.flatten()
-    all_blues = df['blue'].values
-
-    # 频率（总体）
-    red_freq = Counter(all_reds)
-    blue_freq = Counter(all_blues)
-
-    # 位置红球频率 - Based on red_pos_cols which are sorted red balls
-    red_pos_freq = {}
-    for col in red_pos_cols:
-         if col in df.columns:
-              red_pos_freq[col] = Counter(df[col])
-         else:
-              logger.warning(f"Column {col} not found for position frequency analysis.")
-
-
-    # 遗漏（当前）- 上次出现至今的期数
-    # Omission is calculated relative to the *end* of the provided df.
-    # An omission of 0 means it appeared in the latest period (index most_recent_period_index_in_df).
-    # An omission of k means it last appeared at index most_recent_period_index_in_df - k.
-    # If never seen in this df, omission is most_recent_period_index_in_df + 1 (or len(df))
+    all_reds_flat = df[num_red_cols].values.flatten() if num_red_cols else np.array([])
+    red_freq = Counter(all_reds_flat[~np.isnan(all_reds_flat)].astype(int))
+    blue_freq = Counter(df[num_blue_col].dropna().astype(int)) if num_blue_col else Counter()
 
     current_omission = {}
-    # Red balls (any position)
-    for number in RED_BALL_RANGE:
-        latest_appearance_index = df.index[
-            (df[red_cols] == number).any(axis=1)
-        ].max() # This gives the index *within the current df*
+    max_historical_omission_red = {num: 0 for num in RED_BALL_RANGE}
+    recent_N_freq_red = {num: 0 for num in RED_BALL_RANGE}
 
-        if pd.isna(latest_appearance_index):
-             current_omission[number] = len(df) # Never seen in these data
-        else:
-             current_omission[number] = most_recent_period_index_in_df - latest_appearance_index
+    if num_red_cols:
+        for num in RED_BALL_RANGE:
+            appearances = (df[num_red_cols] == num).any(axis=1)
+            app_indices = df.index[appearances]
 
-    # Red balls (by position)
-    red_pos_current_omission = {}
-    for col in red_pos_cols:
-        red_pos_current_omission[col] = {}
-        if col in df.columns:
-            for number in RED_BALL_RANGE:
-                latest_appearance_index = df.index[
-                     (df[col] == number)
-                ].max()
-                if pd.isna(latest_appearance_index):
-                    red_pos_current_omission[col][number] = len(df)
-                else:
-                    red_pos_current_omission[col][number] = most_recent_period_index_in_df - latest_appearance_index
-        else:
-             logger.warning(f"Column {col} not found for position omission analysis.")
+            if not app_indices.empty:
+                current_omission[num] = most_recent_idx - app_indices.max()
+                max_o = app_indices[0]
+                for i in range(len(app_indices) - 1):
+                    max_o = max(max_o, app_indices[i+1] - app_indices[i] - 1)
+                max_o = max(max_o, most_recent_idx - app_indices.max())
+                max_historical_omission_red[num] = max_o
+            else:
+                current_omission[num] = len(df)
+                max_historical_omission_red[num] = len(df)
 
+        recent_df_slice = df.tail(RECENT_FREQ_WINDOW)
+        if not recent_df_slice.empty:
+            recent_reds_flat = recent_df_slice[num_red_cols].values.flatten()
+            recent_freq_counts = Counter(recent_reds_flat[~np.isnan(recent_reds_flat)].astype(int))
+            for num in RED_BALL_RANGE:
+                recent_N_freq_red[num] = recent_freq_counts.get(num, 0)
 
-    # Blue balls
-    for number in BLUE_BALL_RANGE:
-         latest_appearance_index = df.index[
-             (df['blue'] == number)
-         ].max()
-         if pd.isna(latest_appearance_index):
-             current_omission[number] = len(df)
-         else:
-            current_omission[number] = most_recent_period_index_in_df - latest_appearance_index
+    if num_blue_col:
+        for num in BLUE_BALL_RANGE:
+            app_indices = df.index[df[num_blue_col] == num]
+            latest_idx = app_indices.max() if not app_indices.empty else -1
+            current_omission[f'blue_{num}'] = len(df) if latest_idx == -1 else most_recent_idx - latest_idx
 
-    # 平均间隔（平均遗漏的代理）- calculated on the provided data
-    average_interval = {}
-    total_periods = len(df)
-    # Add 1 to frequency in denominator to handle balls that never appeared, avoiding division by zero
-    for number in RED_BALL_RANGE:
-        average_interval[number] = total_periods / (red_freq.get(number, 0) + 1e-9) # Use small epsilon
-    for number in BLUE_BALL_RANGE:
-        average_interval[number] = total_periods / (blue_freq.get(number, 0) + 1e-9) # Use small epsilon
+    avg_interval = {num: len(df) / (red_freq.get(num, 0) + 1e-9) for num in RED_BALL_RANGE}
+    for num in BLUE_BALL_RANGE: avg_interval[f'blue_{num}'] = len(df) / (blue_freq.get(num, 0) + 1e-9)
 
-    # 位置平均间隔
-    red_pos_average_interval = {}
-    for col in red_pos_cols:
-        red_pos_average_interval[col] = {}
-        if col in red_pos_freq: # Use red_pos_freq which might be empty if col was missing
-            col_freq = red_pos_freq.get(col, {})
-            for number in RED_BALL_RANGE:
-                 red_pos_average_interval[col][number] = total_periods / (col_freq.get(number, 0) + 1e-9) # Use small epsilon
-        else:
-             logger.warning(f"Position frequency data missing for {col}, cannot calculate average interval.")
+    red_items = sorted(red_freq.items(), key=lambda item: item[1], reverse=True)
+    blue_items = sorted(blue_freq.items(), key=lambda item: item[1], reverse=True)
+    hot_reds = [n for n, _ in red_items[:max(0, int(len(RED_BALL_RANGE) * 0.2))]]
+    cold_reds = [n for n, _ in red_items[min(len(red_items)-1, int(len(RED_BALL_RANGE) * 0.8)):] if n not in hot_reds]
+    hot_blues = [n for n, _ in blue_items[:max(0, int(len(BLUE_BALL_RANGE) * 0.3))]]
+    cold_blues = [n for n, _ in blue_items[min(len(blue_items)-1, int(len(BLUE_BALL_RANGE) * 0.7)):] if n not in hot_blues]
 
+    return {'red_freq': red_freq, 'blue_freq': blue_freq, 'current_omission': current_omission,
+            'average_interval': avg_interval, 'hot_reds': hot_reds, 'cold_reds': cold_reds,
+            'hot_blues': hot_blues, 'cold_blues': cold_blues,
+            'max_historical_omission_red': max_historical_omission_red,
+            'recent_N_freq_red': recent_N_freq_red}
 
-    # 识别热/冷号（基于总体频率）
-    # Handle empty frequency data gracefully
-    red_freq_items = sorted(red_freq.items(), key=lambda item: item[1], reverse=True) if red_freq else []
-    blue_freq_items = sorted(blue_freq.items(), key=lambda item: item[1], reverse=True) if blue_freq else []
+def analyze_patterns(df: pd.DataFrame, weights_config: Dict) -> dict:
+    if df is None or df.empty: return {}
+    res = {}
+    def safe_mode(series): return int(series.mode().iloc[0]) if not series.empty and not series.mode().empty else None
 
-    # Define hot/cold based on top/bottom percentage (ensure thresholds are valid indices)
-    num_red_balls_possible = len(RED_BALL_RANGE)
-    num_blue_balls_possible = len(BLUE_BALL_RANGE)
-
-    # Calculate thresholds ensuring they are within the bounds of the actual data points
-    red_hot_threshold = max(0, min(len(red_freq_items), int(num_red_balls_possible * 0.2)))
-    red_cold_threshold = max(0, min(len(red_freq_items), int(num_red_balls_possible * 0.8)))
-    blue_hot_threshold = max(0, min(len(blue_freq_items), int(num_blue_balls_possible * 0.3)))
-    blue_cold_threshold = max(0, min(len(blue_freq_items), int(num_blue_balls_possible * 0.7)))
-
-
-    hot_reds = [num for num, freq in red_freq_items[:red_hot_threshold]]
-    # Ensure cold reds are distinct from hot reds if thresholds overlap or data is sparse
-    cold_reds_candidates = red_freq_items[red_cold_threshold:]
-    cold_reds = [num for num, freq in cold_reds_candidates if num not in hot_reds]
-
-
-    hot_blues = [num for num, freq in blue_freq_items[:blue_hot_threshold]]
-    # Ensure cold blues are distinct
-    cold_blues_candidates = blue_freq_items[blue_cold_threshold:]
-    cold_blues = [num for num, freq in cold_blues_candidates if num not in hot_blues]
-
-
-    analysis_results = {
-        'red_freq': red_freq,
-        'blue_freq': blue_freq,
-        'red_pos_freq': red_pos_freq,
-        'current_omission': current_omission,
-        'red_pos_current_omission': red_pos_current_omission,
-        'average_interval': average_interval,
-        'red_pos_average_interval': red_pos_average_interval,
-        'hot_reds': hot_reds,
-        'cold_reds': cold_reds,
-        'hot_blues': hot_blues,
-        'cold_blues': cold_blues
-    }
-
-    return analysis_results
-
-
-def analyze_patterns(df: pd.DataFrame) -> dict:
-    """分析计算特征的分布。"""
-    if df is None or df.empty:
-        logger.warning("没有数据可分析模式。")
-        return {}  # 返回空字典
-
-    # Pattern analysis results
-    pattern_results = {}
-
-    # Helper to get mode safely and convert to int
-    def safe_mode_int(series):
-        if series is None or series.empty or series.mode().empty:
-            return None
-        return int(series.mode()[0])
-
-    # Red ball sum distribution
-    if 'red_sum' in df.columns and not df['red_sum'].empty:
-        pattern_results['sum_stats'] = df['red_sum'].describe().to_dict()
-        pattern_results['most_common_sum'] = safe_mode_int(df['red_sum'])
-    else:
-         pattern_results['sum_stats'] = {}
-         pattern_results['most_common_sum'] = None
-
-    # Red ball span distribution
-    if 'red_span' in df.columns and not df['red_span'].empty:
-        pattern_results['span_stats'] = df['red_span'].describe().to_dict()
-        pattern_results['most_common_span'] = safe_mode_int(df['red_span'])
-    else:
-        pattern_results['span_stats'] = {}
-        pattern_results['most_common_span'] = None
-
-    # Odd/even count distribution
-    if 'red_odd_count' in df.columns and not df['red_odd_count'].empty:
-        # Ensure counts are integers before value_counts
-        if pd.api.types.is_numeric_dtype(df['red_odd_count']):
-             odd_even_counts = df['red_odd_count'].astype(int).value_counts().sort_index()
-             pattern_results['odd_even_ratios'] = {f'{odd}:{6-odd}': int(count) for odd, count in odd_even_counts.items()}
-             pattern_results['most_common_odd_even_count'] = safe_mode_int(df['red_odd_count'])
-        else:
-             logger.warning("red_odd_count column is not numeric, skipping odd/even distribution analysis.")
-             pattern_results['odd_even_ratios'] = {}
-             pattern_results['most_common_odd_even_count'] = None
-    else:
-        pattern_results['odd_even_ratios'] = {}
-        pattern_results['most_common_odd_even_count'] = None
-
-    # Zone distribution
+    for col, name in [('red_sum', 'sum'), ('red_span', 'span')]:
+        if col in df.columns and pd.api.types.is_numeric_dtype(df[col]) and not df[col].empty:
+            res[f'{name}_stats'] = df[col].describe().to_dict()
+            res[f'most_common_{name}'] = safe_mode(df[col])
+    if 'red_odd_count' in df.columns and pd.api.types.is_numeric_dtype(df['red_odd_count']) and not df['red_odd_count'].empty:
+        res['most_common_odd_even_count'] = safe_mode(df['red_odd_count'].dropna())
     zone_cols = [f'red_{zone}_count' for zone in RED_ZONES.keys()]
-    if all(col in df.columns for col in zone_cols) and not df.empty:
-        zone_counts_df = df[zone_cols]
-        if not zone_counts_df.empty and pd.api.types.is_numeric_dtype(zone_counts_df.values):
-            # Ensure counts are integers, then form tuples
-            zone_counts_df = zone_counts_df.astype(int)
-            zone_distribution_counts = zone_counts_df.apply(lambda row: tuple(row), axis=1).value_counts()
-            # Convert keys (tuples) and values (counts) to standard Python types
-            pattern_results['zone_distribution_counts'] = {
-                tuple(int(c) for c in dist): int(count) for dist, count in zone_distribution_counts.items()
-            }
-            pattern_results['most_common_zone_distribution'] = zone_distribution_counts.index[0] if not zone_distribution_counts.empty else (0, 0, 0)
-        else:
-            logger.warning("Zone count columns not found or not numeric, skipping zone distribution analysis.")
-            pattern_results['zone_distribution_counts'] = {}
-            pattern_results['most_common_zone_distribution'] = (0, 0, 0) # Default
-    else:
-         pattern_results['zone_distribution_counts'] = {}
-         pattern_results['most_common_zone_distribution'] = (0, 0, 0) # Default
+    if all(c in df.columns and pd.api.types.is_numeric_dtype(df[c]) for c in zone_cols) and not df.empty:
+        zc_df = df[zone_cols].dropna().astype(int)
+        if not zc_df.empty:
+            dist_counts = zc_df.apply(tuple, axis=1).value_counts()
+            res['most_common_zone_distribution'] = dist_counts.index[0] if not dist_counts.empty else None
+    for col_name, data_key in [('blue_is_odd', 'blue_odd_counts'), ('blue_is_large', 'blue_large_counts')]:
+        if col_name in df.columns and not df[col_name].dropna().empty:
+            counts = df[col_name].dropna().astype(bool).value_counts()
+            res[data_key] = {bool(k): int(v) for k, v in counts.items()}
+    return res
 
-    # Consecutive pairs distribution
-    if 'red_consecutive_pairs' in df.columns and not df['red_consecutive_pairs'].empty:
-        if pd.api.types.is_numeric_dtype(df['red_consecutive_pairs']):
-            consecutive_counts = df['red_consecutive_pairs'].astype(int).value_counts().sort_index()
-            pattern_results['consecutive_counts'] = {int(count): int(freq) for count, freq in consecutive_counts.items()}
-        else:
-             logger.warning("red_consecutive_pairs column is not numeric, skipping consecutive counts analysis.")
-             pattern_results['consecutive_counts'] = {}
-    else:
-        pattern_results['consecutive_counts'] = {}
+def analyze_associations(df: pd.DataFrame, weights_config: Dict) -> pd.DataFrame:
+    min_s = weights_config.get('ARM_MIN_SUPPORT', 0.008) # Use .get for safety if key missing
+    min_c = weights_config.get('ARM_MIN_CONFIDENCE', 0.35)
+    min_l = weights_config.get('ARM_MIN_LIFT', 1.1)
 
-    # Repeat counts frequency
-    if 'red_repeat_count' in df.columns and not df['red_repeat_count'].empty:
-        if pd.api.types.is_numeric_dtype(df['red_repeat_count']):
-            repeat_counts = df['red_repeat_count'].astype(int).value_counts().sort_index()
-            pattern_results['repeat_counts'] = {int(count): int(freq) for count, freq in repeat_counts.items()}
-        else:
-             logger.warning("red_repeat_count column is not numeric, skipping repeat counts analysis.")
-             pattern_results['repeat_counts'] = {}
-    else:
-        pattern_results['repeat_counts'] = {}
-
-    # Blue ball pattern analysis
-    # Ensure blue_is_odd is boolean or convertible to boolean
-    if 'blue_is_odd' in df.columns and not df['blue_is_odd'].empty:
-         try:
-             blue_odd_counts = df['blue_is_odd'].astype(bool).value_counts()
-             pattern_results['blue_odd_counts'] = {bool(is_odd): int(count) for is_odd, count in blue_odd_counts.items()} # Convert bool key, int value
-         except ValueError:
-             logger.warning("blue_is_odd column cannot be converted to boolean, skipping blue oddness analysis.")
-             pattern_results['blue_odd_counts'] = {}
-    else:
-        pattern_results['blue_odd_counts'] = {}
-
-    # Ensure blue_is_large is boolean or convertible to boolean
-    if 'blue_is_large' in df.columns and not df['blue_is_large'].empty:
-        try:
-            blue_large_counts = df['blue_is_large'].astype(bool).value_counts()
-            pattern_results['blue_large_counts'] = {bool(is_large): int(count) for is_large, count in blue_large_counts.items()}
-        except ValueError:
-            logger.warning("blue_is_large column cannot be converted to boolean, skipping blue size analysis.")
-            pattern_results['blue_large_counts'] = {}
-    else:
-        pattern_results['blue_large_counts'] = {}
-
-    # Ensure blue_is_prime is boolean or convertible to boolean
-    if 'blue_is_prime' in df.columns and not df['blue_is_prime'].empty:
-        try:
-            blue_prime_counts = df['blue_is_prime'].astype(bool).value_counts()
-            pattern_results['blue_prime_counts'] = {bool(is_prime): int(count) for is_prime, count in blue_prime_counts.items()}
-        except ValueError:
-            logger.warning("blue_is_prime column cannot be converted to boolean, skipping blue prime analysis.")
-            pattern_results['blue_prime_counts'] = {}
-    else:
-        pattern_results['blue_prime_counts'] = {}
-
-
-    return pattern_results
-
-
-def analyze_associations(df: pd.DataFrame, min_support: float = ARM_MIN_SUPPORT, min_confidence: float = ARM_MIN_CONFIDENCE, min_lift: float = ARM_MIN_LIFT) -> pd.DataFrame:
-    """查找红球的频繁项集和关联规则。"""
-    # 需要至少2期以查找关联
-    if df is None or df.empty or len(df) < 2:
-        logger.warning("Not enough data for association rule mining (need at least 2 periods).")
-        return pd.DataFrame()  # 返回空DataFrame
-
+    if df is None or df.empty or len(df) < 2: return pd.DataFrame()
     red_cols = [f'red{i+1}' for i in range(6)]
-    # 检查红球列是否存在且在切片中不全为NaN/空
-    if not all(col in df.columns for col in red_cols) or df[red_cols].isnull().all().all():
-         logger.warning("Red ball columns missing or all NaN for association rule mining.")
-         return pd.DataFrame()
-
-    # 将球号转换为字符串以用于TransactionEncoder（通常更安全）
-    # Filter out any rows where red_cols might contain NaN after subsetting
-    transactions_df = df.dropna(subset=red_cols)
-    if transactions_df.empty:
-        logger.warning("No complete red ball rows available after dropping NaNs for ARM.")
-        return pd.DataFrame()
-
-    transactions = transactions_df[red_cols].astype(str).values.tolist()
-
-
-    # Filter out empty transactions (shouldn't happen after dropna but safety)
-    transactions = [t for t in transactions if all(item and item != 'nan' for item in t)]
-    if not transactions:
-         logger.warning("No valid transactions found for association rule mining after filtering.")
-         return pd.DataFrame()
-
-
-    te = TransactionEncoder()
+    if not all(c in df.columns and pd.api.types.is_numeric_dtype(df[c]) for c in red_cols): return pd.DataFrame()
+    tx_df = df.dropna(subset=red_cols).copy()
+    if tx_df.empty: return pd.DataFrame()
     try:
-        te_ary = te.fit(transactions).transform(transactions)
-        df_onehot = pd.DataFrame(te_ary, columns=te.columns_)
-    except Exception as e:
-        logger.warning(f"Error during association rule TransactionEncoder transformation: {e}")
-        return pd.DataFrame()
-
-    if df_onehot.empty:
-        logger.warning("One-hot encoded DataFrame is empty after ARM transformation.")
-        return pd.DataFrame()
-
+        tx_df[red_cols] = tx_df[red_cols].astype(int)
+        txs = tx_df[red_cols].astype(str).values.tolist()
+    except ValueError: return pd.DataFrame()
+    if not txs: return pd.DataFrame()
+    te = TransactionEncoder();
     try:
-        # Adjust min_support based on data size to require a minimum absolute frequency
-        # Use a minimum number of occurrences instead of a strict percentage if data is small
-        min_support_abs = max(2, int(min_support * len(df_onehot))) # Need at least 2 occurrences
-        min_support_adj = min_support_abs / len(df_onehot) if len(df_onehot) > 0 else 0
-
-        frequent_itemsets = apriori(df_onehot, min_support=min_support_adj, use_colnames=True)
-
-        if frequent_itemsets.empty:
-             logger.info(f"No frequent itemsets found with adjusted min_support={min_support_adj:.4f}.")
-             return pd.DataFrame()
-
-        frequent_itemsets['length'] = frequent_itemsets['itemsets'].apply(lambda x: len(x))
-    except Exception as e:
-        logger.warning(f"Error during Apriori algorithm execution: {e}")
-        return pd.DataFrame()
-
+        te_ary = te.fit_transform(txs)
+    except Exception: return pd.DataFrame()
+    df_oh = pd.DataFrame(te_ary, columns=te.columns_)
+    if df_oh.empty: return pd.DataFrame()
     try:
-        # Generate rules with minimum confidence and lift
-        rules = association_rules(frequent_itemsets, metric="lift", min_threshold=min_lift)
-        if min_confidence is not None: # Apply confidence threshold if specified
-             rules = rules[rules['confidence'] >= min_confidence]
-
-        rules.sort_values(by='lift', ascending=False, inplace=True)
-    except Exception as e:
-        logger.warning(f"Error during association rules generation: {e}")
+        actual_min_support = max(2/len(df_oh) if len(df_oh)>0 else min_s, min_s)
+        f_items = apriori(df_oh, min_support=actual_min_support, use_colnames=True)
+        if f_items.empty: return pd.DataFrame()
+        rules = association_rules(f_items, metric="lift", min_threshold=min_l)
+        if 'confidence' in rules.columns and isinstance(rules['confidence'], pd.Series):
+            return rules[rules['confidence'] >= min_c].sort_values(by='lift', ascending=False)
+        else:
+            logger.debug("ARM: 'confidence' column issue in rules dataframe during filtering.")
+            return rules.sort_values(by='lift', ascending=False) if 'lift' in rules.columns else pd.DataFrame()
+    except Exception as e_apriori:
+        logger.debug(f"Apriori/AssociationRules failed: {e_apriori}")
         return pd.DataFrame()
 
-    return rules
+def get_score_segment(score: float, boundaries: List[int], labels: List[str]) -> str:
+    if score is None or pd.isna(score): return "未知"
+    tolerance = 1e-9
+    if score < boundaries[0] - tolerance: return labels[0] if labels else "未知"
+    if score > boundaries[-1] + tolerance: return labels[-1] if labels else "未知"
+    for i in range(len(boundaries) - 1):
+        if i == 0:
+             if boundaries[i] <= score <= boundaries[i+1]: return labels[i]
+        elif boundaries[i] < score <= boundaries[i+1]: return labels[i]
+    return "未知"
 
-# --- 用于预测号码概率的ML ---
+def analyze_winning_red_ball_score_segments(df: pd.DataFrame, red_ball_scores: dict, score_boundaries: List[int], score_labels: List[str]) -> Tuple[Dict[str, int], Dict[str, float]]:
+    seg_counts = {label: 0 for label in score_labels}; total_win_reds = 0
+    red_cols = [f'red{i+1}' for i in range(6)]
+    if df is None or df.empty or not red_ball_scores or not all(c in df.columns for c in red_cols):
+        return seg_counts, {label: 0.0 for label in score_labels}
+
+    for _, row in df.iterrows():
+        win_reds = []
+        valid_row = True
+        for c in red_cols:
+            val = row.get(c)
+            if pd.isna(val): valid_row = False; break
+            try:
+                num_val = int(float(val))
+                if num_val not in RED_BALL_RANGE: valid_row = False; break
+                win_reds.append(num_val)
+            except (ValueError, TypeError): valid_row = False; break
+        if not valid_row or len(win_reds) != 6: continue
+
+        for ball in win_reds:
+            score = red_ball_scores.get(ball)
+            if score is not None and pd.notna(score) and isinstance(score, (int, float)):
+                segment = get_score_segment(score, score_boundaries, score_labels)
+                if segment in seg_counts and segment != "未知":
+                    seg_counts[segment] += 1; total_win_reds += 1
+
+    seg_pcts = {seg: (cnt / total_win_reds) * 100 if total_win_reds > 0 else 0.0 for seg, cnt in seg_counts.items()}
+    return seg_counts, seg_pcts
 
 def create_lagged_features(df: pd.DataFrame, lags: List[int]) -> Optional[pd.DataFrame]:
-    """为ML模型创建滞后特征。"""
-    if df is None or df.empty or not lags:
-         logger.warning("Input DataFrame empty or lags list is empty for feature creation.")
-         return None
-
-    # Select base features to lag - ensure these columns exist and are numeric
-    lag_base_cols = ['red_sum', 'red_span', 'red_odd_count', 'red_consecutive_pairs', 'red_repeat_count']
-    # Add zone counts as base features
-    lag_base_cols.extend([f'red_{zone}_count' for zone in RED_ZONES.keys()])
-    # Add blue features
-    # Explicitly convert boolean/object blue features to int before lagging
+    if df is None or df.empty or not lags: return None
+    base_cols_candidates = ['red_sum', 'red_span', 'red_odd_count', 'red_consecutive_pairs', 'red_repeat_count'] + \
+                           [f'red_{zone}_count' for zone in RED_ZONES.keys()] + \
+                           ['blue', 'blue_is_odd', 'blue_is_large', 'blue_is_prime']
     df_temp = df.copy()
-    for col in ['blue', 'blue_is_odd', 'blue_is_large', 'blue_is_prime']:
-         if col in df_temp.columns:
-             if pd.api.types.is_bool_dtype(df_temp[col]):
-                 df_temp[col] = df_temp[col].astype(int) # Convert boolean to 0 or 1
-             elif not pd.api.types.is_numeric_dtype(df_temp[col]):
-                  # Try converting other non-numeric columns if they somehow appear here
-                  try:
-                       df_temp[col] = pd.to_numeric(df_temp[col], errors='coerce')
-                       logger.warning(f"Coerced blue column '{col}' to numeric for lagging.")
-                  except Exception as e:
-                       logger.error(f"Could not convert blue column '{col}' to numeric: {e}. It might cause issues.")
-                       # Keep original dtype if coercion fails, but warn
-
-
-    lag_base_cols.extend(['blue', 'blue_is_odd', 'blue_is_large', 'blue_is_prime'])
-
-
-    # Filter out columns that don't exist in the dataframe (using df_temp now)
-    existing_lag_cols = [col for col in lag_base_cols if col in df_temp.columns]
-
-
-    if not existing_lag_cols:
-         logger.warning("No base columns found for creating lagged features.")
-         return None
-
-    # Ensure remaining base columns are numeric before lagging (should be handled by blue conversion above, but safety check)
-    for col in existing_lag_cols:
-        if not pd.api.types.is_numeric_dtype(df_temp[col]):
-             logger.warning(f"Column '{col}' is not numeric after preparation and will be skipped for lagging base.")
-             existing_lag_cols.remove(col) # Remove from list if not numeric
-
-
-    if not existing_lag_cols:
-         logger.warning("No numeric base columns remaining after filtering/coercion for lagging.")
-         return None
-
-    df_lagged = df_temp[existing_lag_cols].copy()
-
-
-    for lag in lags:
-        if lag > 0:
-            for col in existing_lag_cols:
-                 # Use .name to get original column name
-                 df_lagged[f'{col}_lag{lag}'] = df_lagged[col].shift(lag)
-
-
-    # Drop rows with NaN values introduced by lagging
-    initial_rows = len(df_lagged)
-    df_lagged.dropna(inplace=True)
-    if len(df_lagged) < initial_rows:
-         # logger.info(f"Dropped {initial_rows - len(df_lagged)} rows due to lagging NaNs.") # Avoid noise in backtest
-         pass
-
-
-    if df_lagged.empty:
-        logger.warning("Lagged DataFrame is empty after dropping NaNs.")
-        return None
-
-    # The features are the lagged columns
-    feature_cols = [col for col in df_lagged.columns if any(f'_lag{lag}' in col for lag in lags)]
-
-
-    # Ensure feature columns actually exist in the dataframe after potential drops
-    feature_cols = [col for col in feature_cols if col in df_lagged.columns]
-
-
-    if not feature_cols:
-         logger.warning("No feature columns created after lagging and dropping NaNs.")
-         return None
-
-    # Return DataFrame containing lagged features (X) and original (non-lagged) base columns (which are targets for the current period)
-    # The non-lagged base columns are only needed if we were predicting features directly.
-    # For predicting individual ball presence, we need the actual balls drawn in the target period.
-    # So just return the features DataFrame X.
-    return df_lagged[feature_cols]
-
-
-# Helper function for parallel training (TOP-LEVEL FUNCTION FOR MULTIPROCESSING)
-# Removed logger and SuppressOutput as they are not easily pickleable or managed across processes
-def train_single_model(model_type, ball_type, ball_number, X, y, params, MIN_POSITIVE_SAMPLES_FOR_ML, LGBMClassifier_ref, SVC_ref, StandardScaler_ref, Pipeline_ref):
-    """Helper function to train a single model for a specific ball."""
-    try:
-        # Ensure enough positive samples before training
-        positive_count = y.sum()
-        if len(y.unique()) < 2 or positive_count < MIN_POSITIVE_SAMPLES_FOR_ML:
-             # In multiprocessing, logging directly from helper might be complex.
-             # Instead, we can return an indicator or let the main process handle logging based on return value/exception.
-             # print(f"Warning: {ball_type.capitalize()}球 {ball_number} 在训练数据中正样本({positive_count})不足或类别不平衡，跳过。") # Direct print for debugging
-             return None, None # Return model, key (None if skipped)
-
-        model = None
-        model_key = None
-
-        # No SuppressOutput in multiprocessing helper easily
-
-        if model_type == 'lgbm' and LGBMClassifier_ref is not None:
-            model = LGBMClassifier_ref(**params)
-            model.fit(X, y)
-            model_key = f'lgbm_{ball_number}'
-        elif model_type == 'logreg':
-             # Logistic Regression always uses Pipeline with StandardScaler
-             model = Pipeline_ref([('scaler', StandardScaler_ref()), ('logreg', LogisticRegression(**params))])
-             model.fit(X, y)
-             model_key = f'logreg_{ball_number}'
-        elif model_type == 'svc':
-            # SVC also uses Pipeline with StandardScaler
-            model = Pipeline_ref([('scaler', StandardScaler_ref()), ('svc', SVC_ref(**params))])
-
-            # SVC training can be slow, output is not suppressed here in subprocess
-            model.fit(X, y)
-
-            # Check if probability is enabled and model has predict_proba
-            if hasattr(model, 'predict_proba'):
-                 svc_estimator = model.named_steps.get('svc')
-                 if svc_estimator is not None and hasattr(svc_estimator, 'probability') and svc_estimator.probability:
-                     model_key = f'svc_{ball_number}'
-                 else:
-                     # print(f"Warning: {ball_type.capitalize()}球 {ball_number} 的 SVC 模型未启用概率预测。跳过存储。") # Direct print for debugging
-                     model = None # Discard model if probability not enabled
+    existing_lag_cols = []
+    for col in base_cols_candidates:
+        if col in df_temp.columns:
+            if pd.api.types.is_bool_dtype(df_temp[col].dtype):
+                df_temp[col] = df_temp[col].astype(int)
+                existing_lag_cols.append(col)
+            elif pd.api.types.is_numeric_dtype(df_temp[col].dtype):
+                existing_lag_cols.append(col)
             else:
-                 # print(f"Warning: {ball_type.capitalize()}球 {ball_number} 的 SVC pipeline没有predict_proba方法。跳过存储。") # Direct print for debugging
-                 model = None
+                try:
+                    df_temp[col] = pd.to_numeric(df_temp[col], errors='coerce')
+                    if pd.api.types.is_numeric_dtype(df_temp[col].dtype): existing_lag_cols.append(col)
+                except Exception: pass
+    if not existing_lag_cols: return None
+    df_lagged = df_temp[existing_lag_cols].copy()
+    for lag_val in lags:
+        if lag_val > 0:
+            for col in existing_lag_cols: df_lagged[f'{col}_lag{lag_val}'] = df_lagged[col].shift(lag_val)
+    df_lagged.dropna(inplace=True)
+    if df_lagged.empty: return None
+    feature_cols = [col for col in df_lagged.columns if any(f'_lag{lag_val}' in col for lag_val in lags)]
+    return df_lagged[feature_cols] if feature_cols else None
 
+def train_single_model(model_type, ball_type_str, ball_number, X, y, params, min_pos_samples,
+                       lgbm_ref, svc_ref, scaler_ref, pipe_ref, logreg_ref, xgb_ref):
+    if y.sum() < min_pos_samples or len(y.unique()) < 2: return None, None
+    model_key = f'{model_type}_{ball_number}'
+    model_params = params.copy()
 
-        if model is not None:
-             # print(f"Successfully trained {ball_type} ball {ball_number} {model_type} model.") # Direct print for debugging
-             pass # Avoid excessive printing from processes
+    positive_count = y.sum()
+    negative_count = len(y) - positive_count
+    scale_pos_weight_val = negative_count / (positive_count + 1e-9) if positive_count > 0 else 1.0
+    class_weight_val = 'balanced' if positive_count > 0 and negative_count > 0 else None
 
-        return model, model_key # Return the trained model and its key
+    model = None
+    try:
+        if model_type == 'lgbm':
+            model_params['scale_pos_weight'] = scale_pos_weight_val
+            model = lgbm_ref(**model_params)
+            model.fit(X, y)
+        elif model_type == 'xgb':
+            model_params['scale_pos_weight'] = scale_pos_weight_val
+            model = xgb_ref(**model_params)
+            model.fit(X, y)
+        elif model_type == 'logreg':
+            if class_weight_val: model_params['class_weight'] = class_weight_val
+            model_params.pop('scale_pos_weight', None)
+            model = pipe_ref([('scaler', scaler_ref()), ('logreg', logreg_ref(**model_params))])
+            model.fit(X, y)
+        elif model_type == 'svc':
+            if class_weight_val: model_params['class_weight'] = class_weight_val
+            model_params.pop('scale_pos_weight', None)
+            svc_actual_params = model_params.copy()
+            svc_actual_params['probability'] = True
+            model = pipe_ref([('scaler', scaler_ref()), ('svc', svc_ref(**svc_actual_params))])
+            model.fit(X, y)
+            svc_estimator = model.named_steps.get('svc')
+            if not (svc_estimator and hasattr(svc_estimator, 'probability') and svc_estimator.probability):
+                logger.debug(f"SVC for {ball_type_str} {ball_number} did not enable probability correctly.")
+                model = None
+        return model, model_key
+    except Exception as e_train:
+        logger.debug(f"Training {model_type} for {ball_type_str} {ball_number} failed: {e_train}")
+        return None, None
 
-    except Exception as e:
-         # print(f"Warning: Training {ball_type} ball {ball_number} {model_type} model failed: {e}") # Direct print for debugging
-         # Raise the exception or return specific error info for the main process to handle
-         raise RuntimeError(f"Training {ball_type} ball {ball_number} {model_type} failed") from e # Re-raise with context
-         # return None, None # Alternative: return None on error
+def train_prediction_models(df_train_raw: pd.DataFrame, ml_lags_list: List[int], weights_config: Dict) -> Optional[dict]:
+    X = create_lagged_features(df_train_raw.copy(), ml_lags_list)
+    if X is None or X.empty: logger.warning("ML Train: Lagged features are empty."); return None
 
-
-def train_prediction_models(df_train_raw: pd.DataFrame, lags: List[int]) -> Optional[dict]:
-    """训练ML模型以预测下一期单个号码出现的概率。"""
-
-    logger.info("开始训练ML模型预测单个号码概率 (多进程)...")
-    # 记录开始时间
-    start_time = time.time()
-
-    # 从训练数据创建滞后特征。create_lagged_features 返回的DF只包含特征X
-    X = create_lagged_features(df_train_raw.copy(), lags)
-
-    if X is None or X.empty:
-        logger.warning("无法创建滞后特征，ML模型无法训练。")
-        return None
-
-    # 目标(y) 是当前期（与滞后特征对齐的期）的开奖号码。
-    # create_lagged_features 丢弃了由滞后引入的开始的行。
-    # 我们需要从 df_train_raw 中获取与 X 对齐的实际开奖数据
-    # X 的索引对应于 df_train_raw.loc[X.index]
     target_df = df_train_raw.loc[X.index].copy()
+    if target_df.empty: logger.warning("ML Train: Target DF is empty."); return None
 
-    if target_df.empty:
-         logger.warning("目标DataFrame为空，ML模型无法训练。")
-         return None
-
-    # 检查是否存在红蓝球列并且是数值类型
     red_cols = [f'red{i+1}' for i in range(6)]
-    if not all(col in target_df.columns for col in red_cols) or 'blue' not in target_df.columns:
-        logger.error("目标DataFrame中缺少红球或蓝球列，无法训练号码概率模型。")
-        return None
-
+    if not all(c in target_df.columns for c in red_cols + ['blue']):
+        logger.error("ML Train: Missing ball columns in target_df."); return None
     try:
-        target_df[red_cols + ['blue']] = target_df[red_cols + ['blue']].astype(int)
-    except ValueError as e:
-        logger.error(f"无法将目标红球或蓝球列转换为整数: {e}。无法训练号码概率模型。")
-        return None
+        for col in red_cols + ['blue']: target_df[col] = pd.to_numeric(target_df[col], errors='coerce').astype(int)
+    except (ValueError, TypeError): logger.error("ML Train: Failed to convert ball columns to int."); return None
 
+    trained_models = {'red': {}, 'blue': {}, 'feature_cols': X.columns.tolist()}
+    min_pos = MIN_POSITIVE_SAMPLES_FOR_ML
 
-    trained_models = {
-        'red': {},
-        'blue': {}
-    }
+    futures_map = {}
+    num_cpus = os.cpu_count()
+    max_workers = num_cpus if num_cpus and num_cpus > 1 else 1 # Ensure at least 1 worker
 
-    # 使用 ProcessPoolExecutor 来并行训练模型
-    # max_workers=None defaults to os.cpu_count()
-    # You can specify a number, e.g., os.cpu_count() or a fixed number
-    with concurrent.futures.ProcessPoolExecutor(max_workers=os.cpu_count()) as executor:
-        # Future 对象的列表
-        future_to_ball = {}
+    with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
+        for ball_num in RED_BALL_RANGE:
+            y_red = target_df[red_cols].apply(lambda row: ball_num in row.values, axis=1).astype(int)
+            for mt, mp in [('lgbm', LGBM_PARAMS), ('xgb', XGB_PARAMS), ('logreg', LOGISTIC_REG_PARAMS), ('svc', SVC_PARAMS)]:
+                f = executor.submit(train_single_model, mt, '红', ball_num, X, y_red, mp, min_pos,
+                                    LGBMClassifier, SVC, StandardScaler, Pipeline, LogisticRegression, xgb.XGBClassifier)
+                futures_map[f] = ('red', mt, ball_num)
+        for ball_num in BLUE_BALL_RANGE:
+            y_blue = (target_df['blue'] == ball_num).astype(int)
+            for mt, mp in [('lgbm', LGBM_PARAMS), ('xgb', XGB_PARAMS), ('logreg', LOGISTIC_REG_PARAMS), ('svc', SVC_PARAMS)]:
+                f = executor.submit(train_single_model, mt, '蓝', ball_num, X, y_blue, mp, min_pos,
+                                    LGBMClassifier, SVC, StandardScaler, Pipeline, LogisticRegression, xgb.XGBClassifier)
+                futures_map[f] = ('blue', mt, ball_num)
 
-        # Submit red ball training tasks
-        for ball in RED_BALL_RANGE:
-            y_red = target_df[red_cols].apply(lambda row: ball in row.values, axis=1).astype(int)
-            # Pass necessary classes and parameters to the helper function
-            if LGBMClassifier is not None:
-                future = executor.submit(train_single_model, 'lgbm', '红', ball, X, y_red, LGBM_PARAMS, MIN_POSITIVE_SAMPLES_FOR_ML, LGBMClassifier, SVC, StandardScaler, Pipeline)
-                future_to_ball[future] = ('red', 'lgbm', ball)
+    models_trained_count = 0
+    for future in concurrent.futures.as_completed(futures_map):
+        ball_type_str, model_type, ball_number = futures_map[future]
+        try:
+            model, model_key = future.result()
+            if model and model_key:
+                trained_models[ball_type_str][model_key] = model
+                models_trained_count +=1
+        except Exception as e_future:
+            logger.warning(f"Exception retrieving result for {ball_type_str} {ball_number} {model_type}: {e_future}")
 
-            future = executor.submit(train_single_model, 'logreg', '红', ball, X, y_red, LOGISTIC_REG_PARAMS, MIN_POSITIVE_SAMPLES_FOR_ML, LGBMClassifier, SVC, StandardScaler, Pipeline)
-            future_to_ball[future] = ('red', 'logreg', ball)
+    logger.debug(f"ML模型训练完成。成功训练 {models_trained_count} 个模型。")
+    return trained_models if models_trained_count > 0 else None
 
-            future = executor.submit(train_single_model, 'svc', '红', ball, X, y_red, SVC_PARAMS, MIN_POSITIVE_SAMPLES_FOR_ML, LGBMClassifier, SVC, StandardScaler, Pipeline)
-            future_to_ball[future] = ('red', 'svc', ball)
+def predict_next_draw_probabilities(df_historical: pd.DataFrame, trained_models: Optional[dict], ml_lags_list: List[int], weights_config: Dict) -> Dict:
+    probs = {'red': {}, 'blue': {}}
+    if not trained_models or df_historical is None or df_historical.empty: return probs
 
+    feat_cols = trained_models.get('feature_cols')
+    if not feat_cols: logger.warning("ML Predict: No feature_cols in trained_models."); return probs
 
-        # Submit blue ball training tasks
-        for ball in BLUE_BALL_RANGE:
-            y_blue = (target_df['blue'] == ball).astype(int)
-            # Pass necessary classes and parameters to the helper function
-            if LGBMClassifier is not None:
-                future = executor.submit(train_single_model, 'lgbm', '蓝', ball, X, y_blue, LGBM_PARAMS, MIN_POSITIVE_SAMPLES_FOR_ML, LGBMClassifier, SVC, StandardScaler, Pipeline)
-                future_to_ball[future] = ('blue', 'lgbm', ball)
+    max_hist_lag = max(ml_lags_list) if ml_lags_list else 0
+    if len(df_historical) < max_hist_lag + 1:
+        logger.warning(f"ML Predict: Not enough historical data ({len(df_historical)}) for lag ({max_hist_lag})."); return probs
 
-            future = executor.submit(train_single_model, 'logreg', '蓝', ball, X, y_blue, LOGISTIC_REG_PARAMS, MIN_POSITIVE_SAMPLES_FOR_ML, LGBMClassifier, SVC, StandardScaler, Pipeline)
-            future_to_ball[future] = ('blue', 'logreg', ball)
-
-            future = executor.submit(train_single_model, 'svc', '蓝', ball, X, y_blue, SVC_PARAMS, MIN_POSITIVE_SAMPLES_FOR_ML, LGBMClassifier, SVC, StandardScaler, Pipeline)
-            future_to_ball[future] = ('blue', 'svc', ball)
-
-
-        # Collect results
-        for future in concurrent.futures.as_completed(future_to_ball):
-            ball_type, model_type, ball_number = future_to_ball[future]
-            try:
-                model, model_key = future.result() # Get the return value from the helper function
-                if model is not None and model_key is not None:
-                     if ball_type == 'red':
-                         trained_models['red'][model_key] = model
-                     elif ball_type == 'blue':
-                         trained_models['blue'][model_key] = model
-                elif model is None and model_key is None:
-                     # This indicates the task was skipped gracefully (e.g., insufficient positive samples)
-                     logger.warning(f'{ball_type}球 {ball_number} 的 {model_type} 模型训练被跳过 (样本不足或其他)。')
-            except Exception as exc:
-                # Exceptions raised in the helper function will be caught here
-                logger.warning(f'处理 {ball_type}球 {ball_number} 的 {model_type} 模型训练结果时发生异常: {exc}')
-
-
-    # 记录结束时间
-    end_time = time.time()
-    elapsed_time = end_time - start_time
-
-    if not trained_models['red'] and not trained_models['blue']:
-        logger.warning("没有模型成功训练。")
-        return None
-
-    trained_models['feature_cols'] = X.columns.tolist() # Store feature columns from X
-
-    logger.info(f"ML模型训练完成 (多进程)。成功训练红球模型 {len(trained_models['red'])} 个，蓝球模型 {len(trained_models['blue'])} 个。耗时: {elapsed_time:.2f} 秒。")
-
-    return trained_models
-
-
-def predict_next_draw_probabilities(df_historical: pd.DataFrame, trained_models: Optional[dict], lags: List[int]) -> Dict:
-    """使用训练好的ML模型和最新数据预测下一期单个号码出现的概率。"""
-    predicted_probabilities = {
-        'red': {},
-        'blue': {}
-    }
-
-    if trained_models is None or df_historical is None or df_historical.empty:
-        # logger.warning("ML models or historical data missing for probability prediction.")
-        return predicted_probabilities # Return empty dict
-
-    feature_cols = trained_models.get('feature_cols')
-    if feature_cols is None or not feature_cols:
-        logger.warning("Trained models missing feature_cols, cannot predict probabilities.")
-        return predicted_probabilities
-
-    max_lag = max(lags) if lags else 0
-    if len(df_historical) < max_lag + 1:
-        # logger.warning(f"Not enough history ({len(df_historical)} periods) to create prediction features (need at least {max_lag + 1}). Skipping ML prediction.")
-        return predicted_probabilities
-
-    # Create features for the *next* draw using the latest history
-    # Need max_lag + 1 rows to compute the lagged features for the very last row
-    df_latest_history_for_lagging = df_historical.tail(max_lag + 1).copy()
-    # create_lagged_features now returns only the feature DataFrame X
-    predict_X = create_lagged_features(df_latest_history_for_lagging, lags)
-
+    predict_X = create_lagged_features(df_historical.tail(max_hist_lag + 1).copy(), ml_lags_list)
     if predict_X is None or predict_X.empty:
-        logger.warning("Failed to prepare prediction features, cannot predict probabilities.")
-        return predicted_probabilities
-
-    # Ensure prediction features match training features and handle potential NaNs
-    # The number of rows in predict_X should be exactly 1
+        logger.warning("ML Predict: create_lagged_features returned empty for prediction."); return probs
     if len(predict_X) != 1:
-         logger.error(f"Prediction feature DataFrame has {len(predict_X)} rows instead of 1. Cannot predict.")
-         return predicted_probabilities
+        logger.error(f"ML Predict: Expected 1 row for prediction features, got {len(predict_X)}."); return probs
 
     try:
-        predict_X = predict_X.reindex(columns=feature_cols, fill_value=0)
-        if predict_X.isnull().values.any():
-             logger.warning("NaNs found in prediction features after reindexing/filling. Attempting final fillna(0).")
-             predict_X.fillna(0, inplace=True)
-             if predict_X.isnull().values.any(): # Final check
-                  logger.error("Prediction features still contain NaNs after final fillna. Cannot predict.")
-                  return predicted_probabilities
-    except Exception as e:
-        logger.error(f"Error preparing prediction features (reindex/fillna): {e}. Cannot predict.")
-        return predicted_probabilities
+        predict_X = predict_X.reindex(columns=feat_cols, fill_value=0)
+        for col in predict_X.columns: predict_X[col] = pd.to_numeric(predict_X[col], errors='coerce')
+        predict_X.fillna(0, inplace=True)
+        if predict_X.isnull().values.any(): logger.error("ML Predict: NaN in prediction features after processing."); return probs
+    except Exception as e_pred_preprocess:
+        logger.error(f"ML Predict: Error preprocessing prediction features: {e_pred_preprocess}."); return probs
 
-    # Predict probabilities for each red ball
-    red_models = trained_models.get('red', {})
-    for ball in RED_BALL_RANGE:
-        lgbm_model = red_models.get(f'lgbm_{ball}')
-        logreg_pipeline = red_models.get(f'logreg_{ball}') # Get LogReg pipeline
-        svc_pipeline = red_models.get(f'svc_{ball}') # Get SVC pipeline
+    for ball_type_key, ball_val_range, models_sub_dict in [('red', RED_BALL_RANGE, trained_models.get('red', {})),
+                                                           ('blue', BLUE_BALL_RANGE, trained_models.get('blue', {}))]:
+        if not models_sub_dict: continue
+        for ball_val in ball_val_range:
+            ball_preds = []
+            for model_variant in ['lgbm', 'xgb', 'logreg', 'svc']:
+                model_instance = models_sub_dict.get(f'{model_variant}_{ball_val}')
+                if model_instance and hasattr(model_instance, 'predict_proba'):
+                    try:
+                        proba = model_instance.predict_proba(predict_X)[0][1]
+                        ball_preds.append(proba)
+                    except Exception as e_proba:
+                        logger.debug(f"ML Predict: Failed predict_proba for {ball_type_key} {ball_val} {model_variant}: {e_proba}")
+            if ball_preds: probs[ball_type_key][ball_val] = np.mean(ball_preds)
+    return probs
 
-        predictions = [] # Store probability predictions from available models
-        if lgbm_model:
-            try:
-                # predict_proba returns [[prob_class_0, prob_class_1]]
-                predictions.append(lgbm_model.predict_proba(predict_X)[0][1])
-            except Exception as e:
-                # logger.warning(f"Warning: LGBM prediction for red ball {ball} failed: {e}") # Too noisy in backtest
-                pass
-        if logreg_pipeline: # Predict using LogReg pipeline if available
-            try:
-                 # Pipeline's predict_proba applies scaler internally
-                 predictions.append(logreg_pipeline.predict_proba(predict_X)[0][1])
-            except Exception as e:
-                 # logger.warning(f"Warning: LogReg prediction for red ball {ball} failed: {e}") # Too noisy
-                 pass
-        if svc_pipeline: # Predict using SVC pipeline if available
-            try:
-                # Pipeline's predict_proba applies scaler internally
-                 predictions.append(svc_pipeline.predict_proba(predict_X)[0][1])
-            except Exception as e:
-                 logger.warning(f"Warning: SVC prediction for red ball {ball} failed: {e}") # Log SVC prediction failures
+def calculate_scores(freq_omission_data: dict, pattern_analysis_data: dict, predicted_probabilities: dict, weights_config: Dict) -> dict:
+    r_scores, b_scores = {}, {}
+    r_freq = freq_omission_data.get('red_freq', {}); b_freq = freq_omission_data.get('blue_freq', {})
+    omission = freq_omission_data.get('current_omission', {}); avg_int = freq_omission_data.get('average_interval', {})
 
+    max_hist_omission_r = freq_omission_data.get('max_historical_omission_red', {})
+    recent_N_freq_r = freq_omission_data.get('recent_N_freq_red', {})
 
-        # Combine predictions (e.e., average)
-        if predictions:
-            predicted_probabilities['red'][ball] = np.mean(predictions)
-        # If no models were available or succeeded, probability defaults to 0.0 (already initialized)
+    r_freq_series = pd.Series(r_freq).reindex(list(RED_BALL_RANGE), fill_value=0)
+    r_freq_rank = r_freq_series.rank(method='min', ascending=False)
+    b_freq_series = pd.Series(b_freq).reindex(list(BLUE_BALL_RANGE), fill_value=0)
+    b_freq_rank = b_freq_series.rank(method='min', ascending=False)
 
+    r_pred_probs = predicted_probabilities.get('red', {}); b_pred_probs = predicted_probabilities.get('blue', {})
+    max_r_rank, max_b_rank = len(RED_BALL_RANGE), len(BLUE_BALL_RANGE)
 
-    # Predict probabilities for each blue ball
-    blue_models = trained_models.get('blue', {})
-    for ball in BLUE_BALL_RANGE:
-        lgbm_model = blue_models.get(f'lgbm_{ball}')
-        logreg_pipeline = blue_models.get(f'logreg_{ball}') # Get LogReg pipeline
-        svc_pipeline = blue_models.get(f'svc_{ball}') # Get SVC pipeline
-
-
-        predictions = []
-        if lgbm_model:
-            try:
-                 predictions.append(lgbm_model.predict_proba(predict_X)[0][1])
-            except Exception as e:
-                 # logger.warning(f"Warning: LGBM prediction for blue ball {ball} failed: {e}") # Too noisy
-                 pass
-        if logreg_pipeline: # Predict using LogReg pipeline if available
-            try:
-                 predictions.append(logreg_pipeline.predict_proba(predict_X)[0][1])
-            except Exception as e:
-                 # logger.warning(f"Warning: LogReg prediction for blue ball {ball} failed: {e}") # Too noisy
-                 pass
-        if svc_pipeline: # Predict using SVC pipeline if available
-            try:
-                 predictions.append(svc_pipeline.predict_proba(predict_X)[0][1])
-            except Exception as e:
-                 logger.warning(f"Warning: SVC prediction for blue ball {ball} failed: {e}")
-
-
-        # Combine predictions (e.g., average)
-        if predictions:
-            predicted_probabilities['blue'][ball] = np.mean(predictions)
-        # If no models were available or succeeded, probability defaults to 0.0
-
-
-    # Optional: Log top N probabilities for inspection
-    # if predicted_probabilities.get('red') or predicted_probabilities.get('blue'):
-    #     sorted_red_probs = sorted(predicted_probabilities.get('red', {}).items(), key=lambda item: item[1], reverse=True)
-    #     sorted_blue_probs = sorted(predicted_probabilities.get('blue', {}).items(), key=lambda item: item[1], reverse=True)
-    #     logger.info(f"Predicted Top 10 Red Probabilities: {sorted_red_probs[:10]}")
-    #     logger.info(f"Predicted Top 5 Blue Probabilities: {sorted_blue_probs[:5]}")
-
-
-    return predicted_probabilities
-
-
-def calculate_scores(freq_omission_data: dict, pattern_analysis_data: dict, predicted_probabilities: dict) -> dict:
-    """计算每个号码的综合得分，结合频率、遗漏、历史模式和ML预测概率。"""
-    red_scores = {}
-    blue_scores = {}
-
-    # --- 评分因素 ---
-    red_freq = freq_omission_data.get('red_freq', {})
-    blue_freq = freq_omission_data.get('blue_freq', {})
-    current_omission = freq_omission_data.get('current_omission', {})  # 任意位置
-    average_interval = freq_omission_data.get('average_interval', {})  # 任意位置
-
-    # 将频率转换为排名（处理freq数据为空的情况）
-    # 使用所有可能的范围内数字创建一致排名的序列
-    red_freq_series = pd.Series(red_freq).reindex(RED_BALL_RANGE, fill_value=0)  # 确保包含所有数字
-    red_freq_rank = red_freq_series.rank(method='min', ascending=False)  # 排名1是最高频率
-
-    blue_freq_series = pd.Series(blue_freq).reindex(BLUE_BALL_RANGE, fill_value=0)  # 确保包含所有数字
-    blue_freq_rank = blue_freq_series.rank(method='min', ascending=False)
-
-    # ML Predicted Probabilities
-    red_pred_probs = predicted_probabilities.get('red', {})
-    blue_pred_probs = predicted_probabilities.get('blue', {})
-
-
-    # --- 评分公式 ---
-    max_red_rank = len(RED_BALL_RANGE)
-    max_blue_rank = len(BLUE_BALL_RANGE)
-
-    # Weights are defined in Configuration section
+    recent_freq_values = [v for v in recent_N_freq_r.values() if v is not None]
+    min_rec_freq, max_rec_freq = min(recent_freq_values) if recent_freq_values else 0, max(recent_freq_values) if recent_freq_values else 0
 
     for num in RED_BALL_RANGE:
-        # Factor 1: Frequency rank (inverted) - Higher frequency gets higher base score
-        # Ensure num is in red_freq_rank index before getting rank, default to max_red_rank + 1 if not seen
-        freq_rank_val = red_freq_rank.get(num, max_red_rank + 1)
-        freq_score = (max_red_rank - (freq_rank_val - 1)) / max_red_rank * FREQ_SCORE_WEIGHT
+        freq_s = max(0, (max_r_rank - (r_freq_rank.get(num, max_r_rank+1)-1))/max_r_rank * weights_config['FREQ_SCORE_WEIGHT'])
+        dev = omission.get(num, max_r_rank*2) - avg_int.get(num, max_r_rank*2)
+        omit_s = max(0, weights_config['OMISSION_SCORE_WEIGHT'] * np.exp(-0.005 * dev**2))
 
+        max_o = max_hist_omission_r.get(num, 0)
+        cur_o = omission.get(num, 0)
+        max_omit_ratio_s = 0
+        if max_o > 0:
+            ratio_o = cur_o / max_o
+            max_omit_ratio_s = max(0, min(1.0, ratio_o)) * weights_config['MAX_OMISSION_RATIO_SCORE_WEIGHT_RED']
+            if ratio_o > 1.2: max_omit_ratio_s *= 1.2
+            if ratio_o < 0.2: max_omit_ratio_s *= 0.5
+        else:
+            max_omit_ratio_s = weights_config['MAX_OMISSION_RATIO_SCORE_WEIGHT_RED'] if cur_o > 0 else 0
 
-        # Factor 2: Omission deviation (reward for being close to average)
-        # Use .get with default values if num is not in current_omission or average_interval
-        current_omit = current_omission.get(num, len(RED_BALL_RANGE) * 2) # Use a large default if never seen
-        avg_int = average_interval.get(num, len(RED_BALL_RANGE) * 2)      # Use a large default if never seen
-        dev = current_omit - avg_int
-        omission_score = OMISSION_SCORE_WEIGHT * np.exp(-0.005 * dev**2) # Adjust decay rate if needed
+        rec_f = recent_N_freq_r.get(num, 0)
+        norm_rec_f_score = 0
+        if max_rec_freq > min_rec_freq:
+            norm_rec_f_score = (rec_f - min_rec_freq) / (max_rec_freq - min_rec_freq)
+        elif max_rec_freq > 0 :
+             norm_rec_f_score = 0.5 if rec_f > 0 else 0
+        recent_freq_s = max(0, norm_rec_f_score * weights_config['RECENT_FREQ_SCORE_WEIGHT_RED'])
 
-        # Factor 3: ML Predicted Probability Score
-        # Map probability (0 to 1) to a score component
-        ml_prob = red_pred_probs.get(num, 0.0) # Default to 0 if no prediction
-        ml_prob_score = ml_prob * ML_PROB_SCORE_WEIGHT_RED # Simple linear scaling
+        ml_s = max(0, r_pred_probs.get(num, 0.0) * weights_config['ML_PROB_SCORE_WEIGHT_RED'])
 
-
-        # Combine factors
-        red_scores[num] = freq_score + omission_score + ml_prob_score
+        r_scores[num] = freq_s + omit_s + ml_s + max_omit_ratio_s + recent_freq_s
 
     for num in BLUE_BALL_RANGE:
-        # Factor 1: Frequency rank (inverted)
-        # Ensure num is in blue_freq_rank index before getting rank
-        freq_rank_val = blue_freq_rank.get(num, max_blue_rank + 1)
-        freq_score = (max_blue_rank - (freq_rank_val - 1)) / max_blue_rank * BLUE_FREQ_SCORE_WEIGHT
+        freq_s = max(0, (max_b_rank - (b_freq_rank.get(num, max_b_rank+1)-1))/max_b_rank * weights_config['BLUE_FREQ_SCORE_WEIGHT'])
+        dev = omission.get(f'blue_{num}', max_b_rank*2) - avg_int.get(f'blue_{num}', max_b_rank*2)
+        omit_s = max(0, weights_config['BLUE_OMISSION_SCORE_WEIGHT'] * np.exp(-0.01 * dev**2))
+        ml_s = max(0, b_pred_probs.get(num, 0.0) * weights_config['ML_PROB_SCORE_WEIGHT_BLUE'])
+        b_scores[num] = freq_s + omit_s + ml_s
 
-        # Factor 2: Omission deviation
-        current_omit = current_omission.get(num, len(BLUE_BALL_RANGE) * 2)
-        avg_int = average_interval.get(num, len(BLUE_BALL_RANGE) * 2)
-        dev = current_omit - avg_int
-        omission_score = BLUE_OMISSION_SCORE_WEIGHT * np.exp(-0.01 * dev**2) # Adjust decay rate
+    all_s_vals = [s for s in list(r_scores.values()) + list(b_scores.values()) if np.isfinite(s)]
+    if all_s_vals:
+        min_s_val, max_s_val = min(all_s_vals), max(all_s_vals)
+        if (max_s_val - min_s_val) > 1e-9:
+            r_scores = {n: max(0,min(100,(s-min_s_val)/(max_s_val-min_s_val)*100)) if np.isfinite(s) else 0 for n,s in r_scores.items()}
+            b_scores = {n: max(0,min(100,(s-min_s_val)/(max_s_val-min_s_val)*100)) if np.isfinite(s) else 0 for n,s in b_scores.items()}
+        else:
+            r_scores = {n:50.0 for n in RED_BALL_RANGE}; b_scores = {n:50.0 for n in BLUE_BALL_RANGE}
+    else:
+        r_scores = {n:0.0 for n in RED_BALL_RANGE}; b_scores = {n:0.0 for n in BLUE_BALL_RANGE}
+    return {'red_scores': r_scores, 'blue_scores': b_scores}
 
-        # Factor 3: ML Predicted Probability Score
-        ml_prob = blue_pred_probs.get(num, 0.0)
-        ml_prob_score = ml_prob * ML_PROB_SCORE_WEIGHT_BLUE
+def generate_combinations(scores_data: dict, pattern_analysis_data: dict, association_rules_df: pd.DataFrame,
+                          winning_segment_percentages: Dict[str, float], weights_config: Dict) -> tuple[List[Dict], list[str]]:
+    num_combinations_to_generate = weights_config.get('NUM_COMBINATIONS_TO_GENERATE', 10)
+    target_red_pool_size = weights_config.get('TOP_N_RED_FOR_CANDIDATE', 18)
+    top_n_blue = weights_config.get('TOP_N_BLUE_FOR_CANDIDATE', 8)
 
-        # Combine factors
-        blue_scores[num] = freq_score + omission_score + ml_prob_score
+    min_different_reds = weights_config.get('DIVERSITY_MIN_DIFFERENT_REDS', 3)
+    max_common_reds_allowed = 6 - min_different_reds
+    diversity_max_attempts = weights_config.get('DIVERSITY_SELECTION_MAX_ATTEMPTS', 20)
 
-    # Normalize scores to a fixed range (e.e., 0-100)
-    # Ensure there's at least one score to avoid division by zero
-    all_scores = list(red_scores.values()) + list(blue_scores.values())
-    if all_scores:
-        min_score, max_score = min(all_scores), max(all_scores)
-        # Add a small floating point comparison tolerance to handle cases where all scores are identical
-        if (max_score - min_score) > 1e-9:
-            red_scores = {num: (score - min_score) / (max_score - min_score) * 100 for num, score in red_scores.items()}
-            blue_scores = {num: (score - min_score) / (max_score - min_score) * 100 for num, score in blue_scores.items()}
-        else: # Handle case where all scores are very close or identical
-             red_scores = {num: 50.0 for num in RED_BALL_RANGE}
-             blue_scores = {num: 50.0 for num in BLUE_BALL_RANGE}
-    else: # If all_scores is empty (e.g., no data), return default scores
-        red_scores = {num: 50.0 for num in RED_BALL_RANGE}
-        blue_scores = {num: 50.0 for num in BLUE_BALL_RANGE}
+    prop_h = weights_config.get('CANDIDATE_POOL_PROPORTIONS_HIGH', 0.5)
+    prop_m = weights_config.get('CANDIDATE_POOL_PROPORTIONS_MEDIUM', 0.3)
+    prop_l = max(0, 1.0 - prop_h - prop_m)
+    segment_proportions = [prop_h, prop_m, prop_l]
+    min_per_segment = weights_config.get('CANDIDATE_POOL_MIN_PER_SEGMENT', 2)
 
+    r_scores = scores_data.get('red_scores', {})
+    b_scores = scores_data.get('blue_scores', {})
 
-    return {'red_scores': red_scores, 'blue_scores': blue_scores}
+    r_cand_pool = []
+    if r_scores:
+        segmented_balls_dict = {name: [] for name in CANDIDATE_POOL_SEGMENT_NAMES}
+        for ball_num, score_val in r_scores.items():
+            if score_val > CANDIDATE_POOL_SCORE_THRESHOLDS['High']:
+                segmented_balls_dict['High'].append(ball_num)
+            elif score_val > CANDIDATE_POOL_SCORE_THRESHOLDS['Medium']:
+                segmented_balls_dict['Medium'].append(ball_num)
+            else:
+                segmented_balls_dict['Low'].append(ball_num)
 
+        for seg_name in CANDIDATE_POOL_SEGMENT_NAMES:
+            segment_balls_with_scores = {b: r_scores.get(b, 0) for b in segmented_balls_dict[seg_name]}
+            segmented_balls_dict[seg_name] = [b for b, _ in sorted(segment_balls_with_scores.items(), key=lambda x: x[1], reverse=True)]
 
-def generate_combinations(scores_data: dict, pattern_analysis_data: dict, num_combinations: int = NUM_COMBINATIONS_TO_GENERATE) -> tuple[List[Dict], list[str]]:
-    """基于分数和历史模式生成潜在组合。
-       返回组合字典列表和用于输出的格式化字符串列表。
-    """
-    red_scores = scores_data.get('red_scores', {})
-    blue_scores = scores_data.get('blue_scores', {})
+        temp_pool_set = set()
+        num_to_pick_segments = [
+            max(min_per_segment, int(round(prop * target_red_pool_size))) for prop in segment_proportions
+        ]
 
-    # Based on scores, select candidate pools
-    # Ensure scores exist before sorting
-    sorted_red_scores = sorted(red_scores.items(), key=lambda item: item[1], reverse=True) if red_scores else []
-    # Select top N red candidates, fall back to full range if not enough scored balls
-    red_candidate_pool = [num for num, score in sorted_red_scores[:TOP_N_RED_FOR_CANDIDATE]]
-    if len(red_candidate_pool) < 6:
-         red_candidate_pool = list(RED_BALL_RANGE)
-         logger.warning(f"Not enough high-scoring red balls ({len(sorted_red_scores)}) for candidate pool. Using full range.")
+        for i, seg_name in enumerate(CANDIDATE_POOL_SEGMENT_NAMES):
+            balls_from_segment = segmented_balls_dict[seg_name]
+            num_to_add = num_to_pick_segments[i]
+            added_count = 0
+            for ball in balls_from_segment:
+                if len(temp_pool_set) >= target_red_pool_size: break
+                if ball not in temp_pool_set and added_count < num_to_add:
+                    temp_pool_set.add(ball)
+                    added_count += 1
+            if len(temp_pool_set) >= target_red_pool_size: break
+        
+        r_cand_pool = list(temp_pool_set)
 
+        if len(r_cand_pool) < target_red_pool_size:
+            all_sorted_reds_overall = [n for n, _ in sorted(r_scores.items(), key=lambda item: item[1], reverse=True)]
+            for ball in all_sorted_reds_overall:
+                if len(r_cand_pool) >= target_red_pool_size: break
+                if ball not in r_cand_pool:
+                    r_cand_pool.append(ball)
+    
+    if len(r_cand_pool) < 6:
+        logger.debug(f"Red candidate pool has only {len(r_cand_pool)} balls after segmented selection. Expanding.")
+        current_pool_set = set(r_cand_pool)
+        all_sorted_reds_overall = [n for n, _ in sorted(r_scores.items(), key=lambda item: item[1], reverse=True)]
+        for ball in all_sorted_reds_overall:
+            if len(r_cand_pool) >= 6: break 
+            if ball not in current_pool_set:
+                r_cand_pool.append(ball)
+                current_pool_set.add(ball)
+        if len(r_cand_pool) < 6:
+            r_cand_pool.extend(b for b in RED_BALL_RANGE if b not in r_cand_pool)
+            r_cand_pool = list(set(r_cand_pool))[:6] 
 
-    sorted_blue_scores = sorted(blue_scores.items(), key=lambda item: item[1], reverse=True) if blue_scores else []
-    # Select top N blue candidates, fall back to full range if not enough scored balls
-    blue_candidate_pool = [num for num, score in sorted_blue_scores[:TOP_N_BLUE_FOR_CANDIDATE]]
-    if len(blue_candidate_pool) < 1:
-         blue_candidate_pool = list(BLUE_BALL_RANGE)
-         logger.warning(f"Not enough high-scoring blue balls ({len(sorted_blue_scores)}) for candidate pool. Using full range.")
+    b_cand_pool = [n for n, _ in sorted(b_scores.items(), key=lambda item: item[1], reverse=True)[:top_n_blue]]
+    if len(b_cand_pool) < 1: b_cand_pool = list(BLUE_BALL_RANGE)
+    
+    large_pool_size = max(num_combinations_to_generate * 100, 200) 
+    max_attempts_pool = large_pool_size * 20 
 
+    win_seg_pcts = winning_segment_percentages
+    valid_seg_pcts = win_seg_pcts and all(lbl in win_seg_pcts for lbl in SCORE_SEGMENT_LABELS) and sum(win_seg_pcts.values()) > 1e-6
+    seg_factors = {lbl:1.0 for lbl in SCORE_SEGMENT_LABELS}
+    if valid_seg_pcts:
+        seg_factors_temp = {lbl:(pct/100.0)+0.05 for lbl,pct in win_seg_pcts.items()}
+        tot_factor_sum = sum(seg_factors_temp.values())
+        if tot_factor_sum > 1e-9: seg_factors = {lbl:f_val/tot_factor_sum for lbl,f_val in seg_factors_temp.items()}
 
-    # Revised generation strategy: Generate a large pool from the candidates, score/rank, pick top N
-    large_pool_size = num_combinations * 1000 # Increased pool size multiplier for more diversity
-    if large_pool_size < 500: large_pool_size = 500 # Ensure minimum pool size
+    r_probs_raw = {}
+    if not r_cand_pool: 
+        logger.error("Critical: r_cand_pool is empty before probability calculation. Defaulting to range.")
+        r_cand_pool = random.sample(list(RED_BALL_RANGE), k=min(target_red_pool_size, len(RED_BALL_RANGE)))
 
-    generated_pool = []
+    for n in r_cand_pool:
+        seg = get_score_segment(r_scores.get(n,0), SCORE_SEGMENT_BOUNDARIES, SCORE_SEGMENT_LABELS)
+        r_probs_raw[n] = (r_scores.get(n,0)+1.0) * seg_factors.get(seg, 1.0/len(seg_factors) if seg_factors else 1.0)
+
+    r_cand_pool_for_probs = [ball for ball in r_cand_pool if ball in r_probs_raw and r_probs_raw[ball] > 0] 
+    
+    if not r_cand_pool_for_probs: 
+        logger.debug("No red balls with positive raw probability. Using uniform from r_cand_pool or range.")
+        r_cand_pool_for_probs = r_cand_pool if r_cand_pool else random.sample(list(RED_BALL_RANGE), k=6)
+        r_probs_arr = np.ones(len(r_cand_pool_for_probs)) / len(r_cand_pool_for_probs) if r_cand_pool_for_probs else np.array([])
+    else:
+        r_probs_arr = np.array([r_probs_raw.get(n,0) for n in r_cand_pool_for_probs])
+        tot_r_prob_raw = np.sum(r_probs_arr) 
+        if tot_r_prob_raw > 1e-9 :
+            r_probs_arr = r_probs_arr / tot_r_prob_raw
+            if len(r_probs_arr) > 1 : r_probs_arr[-1]=max(0,1.0-np.sum(r_probs_arr[:-1]))
+            elif len(r_probs_arr) == 1: r_probs_arr[0] = 1.0
+        else: 
+            r_probs_arr = np.ones(len(r_cand_pool_for_probs))/len(r_cand_pool_for_probs)
+
+    b_weights_arr = np.array([b_scores.get(n,0)+1.0 for n in b_cand_pool])
+    b_probs_arr = np.zeros(len(b_cand_pool)) 
+    if not b_cand_pool: 
+        b_cand_pool = random.sample(list(BLUE_BALL_RANGE), k=min(top_n_blue, len(BLUE_BALL_RANGE)))
+        if not b_cand_pool: b_cand_pool = [1] 
+        b_weights_arr = np.array([b_scores.get(n,0)+1.0 for n in b_cand_pool])
+
+    if np.sum(b_weights_arr) > 1e-9 and len(b_cand_pool) > 0:
+        b_probs_arr = b_weights_arr / np.sum(b_weights_arr)
+        if len(b_probs_arr) > 1: b_probs_arr[-1] = max(0, 1.0 - np.sum(b_probs_arr[:-1]))
+        elif len(b_probs_arr) == 1: b_probs_arr[0] = 1.0
+    elif len(b_cand_pool) > 0: b_probs_arr = np.ones(len(b_cand_pool)) / len(b_cand_pool)
+    else: 
+        b_probs_arr = np.array([1.0])
+        b_cand_pool = [1]
+
+    sample_size_red = 6
+    replace_red_sampling = False
+    use_fallback_sampling_flag = False 
+
+    if len(r_cand_pool_for_probs) < sample_size_red:
+        logger.debug(f"Red candidate pool for probability sampling ({len(r_cand_pool_for_probs)}) is smaller than sample size ({sample_size_red}).")
+        if len(r_cand_pool_for_probs) == 0: 
+             use_fallback_sampling_flag = True 
+        else: 
+            sample_size_red = len(r_cand_pool_for_probs) 
+            replace_red_sampling = False 
+    
+    if not use_fallback_sampling_flag:
+        use_fallback_sampling_flag = not (len(b_cand_pool)>=1) or \
+                                (len(r_probs_arr) != len(r_cand_pool_for_probs) or not (np.isclose(np.sum(r_probs_arr),1.0) if len(r_probs_arr)>0 else True)) or \
+                                (len(b_probs_arr) != len(b_cand_pool) or not (np.isclose(np.sum(b_probs_arr),1.0) if len(b_probs_arr)>0 else True)) or \
+                                (len(r_probs_arr) > 0 and np.any(r_probs_arr < 0)) or \
+                                (len(b_probs_arr) > 0 and np.any(b_probs_arr < 0))
+
+    if use_fallback_sampling_flag: logger.debug("Using fallback (random) sampling in generate_combinations.")
+
+    gen_pool = []
     attempts = 0
-    max_attempts_multiplier = 50 # Increased attempts multiplier relative to pool size
-    max_attempts_pool = large_pool_size * max_attempts_multiplier
-
-    # Calculate probabilities based on scores from the candidate pool
-    # Ensure scores are non-negative and handle potential zero total weight
-    red_weights = np.array([red_scores.get(num, 0) for num in red_candidate_pool])
-    red_weights[red_weights < 0] = 0  # 确保权重非负
-    total_red_weight = np.sum(red_weights)
-    # Add a small epsilon to avoid division by zero
-    red_probabilities = red_weights / (total_red_weight + 1e-9)
-    # Re-normalize to sum to 1 in case epsilon caused deviation
-    red_probabilities /= np.sum(red_probabilities) if np.sum(red_probabilities) > 1e-9 else 1.0
-
-
-    blue_weights = np.array([blue_scores.get(num, 0) for num in blue_candidate_pool])
-    blue_weights[blue_weights < 0] = 0
-    total_blue_weight = np.sum(blue_weights)
-    blue_probabilities = blue_weights / (total_blue_weight + 1e-9)
-    blue_probabilities /= np.sum(blue_probabilities) if np.sum(blue_probabilities) > 1e-9 else 1.0
-
-
-    # Ensure probabilities sum to exactly 1 (handle floating point inaccuracies)
-    if len(red_probabilities) > 0: # Avoid index error on empty array
-        # Sum the rest and subtract from 1 to make the last element adjust for floating point errors
-        red_probabilities[-1] = 1.0 - np.sum(red_probabilities[:-1])
-        # Ensure it's not negative due to floating point issues if the sum was slightly > 1 before correction
-        red_probabilities[-1] = max(0, red_probabilities[-1])
-        # Re-normalize one last time if the correction made one value negative or zero
-        if np.sum(red_probabilities) < 1 - 1e-9 or np.sum(red_probabilities) > 1 + 1e-9:
-             red_probabilities = np.ones(len(red_candidate_pool)) / len(red_candidate_pool) if len(red_candidate_pool) > 0 else np.array([]) # Fallback to uniform
-
-    if len(blue_probabilities) > 0: # Avoid index error on empty array
-        # Sum the rest and subtract from 1
-        blue_probabilities[-1] = 1.0 - np.sum(blue_probabilities[:-1])
-         # Ensure it's not negative
-        blue_probabilities[-1] = max(0, blue_probabilities[-1])
-         # Re-normalize one last time
-        if np.sum(blue_probabilities) < 1 - 1e-9 or np.sum(blue_probabilities) > 1 + 1e-9:
-             blue_probabilities = np.ones(len(blue_candidate_pool)) / len(blue_candidate_pool) if len(blue_candidate_pool) > 0 else np.array([]) # Fallback to uniform
-
-
-    # Ensure pools are not empty before sampling
-    if not red_candidate_pool or len(red_candidate_pool) < 6 or not blue_candidate_pool or len(blue_candidate_pool) < 1:
-         logger.warning("Red or blue candidate pool is too small to generate combinations.")
-         return [], []
-
-
-    while len(generated_pool) < large_pool_size and attempts < max_attempts_pool:
-         attempts += 1
-         try:
-              # Use calculated probabilities from candidate pool
-              # Check probability validity before sampling
-              if np.any(red_probabilities < 0) or not np.isclose(np.sum(red_probabilities), 1.0) or np.isnan(red_probabilities).any():
-                   # Fallback to simple random if probabilities are bad
-                   sampled_red_balls = sorted(random.sample(red_candidate_pool, 6))
-                   # logger.warning(f"Invalid red probabilities detected during sampling attempt {attempts}. Using random.sample.") # Too noisy
-              else:
-                  # Use try-except around np.random.choice as it can still raise errors with edge cases
-                  try:
-                       sampled_red_balls = sorted(np.random.choice(
-                           red_candidate_pool, size=6, replace=False, p=red_probabilities
-                       ).tolist())
-                  except ValueError as e_np:
-                       logger.warning(f"np.random.choice for red balls failed on attempt {attempts} with probabilities issue: {e_np}. Probabilities sum: {np.sum(red_probabilities):.4f}. Falling back to random.sample.")
-                       sampled_red_balls = sorted(random.sample(red_candidate_pool, 6))
-
-
-              if np.any(blue_probabilities < 0) or not np.isclose(np.sum(blue_probabilities), 1.0) or np.isnan(blue_probabilities).any():
-                   # Fallback to simple random if probabilities are bad
-                   sampled_blue_ball = random.choice(blue_candidate_pool)
-                   # logger.warning(f"Invalid blue probabilities detected during sampling attempt {attempts}. Using random.choice.") # Too noisy
-              else:
-                   try:
-                       sampled_blue_ball = np.random.choice(
-                            blue_candidate_pool, size=1, replace=False, p=blue_probabilities
-                       ).tolist()[0]
-                   except ValueError as e_np:
-                        logger.warning(f"np.random.choice for blue ball failed on attempt {attempts} with probabilities issue: {e_np}. Probabilities sum: {np.sum(blue_probabilities):.4f}. Falling back to random.choice.")
-                        sampled_blue_ball = random.choice(blue_candidate_pool)
-
-
-              # Ensure no duplicates in generated pool (simple check for small pools)
-              current_combo = {'red': sampled_red_balls, 'blue': sampled_blue_ball}
-              if current_combo not in generated_pool:
-                   generated_pool.append(current_combo)
-
-
-         except ValueError as e:
-             # This might happen if probabilities are zero for all options in the pool or other sampling issues
-             logger.warning(f"Probability sampling (np.random.choice) failed on attempt {attempts}: {e}. Red pool size: {len(red_candidate_pool)}, Blue pool size: {len(blue_candidate_pool)}. Red probs sum: {np.sum(red_probabilities):.4f}, Blue probs sum: {np.sum(blue_probabilities):.4f}. Falling back to random sample for this attempt.")
-             try:
-                  # Fallback to simple random sampling if np.random.choice fails
-                  if len(red_candidate_pool) >= 6:
-                     sampled_red_balls = sorted(random.sample(red_candidate_pool, 6))
-                  else:
-                      # Should be caught by pool size check before, but safety
-                      sampled_red_balls = sorted(random.sample(list(RED_BALL_RANGE), 6))
-
-                  if blue_candidate_pool:
-                       sampled_blue_ball = random.choice(blue_candidate_pool)
-                  else:
-                       sampled_blue_ball = random.choice(list(BLUE_BALL_RANGE))
-
-                  current_combo = {'red': sampled_red_balls, 'blue': sampled_blue_ball}
-                  if current_combo not in generated_pool:
-                       generated_pool.append(current_combo)
-
-             except ValueError as e_fallback:
-                 logger.error(f"Fallback random sampling failed on attempt {attempts}: {e_fallback}. Stopping combination generation attempts.")
-                 break # If even fallback fails, give up
-         except Exception as e:
-             logger.warning(f"Unexpected error during combination sampling attempt {attempts}: {e}. Skipping attempt.")
-             continue # Continue to next attempt
-
-    if not generated_pool:
-         logger.warning("没有生成组合。")
-         return [], []  # 返回空列表
-
-    # Now, score the generated combinations based on their ball scores AND how they fit HISTORICAL patterns
-    scored_combinations = []
-
-    # Get historical pattern tendencies for combination scoring bonus
-    hist_most_common_odd_count = pattern_analysis_data.get('most_common_odd_even_count')
-    hist_most_common_zone_dist = pattern_analysis_data.get('most_common_zone_distribution')
-    # Check if counts exist before comparing
-    blue_large_counts = pattern_analysis_data.get('blue_large_counts', {})
-    hist_most_common_blue_large = blue_large_counts.get(True, 0) > blue_large_counts.get(False, 0) if blue_large_counts else None
-
-    blue_odd_counts = pattern_analysis_data.get('blue_odd_counts', {})
-    hist_most_common_blue_odd_val = blue_odd_counts.get(True, 0) > blue_odd_counts.get(False, 0) if blue_odd_counts else None
-
-
-    # Determine if historical tendencies are available for bonus
-    use_odd_count_tendency = hist_most_common_odd_count is not None
-    use_blue_odd_tendency = hist_most_common_blue_odd_val is not None
-    use_zone_dist_tendency = hist_most_common_zone_dist is not None
-    use_blue_size_tendency = hist_most_common_blue_large is not None
-
-
-    for combo in generated_pool:
-        red_balls = combo['red']
-        blue_ball = combo['blue']
-
-        # Calculate combination's base score (sum of individual ball scores)
-        # Use .get with default 0 if number not in scores data
-        combo_score = sum(scores_data.get('red_scores', {}).get(r, 0) for r in red_balls) + scores_data.get('blue_scores', {}).get(blue_ball, 0)
-
-        # Add bonus based on fitting HISTORICAL patterns
-        feature_match_score = 0
-
-        # Red ball odd count match
-        if use_odd_count_tendency:
-             actual_odd_count = sum(x % 2 != 0 for x in red_balls)
-             if actual_odd_count == hist_most_common_odd_count:
-                  feature_match_score += COMBINATION_ODD_COUNT_MATCH_BONUS
-
-        # Blue ball odd/even match
-        if use_blue_odd_tendency:
-            actual_blue_is_odd = blue_ball % 2 != 0
-            if actual_blue_is_odd == hist_most_common_blue_odd_val:
-                feature_match_score += COMBINATION_BLUE_ODD_MATCH_BONUS
-
-        # Zone distribution match
-        if use_zone_dist_tendency:
-             actual_zone_counts = [0, 0, 0]
-             for ball in red_balls:
-                 if RED_ZONES['Zone1'][0] <= ball <= RED_ZONES['Zone1'][1]: actual_zone_counts[0] += 1
-                 elif RED_ZONES['Zone2'][0] <= ball <= RED_ZONES['Zone2'][1]: actual_zone_counts[1] += 1
-                 elif RED_ZONES['Zone3'][0] <= ball <= RED_ZONES['Zone3'][1]: actual_zone_counts[2] += 1
-             if tuple(actual_zone_counts) == hist_most_common_zone_dist:
-                 feature_match_score += COMBINATION_ZONE_MATCH_BONUS
-
-        # Blue ball size match
-        if use_blue_size_tendency:
-             is_large = blue_ball > 8
-             if is_large == hist_most_common_blue_large:
-                  feature_match_score += COMBINATION_BLUE_SIZE_MATCH_BONUS
-
-        # Combine base score and feature match score
-        total_combo_score = combo_score + feature_match_score
-
-        scored_combinations.append({'combination': combo, 'score': total_combo_score})
-
-    # Sort combinations by score and select the top N
-    scored_combinations.sort(key=lambda x: x['score'], reverse=True)
-    final_recommendations_data = scored_combinations[:num_combinations]
-
-    # --- Format output strings ---
-    output_strings = []
-    output_strings.append("推荐组合:")
-    if final_recommendations_data:
-         for i, rec in enumerate(final_recommendations_data):
-             output_strings.append(f"组合 {i+1}: 红球 {sorted(rec['combination']['red'])} 蓝球 {rec['combination']['blue']} (分数: {rec['score']:.2f})")
-    else:
-         output_strings.append("无法生成推荐组合。请检查数据和配置。")
-
-    # Return list of combination dicts AND formatted output strings
-    return final_recommendations_data, output_strings
-
-# --- 核心分析和推荐函数 (新) ---
-# 此函数封装了给定数据集切片的主要逻辑流
-def analyze_and_recommend(
-    df_historical: pd.DataFrame,
-    lags: List[int],
-    num_combinations: int,
-    train_ml: bool = True,  # Whether to train ML models in this run
-    existing_models: Optional[Dict] = None  # Pass existing models if train_ml is False
-) -> tuple[List[Dict], list[str], dict, Optional[Dict]]:
-    """
-    基于提供的历史数据执行分析，训练/预测ML概率，计算分数，并为下一期生成组合。
-    可选地训练ML模型或使用现有的模型。
-
-    返回: (recommendations_data, recommendations_strings, analysis_data, trained_models)
-    """
-    if df_historical is None or df_historical.empty:
-        logger.error("没有提供用于分析和推荐的历史数据。")
-        return [], [], {}, None
-
-    # 1. 执行历史分析（频率、遗漏、模式）
-    # 此分析基于提供的df_historical切片
-    freq_omission_data = analyze_frequency_omission(df_historical)
-    pattern_analysis_data = analyze_patterns(df_historical)
-    # 关联规则分析暂未在评分中使用
-    # association_rules_data = analyze_associations(df_historical, ARM_MIN_SUPPORT, ARM_MIN_CONFIDENCE, ARM_MIN_LIFT)
-
-    analysis_data = {
-        'freq_omission': freq_omission_data,
-        'patterns': pattern_analysis_data,
-        # 'association_rules': association_rules_data # 如果以后需要，可以包含
-    }
-
-    # 2. 训练/预测 ML 模型 (预测单个号码概率)
-    current_trained_models = None
-    predicted_probabilities = {} # Output for ML predicted probabilities
-
-    # Need enough historical data to create lagged features and train ML models
-    max_lag = max(lags) if lags else 1
-    min_periods_for_ml = max_lag + 1 # Need this many periods to get the first row of X and its corresponding Y
-
-    if len(df_historical) >= min_periods_for_ml:
-         if train_ml:
-             # Train ML models on the provided historical data
-             # The train_prediction_models function now handles parallel training internally
-             current_trained_models = train_prediction_models(df_historical, lags)
-             # Check if any models were successfully trained
-             if current_trained_models and (current_trained_models.get('red', {}) or current_trained_models.get('blue', {})):
-                 # Use the newly trained models and the latest history to predict probabilities
-                 predicted_probabilities = predict_next_draw_probabilities(df_historical, current_trained_models, lags)
-                 if not predicted_probabilities.get('red') and not predicted_probabilities.get('blue'):
-                     logger.warning("ML prediction using newly trained models failed. Will not use ML probabilities for scoring.")
-             else:
-                  logger.warning("ML model training failed or no models were successfully trained. Will not use ML probabilities for scoring.")
-
-         elif existing_models:
-             # Use provided trained models to predict probabilities on the latest data
-             current_trained_models = existing_models # Use the provided models
-             # Check if existing_models actually contains models
-             if current_trained_models and (current_trained_models.get('red', {}) or current_trained_models.get('blue', {})):
-                  predicted_probabilities = predict_next_draw_probabilities(df_historical, current_trained_models, lags)
-                  if not predicted_probabilities.get('red') and not predicted_probabilities.get('blue'):
-                      logger.warning("ML prediction using existing models failed. Will not use ML probabilities for scoring.")
-             else:
-                  logger.warning("No valid existing ML models provided. Will not use ML probabilities for scoring.")
-    else:
-        logger.warning(f"Not enough historical data ({len(df_historical)} periods) for ML training/prediction (need at least {min_periods_for_ml}). Will not use ML probabilities for scoring.")
-
-
-    # 3. 计算号码分数（结合历史分析和ML预测概率）
-    scores_data = calculate_scores(
-        freq_omission_data,
-        pattern_analysis_data, # Still pass for combination bonus based on historical patterns
-        predicted_probabilities # Pass ML probabilities (might be empty if ML failed)
-    )
-
-    # 4. 基于分数和历史模式生成组合
-    # Note: generate_combinations now uses scores based on ML probabilities.
-    # The pattern_analysis_data is still passed for the combination-level bonus based on historical patterns.
-    recommendations_data, recommendations_strings = generate_combinations(
-        scores_data,
-        pattern_analysis_data,  # Pass historical patterns for combination bonus
-        num_combinations=num_combinations
-    )
-
-    # Return combinations, output strings, analysis data, and the trained models
-    return recommendations_data, recommendations_strings, analysis_data, current_trained_models
-
-
-# --- 验证、回测与持续优化 ---
-
-def backtest(df: pd.DataFrame, lags: List[int], num_combinations_per_period: int, backtest_periods_count: int) -> pd.DataFrame:
-    """
-    在历史数据上执行回测，包括重新训练ML模型并预测概率。
-    """
-    logger.info("\n" + "="*50)
-    logger.info(" 开始回测 ")
-    logger.info("="*50)
-
-    # Determine the minimum number of periods needed for the initial training data
-    # Need enough periods to create lagged features for the *first* backtest period's target
-    max_lag = max(lags) if lags else 0
-    min_periods_for_initial_training = max_lag + 1 # Need this many periods to get the first row of X and its corresponding Y
-
-    if len(df) < min_periods_for_initial_training + 1: # Need min_periods for training + 1 period to predict
-         logger.warning(f"数据不足({len(df)})，无法进行回测(至少需要{min_periods_for_initial_training + 1}期)。跳过回测。")
-         logger.info("="*50)
-         logger.info(" 回测已跳过 ")
-         logger.info("="*50)
-         return pd.DataFrame()
-
-    # Determine the range of periods to backtest
-    # The *first* period we make a prediction FOR will be at index min_periods_for_initial_training
-    # The last period we make a prediction FOR will be the last period in the df (index len(df)-1)
-    start_prediction_index = min_periods_for_initial_training
-    end_prediction_index = len(df) - 1
-
-    if start_prediction_index > end_prediction_index:
-         logger.warning(f"没有足够的后续数据进行回测预测。开始预测索引: {start_prediction_index}, 结束索引: {end_prediction_index}。跳过回测。")
-         logger.info("="*50)
-         logger.info(" 回测已跳过 ")
-         logger.info("="*50)
-         return pd.DataFrame()
-
-    # Adjust the actual number of periods to backtest based on available data and requested count
-    available_backtest_periods = end_prediction_index - start_prediction_index + 1
-    actual_backtest_periods_count = min(backtest_periods_count, available_backtest_periods)
-
-    # Calculate the index of the *first* period whose prediction results we will evaluate
-    # We predict FOR periods from start_prediction_index up to end_prediction_index
-    # So the first period we evaluate is end_prediction_index - actual_backtest_periods_count + 1
-    backtest_evaluation_start_index = end_prediction_index - actual_backtest_periods_count + 1
-
-    # Ensure the evaluation starts at or after the earliest possible prediction index
-    if backtest_evaluation_start_index < start_prediction_index:
-         backtest_evaluation_start_index = start_prediction_index
-
-
-    # Get the actual period numbers for the backtest evaluation range
-    start_period_number = df.loc[backtest_evaluation_start_index, '期号'] if backtest_evaluation_start_index < len(df) else "N/A"
-    end_period_number = df.loc[end_prediction_index, '期号'] if end_prediction_index < len(df) else "N/A"
-
-
-    logger.info(f"回测 {actual_backtest_periods_count} 期的预测结果，期号范围: {start_period_number} 至 {end_period_number}")
-    logger.info(f"预测对象期索引范围: {backtest_evaluation_start_index} 至 {end_prediction_index}。")
-    logger.info(f"使用直到索引 {backtest_evaluation_start_index - 1} 的数据进行第一次预测的分析/训练。")
-
-
-    results = []
-    red_cols = [f'red{i+1}' for i in range(6)]
-
-    # Display initial progress bar - only to console, not report file
-    total_steps = end_prediction_index - backtest_evaluation_start_index + 1
-
-    # Save the current stdout before redirecting
-    original_stdout = sys.stdout
-
-    # Iterate through periods to predict FOR
-    for i in range(backtest_evaluation_start_index, end_prediction_index + 1):
-        # Update progress bar - restore original stdout to show progress, then switch back
-        current_progress = i - backtest_evaluation_start_index + 1
-
-        # Temporarily switch stdout to the original console stdout to display the progress bar
-        sys.stdout = sys.__stdout__
-        show_progress(current_progress, total_steps, prefix='回测进度:', suffix='完成', length=50)
-        # Restore stdout to its previous state (which might be redirected to a file in the main program)
-        sys.stdout = original_stdout
-
-        # Data available for training/analysis for predicting period i
-        train_data = df.iloc[:i].copy()
-
-        if train_data.empty or len(train_data) < (max(lags) if lags else 0) + 1: # Ensure enough data to create features
-             logger.warning(f"训练数据不足({len(train_data)}行)用于预测期索引{i}。跳过此期预测。")
-             continue
-
-        # The period we are predicting FOR is at index i
-        actual_row_index = i
-        # Ensure the actual row exists in the dataframe
-        if actual_row_index not in df.index:
-             actual_period = df.loc[i, '期号'] if i < len(df) and '期号' in df.columns else 'N/A' # Try to get period number for logging
-             logger.error(f"DataFrame中找不到期索引{actual_row_index}(期号: {actual_period})的实际结果。跳过此期预测。")
-             continue
-
-        actual_period = df.loc[actual_row_index, '期号']
-
+    while len(gen_pool) < large_pool_size and attempts < max_attempts_pool:
+        attempts +=1
         try:
-            actual_red = set(df.loc[actual_row_index, red_cols].tolist())
-            actual_blue = df.loc[actual_row_index, 'blue']
-        except KeyError as e:
-             logger.error(f"期索引{actual_row_index}(期号: {actual_period})的实际结果中缺少红球或蓝球数据: {e}。跳过此期预测。")
-             continue
-        except ValueError as e:
-             logger.error(f"期索引{actual_row_index}(期号: {actual_period})的实际结果中红球或蓝球数据格式错误: {e}。跳过此期预测。")
-             continue
+            if use_fallback_sampling_flag:
+                safe_r_pool = r_cand_pool if len(r_cand_pool) >= 6 else list(RED_BALL_RANGE)
+                r_balls_s = sorted(random.sample(safe_r_pool, 6))
+                safe_b_pool = b_cand_pool if len(b_cand_pool) >=1 else list(BLUE_BALL_RANGE)
+                b_ball_s = random.choice(safe_b_pool)
+            else:
+                r_balls_s = sorted(np.random.choice(r_cand_pool_for_probs, size=sample_size_red, replace=replace_red_sampling, p=r_probs_arr).tolist())
+                if len(r_balls_s) < 6:
+                    remaining_needed = 6 - len(r_balls_s)
+                    fill_pool_candidates = [b for b in r_cand_pool if b not in r_balls_s] 
+                    if len(fill_pool_candidates) < remaining_needed: 
+                        fill_pool_candidates.extend([b for b in RED_BALL_RANGE if b not in r_balls_s and b not in fill_pool_candidates])
+                    
+                    if len(fill_pool_candidates) >= remaining_needed:
+                         r_balls_s.extend(random.sample(fill_pool_candidates, remaining_needed))
+                         r_balls_s = sorted(list(set(r_balls_s))) 
+                    else: 
+                        logger.debug(f"Could not form 6 red balls for combo, got {len(r_balls_s)}. Skipping attempt.")
+                        continue
+                if len(r_balls_s) != 6 : 
+                    logger.debug(f"Skipping combo due to red ball count mismatch after fill: {len(r_balls_s)}")
+                    continue
+                b_ball_s = np.random.choice(b_cand_pool, size=1, p=b_probs_arr).tolist()[0]
+
+            combo = {'red': r_balls_s, 'blue': b_ball_s}
+            if len(set(combo['red'])) == 6 and combo['blue'] is not None:
+                 if combo not in gen_pool: gen_pool.append(combo)
+            else:
+                 logger.debug(f"Invalid combo generated and skipped: {combo}")
+
+        except ValueError as e_val:
+            use_fallback_sampling_flag = True 
+            if attempts <= 5: logger.debug(f"Probabilistic sampling failed in generate_combinations ({e_val}), switching to fallback for this run.")
+        except Exception as e_gen:
+            logger.debug(f"Exception during combination generation attempt: {e_gen}")
+            continue
+            
+    if not gen_pool: return [], ["推荐组合:", "无法生成推荐组合。"]
+    
+    scored_combos = []
+    patt_data = pattern_analysis_data
+    hist_odd_cnt = patt_data.get('most_common_odd_even_count')
+    hist_zone_dist = patt_data.get('most_common_zone_distribution')
+    blue_l_counts = patt_data.get('blue_large_counts',{})
+    hist_blue_large = blue_l_counts.get(True,0) > blue_l_counts.get(False,0) if blue_l_counts else None
+    blue_o_counts = patt_data.get('blue_odd_counts',{})
+    hist_blue_odd = blue_o_counts.get(True,0) > blue_o_counts.get(False,0) if blue_o_counts else None
+
+    arm_rules_processed = pd.DataFrame()
+    if association_rules_df is not None and not association_rules_df.empty:
+        arm_rules_processed = association_rules_df.copy() 
+        if not arm_rules_processed.empty:
+            try: 
+                arm_rules_processed['antecedents_set'] = arm_rules_processed['antecedents'].apply(lambda x: set(map(int, x)))
+                arm_rules_processed['consequents_set'] = arm_rules_processed['consequents'].apply(lambda x: set(map(int, x)))
+            except (TypeError, ValueError) as e_arm_conv:
+                logger.warning(f"Error converting ARM rule items to int sets ({e_arm_conv}). ARM bonus may not be applied correctly.")
+                arm_rules_processed = pd.DataFrame() 
+
+    for combo_item in gen_pool:
+        r_list, b_val = combo_item['red'], combo_item['blue']
+        base_s = sum(r_scores.get(ball_num,0) for ball_num in r_list) + b_scores.get(b_val,0)
+        bonus_s = 0
+        if hist_odd_cnt is not None and sum(x%2!=0 for x in r_list)==hist_odd_cnt: bonus_s += weights_config['COMBINATION_ODD_COUNT_MATCH_BONUS']
+        if hist_blue_odd is not None and (b_val%2!=0)==hist_blue_odd: bonus_s += weights_config['COMBINATION_BLUE_ODD_MATCH_BONUS']
+        if hist_zone_dist:
+            zones_count = [0,0,0]
+            for ball_num_in_combo in r_list:
+                if RED_ZONES['Zone1'][0]<=ball_num_in_combo<=RED_ZONES['Zone1'][1]: zones_count[0]+=1
+                elif RED_ZONES['Zone2'][0]<=ball_num_in_combo<=RED_ZONES['Zone2'][1]: zones_count[1]+=1
+                elif RED_ZONES['Zone3'][0]<=ball_num_in_combo<=RED_ZONES['Zone3'][1]: zones_count[2]+=1
+            if tuple(zones_count)==hist_zone_dist: bonus_s += weights_config['COMBINATION_ZONE_MATCH_BONUS']
+        if hist_blue_large is not None and (b_val>8)==hist_blue_large: bonus_s += weights_config['COMBINATION_BLUE_SIZE_MATCH_BONUS']
+
+        arm_specific_bonus = 0
+        combo_red_set = set(r_list)
+        if not arm_rules_processed.empty and 'antecedents_set' in arm_rules_processed.columns:
+            for _, rule in arm_rules_processed.iterrows():
+                if isinstance(rule.get('antecedents_set'), set) and isinstance(rule.get('consequents_set'), set):
+                    if rule['antecedents_set'].issubset(combo_red_set) and rule['consequents_set'].issubset(combo_red_set):
+                        lift_bonus = (rule.get('lift', 1.0) - 1.0) * weights_config.get('ARM_BONUS_LIFT_FACTOR', 0.2) 
+                        conf_bonus = rule.get('confidence', 0.0) * weights_config.get('ARM_BONUS_CONF_FACTOR', 0.1)
+                        current_rule_bonus = (lift_bonus + conf_bonus) * weights_config['ARM_COMBINATION_BONUS_WEIGHT']
+                        arm_specific_bonus += current_rule_bonus
+            arm_specific_bonus = min(arm_specific_bonus, weights_config['ARM_COMBINATION_BONUS_WEIGHT'] * 2.0) 
+
+        bonus_s += arm_specific_bonus
+        scored_combos.append({
+            'combination': combo_item, 
+            'score': base_s + bonus_s,
+            'red_tuple': tuple(sorted(r_list)) 
+        })
+        
+    final_recs_data = []
+    if not scored_combos: 
+        return [], ["推荐组合:", "无法生成推荐组合 (评分后为空)。"]
+
+    sorted_scored_combos = sorted(scored_combos, key=lambda x: x['score'], reverse=True)
+
+    if sorted_scored_combos:
+        final_recs_data.append(sorted_scored_combos.pop(0)) 
+    
+    attempts_for_diversity = 0
+    candidate_idx = 0
+    while len(final_recs_data) < num_combinations_to_generate and candidate_idx < len(sorted_scored_combos):
+        if attempts_for_diversity > diversity_max_attempts * num_combinations_to_generate : 
+            logger.debug(f"多样性选择达到最大尝试次数，当前已选 {len(final_recs_data)} 组合。")
+            break 
+            
+        candidate_combo_dict = sorted_scored_combos[candidate_idx]
+        candidate_red_set = set(candidate_combo_dict['red_tuple'])
+        is_diverse_enough = True
+        
+        for existing_rec_dict in final_recs_data:
+            existing_red_set = set(existing_rec_dict['red_tuple'])
+            common_reds = len(candidate_red_set.intersection(existing_red_set))
+            if common_reds > max_common_reds_allowed:
+                is_diverse_enough = False
+                break
+        
+        if is_diverse_enough:
+            final_recs_data.append(candidate_combo_dict)
+        
+        candidate_idx += 1
+        attempts_for_diversity +=1
+
+    if len(final_recs_data) < num_combinations_to_generate:
+        logger.debug(f"多样性选择后组合数不足 ({len(final_recs_data)})，将从剩余高分组合中补充。")
+        final_recs_red_tuples = {rec['red_tuple'] for rec in final_recs_data}
+        
+        needed_more = num_combinations_to_generate - len(final_recs_data)
+        added_count = 0
+        for combo_dict in sorted(scored_combos, key=lambda x: x['score'], reverse=True): 
+            if added_count >= needed_more:
+                break
+            if combo_dict['red_tuple'] not in final_recs_red_tuples:
+                 is_already_present = any(fc['combination'] == combo_dict['combination'] for fc in final_recs_data)
+                 if not is_already_present:
+                    final_recs_data.append(combo_dict)
+                    final_recs_red_tuples.add(combo_dict['red_tuple']) 
+                    added_count += 1
+    
+    final_recs_data = sorted(final_recs_data, key=lambda x: x['score'], reverse=True)[:num_combinations_to_generate]
+
+    output_strs = [f"  组合 {i+1}: 红球 {sorted(rec['combination']['red'])} 蓝球 {rec['combination']['blue']} (综合分: {rec['score']:.2f})"
+                   for i,rec in enumerate(final_recs_data)] if final_recs_data else ["  无法生成推荐组合。"]
+    return final_recs_data, ["推荐组合 (Top {}):".format(len(final_recs_data))] + output_strs
 
 
-        # Perform analysis, train ML models, and generate combinations
-        # Use SuppressOutput to hide analyze_and_recommend's internal printing/logging during backtest
-        with SuppressOutput(suppress_stdout=True, capture_stderr=True):
-             # Pass train_ml=True in backtest to force retraining models for each period
-             predicted_combinations_data, predicted_combinations_strings, analysis_data, trained_models_this_period = analyze_and_recommend(
-                 train_data, # Train on data BEFORE the target period
-                 lags,
-                 num_combinations=num_combinations_per_period,
-                 train_ml=True # Retrain ML models for each backtest period
-             )
+def analyze_and_recommend(
+    df_historical: pd.DataFrame, ml_lags_list: List[int], weights_config: Dict,
+    association_rules_df_main: pd.DataFrame,
+    train_ml: bool = True, existing_models: Optional[Dict] = None
+) -> tuple[List[Dict], list[str], dict, Optional[Dict], Dict, Dict[str, float]]:
+    recs_data, recs_strs = [], []
+    analysis_res = {}; current_models = None; scores_res = {}; win_seg_pcts = {}
+
+    if df_historical is None or df_historical.empty:
+        return recs_data, recs_strs, analysis_res, current_models, scores_res, win_seg_pcts
+
+    freq_om_data = analyze_frequency_omission(df_historical, weights_config)
+    patt_an_data = analyze_patterns(df_historical, weights_config)
+    analysis_res = {'freq_omission': freq_om_data, 'patterns': patt_an_data, 'associations': association_rules_df_main}
+
+    pred_probs = {}
+    min_ml_periods = (max(ml_lags_list) if ml_lags_list else 0) + 1 + MIN_POSITIVE_SAMPLES_FOR_ML
+    if len(df_historical) >= min_ml_periods:
+        if train_ml:
+            current_models = train_prediction_models(df_historical, ml_lags_list, weights_config)
+            if current_models: pred_probs = predict_next_draw_probabilities(df_historical, current_models, ml_lags_list, weights_config)
+        elif existing_models:
+            current_models = existing_models
+            if current_models: pred_probs = predict_next_draw_probabilities(df_historical, current_models, ml_lags_list, weights_config)
+
+    scores_res = calculate_scores(freq_om_data, patt_an_data, pred_probs, weights_config)
+    _, win_seg_pcts = analyze_winning_red_ball_score_segments(
+        df_historical, scores_res.get('red_scores',{}), SCORE_SEGMENT_BOUNDARIES, SCORE_SEGMENT_LABELS
+    )
+    recs_data, recs_strs = generate_combinations(
+        scores_res, patt_an_data, association_rules_df_main, win_seg_pcts, weights_config
+    )
+    return recs_data, recs_strs, analysis_res, current_models, scores_res, win_seg_pcts
+
+def get_prize_level(red_hits: int, blue_hit: bool) -> Optional[str]:
+    if blue_hit:
+        if red_hits == 6: return "一等奖"
+        if red_hits == 5: return "三等奖"
+        if red_hits == 4: return "四等奖"
+        if red_hits == 3: return "五等奖"
+        if red_hits <= 2: return "六等奖"
+    else:
+        if red_hits == 6: return "二等奖"
+        if red_hits == 5: return "四等奖"
+        if red_hits == 4: return "五等奖"
+    return None
+
+def backtest(df: pd.DataFrame, ml_lags_list: List[int], weights_config: Dict,
+             association_rules_full_history: pd.DataFrame,
+             backtest_periods_to_eval: int) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+    max_hist_lag = max(ml_lags_list) if ml_lags_list else 0
+    min_initial_train_periods = max_hist_lag + 1 + MIN_POSITIVE_SAMPLES_FOR_ML
+    if len(df) < min_initial_train_periods + 1:
+        logger.warning(f"Backtest: Data不足({len(df)})，需要至少 {min_initial_train_periods + 1} 期。")
+        return pd.DataFrame(), {}
+
+    start_prediction_loop_idx = min_initial_train_periods
+    end_prediction_loop_idx = len(df) - 1
+    if start_prediction_loop_idx > end_prediction_loop_idx:
+        logger.warning("Backtest: 无足够后续数据进行预测。")
+        return pd.DataFrame(), {}
+
+    available_periods_for_eval = end_prediction_loop_idx - start_prediction_loop_idx + 1
+    actual_periods_to_evaluate_in_loop = min(backtest_periods_to_eval, available_periods_for_eval)
+
+    evaluation_loop_start_df_idx = max(start_prediction_loop_idx, end_prediction_loop_idx - actual_periods_to_evaluate_in_loop + 1)
+
+    results_list = []
+    red_cols_list = [f'red{i+1}' for i in range(6)]
+    is_opt_run_flag = backtest_periods_to_eval == OPTIMIZATION_BACKTEST_PERIODS
+    
+    prize_counts = Counter()
+    best_hit_per_period = []
+    periods_with_any_blue_hit = set()
+    num_combinations_generated_per_run = weights_config.get('NUM_COMBINATIONS_TO_GENERATE', 10)
+
+    for df_idx_for_prediction in range(evaluation_loop_start_df_idx, end_prediction_loop_idx + 1):
+        if not is_opt_run_flag and (df_idx_for_prediction - evaluation_loop_start_df_idx + 1) % 10 == 0 :
+            # Use specific logger for console to ensure simple format for progress
+            current_console_level = global_console_handler.level
+            current_console_formatter = global_console_handler.formatter
+            set_console_verbosity(logging.INFO, use_simple_formatter=True)
+            logger.info(f"  回测进度: {df_idx_for_prediction - evaluation_loop_start_df_idx + 1} / {actual_periods_to_evaluate_in_loop}")
+            global_console_handler.setLevel(current_console_level) # Restore
+            global_console_handler.setFormatter(current_console_formatter)
 
 
-        if predicted_combinations_data:
-            for combo_info in predicted_combinations_data:
-                predicted_red = set(combo_info['combination']['red'])
-                predicted_blue = combo_info['combination']['blue']
+        current_train_data = df.iloc[:df_idx_for_prediction].copy()
+        if len(current_train_data) < min_initial_train_periods:
+            continue
 
-                red_hits = len(predicted_red.intersection(actual_red))
-                blue_hit = (predicted_blue == actual_blue)
+        actual_outcome_row = df.loc[df_idx_for_prediction]
+        current_period_actual = actual_outcome_row['期号']
+        try:
+            actual_red_set = set(actual_outcome_row[red_cols_list].astype(int).tolist())
+            actual_blue_val = int(actual_outcome_row['blue'])
+            if not (all(1<=r_val<=33 for r_val in actual_red_set) and 1<=actual_blue_val<=16):
+                raise ValueError("实际球号超出范围")
+        except Exception as e_actual:
+            logger.debug(f"Backtest: 获取期号 {current_period_actual} 实际结果失败: {e_actual}")
+            continue
 
-                results.append({
-                    'period': actual_period,
-                    'predicted_red': sorted(list(predicted_red)),
-                    'predicted_blue': predicted_blue,
-                    'actual_red': sorted(list(actual_red)),
-                    'actual_blue': actual_blue,
-                    'red_hits': red_hits,
-                    'blue_hit': blue_hit,
-                    'combination_score': combo_info['score']
+        original_logger_level = logger.level # For file logger
+        original_console_level = global_console_handler.level
+        
+        if is_opt_run_flag: 
+            logger.setLevel(logging.CRITICAL) # Suppress file log heavily for optuna
+            set_console_verbosity(logging.CRITICAL) # Suppress console heavily
+
+        current_arm_rules = analyze_associations(current_train_data, weights_config)
+
+        if is_opt_run_flag:
+            with SuppressOutput(suppress_stdout=True, capture_stderr=True): # Also suppress direct stdout/stderr
+                 predicted_combos_list, _, _, _, _, _ = analyze_and_recommend(
+                     current_train_data, ml_lags_list, weights_config, current_arm_rules, train_ml=True)
+        else:
+            predicted_combos_list, _, _, _, _, _ = analyze_and_recommend(
+                current_train_data, ml_lags_list, weights_config, current_arm_rules, train_ml=True)
+
+        if is_opt_run_flag: 
+            logger.setLevel(original_logger_level)
+            set_console_verbosity(original_console_level)
+
+
+        period_max_red_hits = 0
+        period_blue_hit_achieved = False
+
+        if predicted_combos_list:
+            for combo_dict_info in predicted_combos_list:
+                pred_r_set = set(combo_dict_info['combination']['red'])
+                pred_b_val = combo_dict_info['combination']['blue']
+                red_h = len(pred_r_set.intersection(actual_red_set))
+                blue_h = (pred_b_val == actual_blue_val)
+
+                results_list.append({
+                    'period': current_period_actual,
+                    'predicted_red': sorted(list(pred_r_set)), 'predicted_blue': pred_b_val,
+                    'actual_red': sorted(list(actual_red_set)), 'actual_blue': actual_blue_val,
+                    'red_hits': red_h,
+                    'blue_hit': blue_h,
+                    'combination_score': combo_dict_info['score']
                 })
-        # else:
-            # logger.warning(f"未为期 {actual_period} 生成组合。") # Avoid noise in backtest log
+                
+                prize = get_prize_level(red_h, blue_h)
+                if prize:
+                    prize_counts[prize] += 1
+                
+                if blue_h:
+                    periods_with_any_blue_hit.add(current_period_actual)
+                    period_blue_hit_achieved = True # if any combo hits blue for this period
+                if red_h > period_max_red_hits:
+                    period_max_red_hits = red_h
+            
+            best_hit_per_period.append({
+                'period': current_period_actual,
+                'max_red_hits': period_max_red_hits,
+                'blue_hit_in_period': period_blue_hit_achieved 
+            })
 
-    # Display the final completed progress bar on the console
-    sys.stdout = sys.__stdout__ # Ensure final progress is shown on the console
-    show_progress(total_steps, total_steps, prefix='回测进度:', suffix='完成', length=50)
-    # Restore redirection
-    sys.stdout = original_stdout
+    if not results_list: return pd.DataFrame(), {}
+    
+    results_df_final = pd.DataFrame(results_list)
+    extended_stats = {
+        'prize_counts': dict(prize_counts),
+        'best_hit_per_period_df': pd.DataFrame(best_hit_per_period) if best_hit_per_period else pd.DataFrame(),
+        'total_combinations_evaluated': len(results_df_final),
+        'num_combinations_per_draw_tested': num_combinations_generated_per_run,
+        'periods_with_any_blue_hit_count': len(periods_with_any_blue_hit)
+    }
+    
+    if '期号' in df.columns and evaluation_loop_start_df_idx < len(df) and end_prediction_loop_idx < len(df):
+        try:
+            results_df_final.attrs['start_period'] = df.loc[evaluation_loop_start_df_idx, '期号']
+            results_df_final.attrs['end_period'] = df.loc[end_prediction_loop_idx, '期号']
+        except KeyError:
+             logger.warning("Backtest: Could not set start/end period attributes due to index issues.")
+    return results_df_final, extended_stats
 
+def objective(trial: optuna.trial.Trial, df_for_optimization: pd.DataFrame, fixed_ml_lags: List[int],
+              arm_rules_for_opt: pd.DataFrame) -> float:
+    weights_to_eval_base = {
+        'NUM_COMBINATIONS_TO_GENERATE': trial.suggest_int('NUM_COMBINATIONS_TO_GENERATE', 5, 12),
+        'TOP_N_RED_FOR_CANDIDATE': trial.suggest_int('TOP_N_RED_FOR_CANDIDATE', 15, 28),
+        'TOP_N_BLUE_FOR_CANDIDATE': trial.suggest_int('TOP_N_BLUE_FOR_CANDIDATE', 6, 12),
+        'FREQ_SCORE_WEIGHT': trial.suggest_float('FREQ_SCORE_WEIGHT', 5, 30),
+        'OMISSION_SCORE_WEIGHT': trial.suggest_float('OMISSION_SCORE_WEIGHT', 5, 25),
+        'MAX_OMISSION_RATIO_SCORE_WEIGHT_RED': trial.suggest_float('MAX_OMISSION_RATIO_SCORE_WEIGHT_RED', 0, 20),
+        'RECENT_FREQ_SCORE_WEIGHT_RED': trial.suggest_float('RECENT_FREQ_SCORE_WEIGHT_RED', 0, 20),
+        'BLUE_FREQ_SCORE_WEIGHT': trial.suggest_float('BLUE_FREQ_SCORE_WEIGHT', 5, 30),
+        'BLUE_OMISSION_SCORE_WEIGHT': trial.suggest_float('BLUE_OMISSION_SCORE_WEIGHT', 5, 25),
+        'ML_PROB_SCORE_WEIGHT_RED': trial.suggest_float('ML_PROB_SCORE_WEIGHT_RED', 10, 50),
+        'ML_PROB_SCORE_WEIGHT_BLUE': trial.suggest_float('ML_PROB_SCORE_WEIGHT_BLUE', 10, 50),
+        'COMBINATION_ODD_COUNT_MATCH_BONUS': trial.suggest_float('COMBINATION_ODD_COUNT_MATCH_BONUS', 0, 20),
+        'COMBINATION_BLUE_ODD_MATCH_BONUS': trial.suggest_float('COMBINATION_BLUE_ODD_MATCH_BONUS', 0, 12),
+        'COMBINATION_ZONE_MATCH_BONUS': trial.suggest_float('COMBINATION_ZONE_MATCH_BONUS', 0, 18),
+        'COMBINATION_BLUE_SIZE_MATCH_BONUS': trial.suggest_float('COMBINATION_BLUE_SIZE_MATCH_BONUS', 0, 12),
+        'ARM_MIN_SUPPORT': trial.suggest_float('ARM_MIN_SUPPORT', 0.005, 0.02),
+        'ARM_MIN_CONFIDENCE': trial.suggest_float('ARM_MIN_CONFIDENCE', 0.25, 0.5),
+        'ARM_MIN_LIFT': trial.suggest_float('ARM_MIN_LIFT', 1.0, 1.5),
+        'ARM_COMBINATION_BONUS_WEIGHT': trial.suggest_float('ARM_COMBINATION_BONUS_WEIGHT', 0, 20),
+        'ARM_BONUS_LIFT_FACTOR': trial.suggest_float('ARM_BONUS_LIFT_FACTOR', 0.05, 0.5),
+        'ARM_BONUS_CONF_FACTOR': trial.suggest_float('ARM_BONUS_CONF_FACTOR', 0.05, 0.5),
+        'CANDIDATE_POOL_MIN_PER_SEGMENT': trial.suggest_int('CANDIDATE_POOL_MIN_PER_SEGMENT', 1, 4),
+        'CANDIDATE_POOL_PROPORTIONS_HIGH': trial.suggest_float('CANDIDATE_POOL_PROPORTIONS_HIGH', 0.2, 0.7),
+        'CANDIDATE_POOL_PROPORTIONS_MEDIUM': trial.suggest_float('CANDIDATE_POOL_PROPORTIONS_MEDIUM', 0.1, 0.5),
+        'DIVERSITY_MIN_DIFFERENT_REDS': trial.suggest_int('DIVERSITY_MIN_DIFFERENT_REDS', 2, 4),
+        'DIVERSITY_SELECTION_MAX_ATTEMPTS': trial.suggest_int('DIVERSITY_SELECTION_MAX_ATTEMPTS', 10, 50),
+    }
+    
+    if weights_to_eval_base['CANDIDATE_POOL_PROPORTIONS_HIGH'] + weights_to_eval_base['CANDIDATE_POOL_PROPORTIONS_MEDIUM'] > 1.0:
+        weights_to_eval_base['CANDIDATE_POOL_PROPORTIONS_MEDIUM'] = 1.0 - weights_to_eval_base['CANDIDATE_POOL_PROPORTIONS_HIGH']
+        if weights_to_eval_base['CANDIDATE_POOL_PROPORTIONS_MEDIUM'] < 0 : 
+             weights_to_eval_base['CANDIDATE_POOL_PROPORTIONS_MEDIUM'] = 0 
 
-    logger.info("\n" + "="*50)
-    logger.info(" 回测完成 ")
-    logger.info("="*50)
+    weights_to_eval = weights_to_eval_base
 
-    if not results:
-        logger.warning("未记录回测结果。")
-        return pd.DataFrame()
+    backtest_results_df, _ = backtest(df_for_optimization, fixed_ml_lags, weights_to_eval,
+                                   arm_rules_for_opt,
+                                   OPTIMIZATION_BACKTEST_PERIODS)
 
-    results_df = pd.DataFrame(results)
+    if backtest_results_df.empty or len(backtest_results_df) == 0:
+        return float('inf')
 
-    # Add backtest period number range to the results DataFrame attributes for use in the report
-    results_df.attrs['start_period'] = start_period_number
-    results_df.attrs['end_period'] = end_period_number
+    avg_weighted_red_hits = (backtest_results_df['red_hits'] ** 1.5).mean()
 
-    return results_df
+    unique_periods_tested = backtest_results_df['period'].nunique()
+    if unique_periods_tested == 0: # Should not happen if backtest_results_df is not empty
+        blue_hit_rate_per_period = 0.0
+    else:
+        # Count periods where at least one combination hit the blue ball
+        blue_hit_periods_count = backtest_results_df.groupby('period')['blue_hit'].any().sum()
+        blue_hit_rate_per_period = blue_hit_periods_count / unique_periods_tested
+    
+    RED_PERF_WEIGHT = 1.0
+    BLUE_PERF_WEIGHT = 10.0 # Blue ball hits are rarer and more impactful for prize
 
+    performance_score = (RED_PERF_WEIGHT * avg_weighted_red_hits) + \
+                        (BLUE_PERF_WEIGHT * blue_hit_rate_per_period)
 
-# --- 绘图函数（移到分析函数之外）---
-def plot_analysis_results(freq_omission_data: dict, pattern_analysis_data: dict):
-     """从分析结果生成图表。"""
-     if not SHOW_PLOTS:
-          # logger.info("Plotting is disabled.") # Avoid noise if running multiple times
-          plt.close('all')  # Close any lingering figures
-          return
+    if blue_hit_rate_per_period == 0 and avg_weighted_red_hits < 0.5 :
+        performance_score -= 1.0 # Penalty for very poor performance
 
-     logger.info("生成图表...")
+    return -performance_score
 
-     # Check if data is available before plotting
-     if not freq_omission_data or not pattern_analysis_data:
-          logger.warning("Analysis data not available for plotting.")
-          return
-
-     # Frequency plots
-     red_freq = freq_omission_data.get('red_freq', {})
-     blue_freq = freq_omission_data.get('blue_freq', {})
-     red_pos_freq = freq_omission_data.get('red_pos_freq', {})
-     # Assuming red_pos_cols keys exist in red_pos_freq structure if data is present
-     red_pos_cols = [f'red_pos{i+1}' for i in range(6)]
-
-
-     # Check if there is any data in frequencies before plotting
-     has_freq_data = bool(red_freq) or bool(blue_freq) or any(red_pos_freq.values())
-     if has_freq_data:
-         plt.figure(figsize=(14, 6))
-         subplot_count = 0
-         if red_freq:
-             subplot_count += 1
-             plt.subplot(1, 2, subplot_count)
-             # Sort by number for consistent plotting
-             sorted_red_items = sorted(red_freq.items())
-             sns.barplot(x=[item[0] for item in sorted_red_items], y=[item[1] for item in sorted_red_items])
-             plt.title('红球总体频率')
-             plt.xlabel('数字'); plt.ylabel('频率')
-         if blue_freq:
-             subplot_count += 1
-             plt.subplot(1, 2, subplot_count)
-             # Sort by number for consistent plotting
-             sorted_blue_items = sorted(blue_freq.items())
-             sns.barplot(x=[item[0] for item in sorted_blue_items], y=[item[1] for item in sorted_blue_items])
-             plt.title('蓝球频率')
-             plt.xlabel('数字'); plt.ylabel('频率')
-         if subplot_count > 0:
-             plt.tight_layout()
-             plt.show()
-         else:
-             plt.close() # Close empty figure if no data was plotted
-
-
-     # Positional red ball frequency plot
-     if red_pos_freq and any(red_pos_freq.values()): # Check red_pos_freq is not empty and has data
-          # Determine how many subplots are actually needed (based on available columns)
-          valid_pos_cols = [col for col in red_pos_cols if col in red_pos_freq and red_pos_freq[col]]
-          if valid_pos_cols:
-              n_cols = 3 # Number of columns in subplot grid
-              n_rows = (len(valid_pos_cols) + n_cols - 1) // n_cols # Calculate rows needed
-              fig, axes = plt.subplots(n_rows, n_cols, figsize=(15, n_rows * 5))
-              axes = axes.flatten() # Flatten for easy iteration
-
-              for i, col in enumerate(valid_pos_cols):
-                   # Sort keys to maintain consistent plotting order
-                   sorted_freq_items = sorted(red_pos_freq[col].items())
-                   sns.barplot(x=[item[0] for item in sorted_freq_items], y=[item[1] for item in sorted_freq_items], ax=axes[i])
-                   axes[i].set_title(f'红球位置 {col.replace("red_pos", "")} 频率')
-                   axes[i].set_xlabel('数字')
-                   axes[i].set_ylabel('频率')
-
-              # Hide any unused subplots
-              for j in range(len(valid_pos_cols), len(axes)):
-                  fig.delaxes(axes[j])
-
-              plt.tight_layout()
-              plt.show()
-          else:
-              logger.warning("No valid position frequency data found for plotting.")
-
-
-     # Pattern distribution plots (sum, span, odd/even, consecutive, repeat)
-     # Example: Plotting Odd/Even ratio distribution if data is available
-     odd_even_ratios = pattern_analysis_data.get('odd_even_ratios', {})
-     if odd_even_ratios:
-          plt.figure(figsize=(8, 5)) # Adjusted size
-          # Sort x-axis labels numerically if possible (e.g., "0:6", "1:5", ...)
-          sorted_odd_ratios = sorted(odd_even_ratios.items(), key=lambda item: int(item[0].split(':')[0]))
-          sns.barplot(x=[item[0] for item in sorted_odd_ratios], y=[item[1] for item in sorted_odd_ratios])
-          plt.title('红球奇:偶比分布')
-          plt.xlabel('奇:偶比'); plt.ylabel('频率'); plt.show()
-
-     # Example: Plotting Consecutive pairs distribution if data is available
-     consecutive_counts = pattern_analysis_data.get('consecutive_counts', {})
-     if consecutive_counts:
-          plt.figure(figsize=(8, 5)) # Adjusted size
-          # Sort by number of consecutive pairs
-          sorted_consecutive = sorted(consecutive_counts.items())
-          sns.barplot(x=[item[0] for item in sorted_consecutive], y=[item[1] for item in sorted_consecutive])
-          plt.title('红球连续对分布')
-          plt.xlabel('连续对数量'); plt.ylabel('频率'); plt.show()
-
-     # Example: Plotting Repeat counts distribution if data is available
-     repeat_counts = pattern_analysis_data.get('repeat_counts', {})
-     if repeat_counts:
-          plt.figure(figsize=(8, 5)) # Adjusted size
-          # Sort by repeat count
-          sorted_repeat = sorted(repeat_counts.items())
-          sns.barplot(x=[item[0] for item in sorted_repeat], y=[item[1] for item in sorted_repeat])
-          plt.title('红球从上期重复频率')
-          plt.xlabel('重复球数量'); plt.ylabel('频率'); plt.show()
-
-     # Add plots for blue ball patterns if data is available
-     blue_odd_counts = pattern_analysis_data.get('blue_odd_counts', {})
-     if blue_odd_counts:
-         plt.figure(figsize=(6, 4))
-         # Map True/False to labels
-         labels = [str(k) for k in blue_odd_counts.keys()] # Use boolean string initially
-         counts = list(blue_odd_counts.values())
-         # Better labels for plot
-         display_labels = ['奇数' if k else '偶数' for k in blue_odd_counts.keys()]
-         sns.barplot(x=display_labels, y=counts)
-         plt.title('蓝球奇偶分布')
-         plt.xlabel('奇偶性'); plt.ylabel('频率'); plt.show()
-
-     blue_large_counts = pattern_analysis_data.get('blue_large_counts', {})
-     if blue_large_counts:
-         plt.figure(figsize=(6, 4))
-         # Map True/False to labels
-         labels = [str(k) for k in blue_large_counts.keys()]
-         counts = list(blue_large_counts.values())
-         # Better labels for plot
-         display_labels = ['大 (>8)' if k else '小 (1-8)' for k in blue_large_counts.keys()]
-         sns.barplot(x=display_labels, y=counts)
-         plt.title('蓝球大小分布')
-         plt.xlabel('大小'); plt.ylabel('频率'); plt.show()
-
-     # blue_prime_counts = pattern_analysis_data.get('blue_prime_counts', {})
-     # if blue_prime_counts:
-     #     plt.figure(figsize=(6, 4))
-     #     labels = [str(k) for k in blue_prime_counts.keys()]
-     #     counts = list(blue_prime_counts.values())
-     #     display_labels = ['质数' if k else '合数' for k in blue_prime_counts.keys()]
-     #     sns.barplot(x=display_labels, y=counts)
-     #     plt.title('蓝球质数分布')
-     #     plt.xlabel('类型'); plt.ylabel('频率'); plt.show()
-
-
-     logger.info("图表生成完成。")
-
-
-# --- 主执行流程 ---
 
 if __name__ == "__main__":
-    # Need to add the check for multiprocessing on Windows in the main block
-    # This is because spawning processes on Windows needs the main part of the script
-    # to be protected by if __name__ == "__main__":
-    # This is already the case, but it's important to note why.
-    # No specific code change needed here, just awareness.
+    log_filename = os.path.join(SCRIPT_DIR, f"ssq_analysis_log_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.txt")
+    file_handler = logging.FileHandler(log_filename, encoding='utf-8')
+    file_handler.setFormatter(detailed_formatter)
+    logger.addHandler(file_handler)
 
-    # --- 配置输出文件 ---
-    now = datetime.datetime.now()
-    timestamp = now.strftime("%Y%m%d_%H%M%S")
-    output_filename = os.path.join(SCRIPT_DIR, f"ssq_analysis_output_{timestamp}.txt")
+    set_console_verbosity(logging.INFO, use_simple_formatter=True)
 
-    output_file = None  # Initialize file handle
-    original_stdout = sys.stdout # Store original stdout
+    logger.info(f"--- 双色球分析报告 ---")
+    logger.info(f"运行日期: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    logger.info(f"日志文件: {log_filename}")
+    logger.info(f"红球候选池分数阈值: High > {CANDIDATE_POOL_SCORE_THRESHOLDS['High']}, Medium > {CANDIDATE_POOL_SCORE_THRESHOLDS['Medium']}")
+    logger.info("-" * 30)
 
-    try:
-        # Open the output file
-        output_file = open(output_filename, 'w', encoding='utf-8')
-        # Redirect stdout to the output file for the main report content
-        sys.stdout = output_file
+    CURRENT_WEIGHTS = load_weights_from_file(WEIGHTS_CONFIG_FILE, DEFAULT_WEIGHTS)
+    weights_loaded_from_file = not (all(CURRENT_WEIGHTS.get(k) == v for k,v in DEFAULT_WEIGHTS.items()) and \
+                                    all(k in CURRENT_WEIGHTS for k in DEFAULT_WEIGHTS) and \
+                                    not os.path.exists(WEIGHTS_CONFIG_FILE))
+    
+    original_console_level = global_console_handler.level # Save current console level
+    set_console_verbosity(logging.INFO, use_simple_formatter=False) # Detailed for data loading initially
+    main_df = None
+    if os.path.exists(PROCESSED_CSV_PATH):
+        df_proc = load_data(PROCESSED_CSV_PATH)
+        required_cols = [f'red{i+1}' for i in range(6)] + ['blue', '期号', 'red_sum']
+        if df_proc is not None and not df_proc.empty and all(c in df_proc.columns for c in required_cols):
+            main_df = df_proc
+            logger.info(f"成功加载已处理数据: {PROCESSED_CSV_PATH}")
+    
+    if main_df is None:
+        logger.info(f"处理原始数据: {CSV_FILE_PATH}")
+        df_raw_main = load_data(CSV_FILE_PATH)
+        if df_raw_main is not None and not df_raw_main.empty:
+            df_clean_main = clean_and_structure(df_raw_main)
+            if df_clean_main is not None and not df_clean_main.empty:
+                main_df = feature_engineer(df_clean_main)
+                if main_df is not None and not main_df.empty:
+                    try: main_df.to_csv(PROCESSED_CSV_PATH, index=False); logger.info(f"已处理数据已保存到: {PROCESSED_CSV_PATH}")
+                    except Exception as e_csv_save: logger.warning(f"保存已处理数据失败: {e_csv_save}")
+                else: logger.error("特征工程失败。")
+            else: logger.error("数据清洗失败。")
+        else: logger.error("原始数据加载失败。")
 
-        print(f"--- 双色球分析报告 ---", file=sys.stdout)
-        print(f"运行日期: {now.strftime('%Y-%m-%d %H:%M:%S')}", file=sys.stdout)
-        print(f"输出文件: {output_filename}", file=sys.stdout)
-        print("-" * 30, file=sys.stdout)
-        print("\n", file=sys.stdout)
+    if main_df is None or main_df.empty:
+        logger.error("数据准备失败，无法继续。"); sys.exit(1)
+    
+    for r_col_m in [f'red{i+1}' for i in range(6)]:
+        if r_col_m in main_df.columns: main_df[r_col_m] = pd.to_numeric(main_df[r_col_m], errors='coerce')
+    if 'blue' in main_df.columns: main_df['blue'] = pd.to_numeric(main_df['blue'], errors='coerce')
+    main_df.dropna(subset=([f'red{i+1}' for i in range(6)] + ['blue']), inplace=True)
 
-        # --- Check for LightGBM availability early ---
-        if LGBMClassifier is None:
-            logger.warning("LightGBM library not found (pip install lightgbm). ML models will be limited to Logistic Regression and SVC.")
-            print("\n警告: LightGBM 库未找到，ML 模型将仅限于 Logistic Regression 和 SVC。", file=sys.stdout)
+    set_console_verbosity(original_console_level, use_simple_formatter=True) # Restore console level (likely simple INFO)
 
+    full_history_arm_rules = analyze_associations(main_df, CURRENT_WEIGHTS)
 
-        # --- Start Analysis and Prediction ---
+    if not weights_loaded_from_file:
+        logger.info("\n>>> 开始权重优化过程...")
+        min_data_for_opt = (max(ML_LAG_FEATURES) if ML_LAG_FEATURES else 0) + 1 + MIN_POSITIVE_SAMPLES_FOR_ML + OPTIMIZATION_BACKTEST_PERIODS
+        if len(main_df) >= min_data_for_opt:
+            df_for_opt_objective = main_df.copy()
+            optuna.logging.set_verbosity(optuna.logging.WARNING) # Suppress Optuna's own INFO logs
+            
+            optuna_study = optuna.create_study(direction='minimize')
+            logger.info(f"Optuna优化试验次数: {OPTIMIZATION_TRIALS}, 超时: {7200}s")
+            
+            optuna_study.optimize(lambda trial: objective(trial, df_for_opt_objective, ML_LAG_FEATURES, full_history_arm_rules),
+                                  n_trials=OPTIMIZATION_TRIALS, timeout=7200)
 
-        # 1. Load and prepare data
-        # Try loading processed data file first
-        processed_data_exists = os.path.exists(PROCESSED_CSV_PATH)
-        df = None # Initialize df
+            best_params_from_optuna = optuna_study.best_params
+            updated_weights = DEFAULT_WEIGHTS.copy()
 
-        if processed_data_exists:
-            logger.info(f"尝试加载处理好的数据文件: {PROCESSED_CSV_PATH}")
-            df = load_data(PROCESSED_CSV_PATH)
-            if df is not None and not df.empty:
-                logger.info("成功加载处理好的数据文件。跳过清洗和特征工程。")
-                # Assume processed file already has features, if not, rerun feature_engineer
-                # A robust check would be to see if feature columns exist, but for simplicity,
-                # assume it's ready or needs reprocessing if the original wasn't used.
-                # If you change feature engineering, you might need to force reprocessing.
-                # Add a basic check for some expected feature columns
-                expected_features_check = ['red_sum', 'red_odd_count', 'blue_is_odd']
-                if not all(col in df.columns for col in expected_features_check):
-                     logger.warning("处理好的数据文件似乎缺少特征列，重新运行特征工程。")
-                     processed_data_exists = False # Force reprocessing
+            for key, value in best_params_from_optuna.items():
+                 if key in updated_weights:
+                     if isinstance(updated_weights[key], int):
+                         updated_weights[key] = int(round(value))
+                     elif isinstance(updated_weights[key], float):
+                         updated_weights[key] = float(value)
+            
+            prop_h_opt = updated_weights.get('CANDIDATE_POOL_PROPORTIONS_HIGH', DEFAULT_WEIGHTS['CANDIDATE_POOL_PROPORTIONS_HIGH'])
+            prop_m_opt = updated_weights.get('CANDIDATE_POOL_PROPORTIONS_MEDIUM', DEFAULT_WEIGHTS['CANDIDATE_POOL_PROPORTIONS_MEDIUM'])
+            if prop_h_opt + prop_m_opt > 1.0: prop_m_opt = 1.0 - prop_h_opt
+            if prop_m_opt < 0: prop_m_opt = 0
+            updated_weights['CANDIDATE_POOL_PROPORTIONS_HIGH'] = prop_h_opt
+            updated_weights['CANDIDATE_POOL_PROPORTIONS_MEDIUM'] = prop_m_opt
 
-            else:
-                logger.warning("处理好的数据文件加载失败或为空。尝试加载原始数据文件并重新处理。")
-                processed_data_exists = False
-
-        # If processed data not available or failed to load, use raw data and process
-        if not processed_data_exists:
-            logger.info(f"加载原始数据文件: {CSV_FILE_PATH}")
-            # Use SuppressOutput to capture stderr during load/clean/feature_engineer if needed
-            with SuppressOutput(suppress_stdout=False, capture_stderr=True): # Keep stdout for initial load message if not redirected
-                 df = load_data(CSV_FILE_PATH)
-                 if df is not None and not df.empty:
-                     logger.info("开始数据清洗和结构化...")
-                     df = clean_and_structure(df)
-                     if df is not None and not df.empty:
-                          logger.info("开始特征工程...")
-                          df = feature_engineer(df)
-                          if df is None or df.empty:
-                               logger.error("特征工程失败或导致空数据。")
-                               print("\n错误: 特征工程失败。无法继续分析。", file=sys.stdout)
-                          else:
-                               logger.info("数据清洗和特征工程完成。")
-                               # Optional: Save processed data for faster loading next time
-                               try:
-                                    df.to_csv(PROCESSED_CSV_PATH, index=False)
-                                    logger.info(f"处理后的数据已保存到 {PROCESSED_CSV_PATH}")
-                               except Exception as e:
-                                    logger.warning(f"保存处理后的数据失败: {e}")
-
-                     else:
-                         logger.error("数据清洗和结构化失败或导致空数据。")
-                         print("\n错误: 数据清洗和结构化失败。无法继续分析。", file=sys.stdout)
-                 else:
-                     logger.error("数据加载失败或导致空数据。")
-                     print("\n错误: 数据加载失败。无法继续分析。", file=sys.stdout)
-
-
-        # Proceed only if data is successfully loaded and processed
-        if df is not None and not df.empty:
-            # Extract data range info and last period/date
-            min_period = df['期号'].min() if '期号' in df.columns and not df['期号'].empty else "N/A"
-            max_period = df['期号'].max() if '期号' in df.columns and not df['期号'].empty else "N/A"
-            total_periods = len(df)
-
-            last_period = "未知"
-            last_drawing_date = "未知"
-
-            if not df.empty:
-                last_row = df.iloc[-1]
-                if '期号' in last_row and pd.notna(last_row['期号']):
-                    last_period = int(last_row['期号']) # Ensure int
-                if '日期' in last_row and pd.notna(last_row['日期']):
-                    last_drawing_date = last_row['日期']
-
-            # Add data range info and last date to the report header
-            print(f"\n数据概况:", file=sys.stdout)
-            print(f"  数据期数范围: 第 {min_period} 期 至 第 {max_period} 期", file=sys.stdout)
-            print(f"  总数据条数: {total_periods} 期", file=sys.stdout)
-            print(f"  最后日期: {last_drawing_date}({last_period})", file=sys.stdout)
-            print("\n", file=sys.stdout)
-
-
-            # Check if enough data for analysis/ML
-            max_lag = max(ML_LAG_FEATURES) if ML_LAG_FEATURES else 0
-            min_periods_needed_for_ml = max_lag + 1 # Need enough for at least one set of features/target
-            min_periods_needed_for_analysis = 10 # Basic analysis needs a few periods
-
-            if len(df) < min(min_periods_needed_for_ml, min_periods_needed_for_analysis):
-                 logger.error(f"清理/特征工程后有效期数不足({len(df)})，无法进行完整分析(至少需要{min(min_periods_needed_for_ml, min_periods_needed_for_analysis)})。")
-                 print(f"\n错误: 清理/特征工程后有效期数不足({len(df)})，无法进行分析。无法继续。", file=sys.stdout)
-            else:
-                # 2. Perform Full Historical Analysis
-                print("\n" + "="*50, file=sys.stdout)
-                print(" 完整历史分析 ", file=sys.stdout)
-                print(f" (基于第 {min_period} 期至第 {max_period} 期数据) ", file=sys.stdout)
-                print("="*50, file=sys.stdout)
-                # Use SuppressOutput to hide internal analysis function printing from file, but still log stderr
-                with SuppressOutput(suppress_stdout=True, capture_stderr=True):
-                    full_freq_omission_data = analyze_frequency_omission(df)
-                    full_pattern_analysis_data = analyze_patterns(df)
-                    full_association_rules = analyze_associations(df, ARM_MIN_SUPPORT, ARM_MIN_CONFIDENCE, ARM_MIN_LIFT) # Analyze associations on full data
-
-                print("\n历史分析摘要（基于完整数据）:", file=sys.stdout)
-                print("\n频率和遗漏亮点:", file=sys.stdout)
-                # Print selected frequency/omission data to file
-                print(f"  热门红球: {full_freq_omission_data.get('hot_reds', [])}", file=sys.stdout)
-                print(f"  冷门红球: {full_freq_omission_data.get('cold_reds', [])}", file=sys.stdout)
-                print(f"  热门蓝球: {full_freq_omission_data.get('hot_blues', [])}", file=sys.stdout)
-                print(f"  冷门蓝球: {full_freq_omission_data.get('cold_blues', [])}", file=sys.stdout)
-                print("\n模式分析亮点:", file=sys.stdout)
-                print(f"  最常见红球奇:偶数量: {full_pattern_analysis_data.get('most_common_odd_even_count')}", file=sys.stdout)
-                print(f"  最常见区域分布(区域1:区域2:区域3): {full_pattern_analysis_data.get('most_common_zone_distribution')}", file=sys.stdout)
-                print(f"  最常见红球和: {full_pattern_analysis_data.get('most_common_sum')}", file=sys.stdout)
-                print(f"  最常见红球跨度: {full_pattern_analysis_data.get('most_common_span')}", file=sys.stdout)
-
-                if not full_association_rules.empty:
-                    print("\n前10条关联规则（按提升度）:", file=sys.stdout)
-                    # Format rules for output to file
-                    # Ensure antecedents and consequents are sets of standard types for printing
-                    formatted_rules = full_association_rules.head(10).copy()
-                    formatted_rules['antecedents'] = formatted_rules['antecedents'].apply(lambda x: set(x))
-                    formatted_rules['consequents'] = formatted_rules['consequents'].apply(lambda x: set(x))
-
-                    for _, rule in formatted_rules.iterrows():
-                        print(f"  {rule['antecedents']} -> {rule['consequents']} (支持度: {rule['support']:.4f}, 置信度: {rule['confidence']:.2f}, 提升度: {rule['lift']:.2f})", file=sys.stdout)
-                else:
-                    print("\n以当前阈值未找到显著关联规则。", file=sys.stdout)
-
-
-                print("="*50, file=sys.stdout)
-                print(" 历史分析完成 ", file=sys.stdout)
-                print("="*50, file=sys.stdout)
-
-                 # 3. Perform Backtest
-                # Backtest output is logged to console and summarized in file
-                # The backtest function itself handles its console output (progress bar) and internal logging
-                backtest_results = backtest(df, ML_LAG_FEATURES, NUM_COMBINATIONS_TO_GENERATE, BACKTEST_PERIODS_COUNT)
-
-                print("\n" + "="*50, file=sys.stdout)
-                print(" 回测摘要 ", file=sys.stdout)
-
-                # If backtest results exist, show the period range tested
-                if not backtest_results.empty:
-                    start_period = backtest_results.attrs.get('start_period', '未知')
-                    end_period = backtest_results.attrs.get('end_period', '未知')
-                    print(f" (基于第 {start_period} 期至第 {end_period} 期数据) ", file=sys.stdout)
-
-                print("="*50, file=sys.stdout)
-                if not backtest_results.empty:
-                     # Print backtest summary to file
-                     periods_with_results = backtest_results['period'].nunique()
-                     print(f"测试的总期数(已生成组合): {periods_with_results}", file=sys.stdout)
-                     print(f"生成的总组合数: {len(backtest_results)}", file=sys.stdout)
-                     if periods_with_results > 0:
-                          print(f"每期生成的组合数(平均): {len(backtest_results) / periods_with_results:.2f}", file=sys.stdout)
-
-
-                     avg_red_hits = backtest_results['red_hits'].mean()
-                     print(f"每个组合的平均红球命中数: {avg_red_hits:.2f}", file=sys.stdout)
-
-                     # Calculate percentage of test periods where at least one combination hit the blue ball
-                     blue_hit_by_period = backtest_results.groupby('period')['blue_hit'].any()
-                     blue_hit_rate_per_period = blue_hit_by_period.mean() if not blue_hit_by_period.empty else 0.0
-                     print(f"至少一个组合击中蓝球的测试期百分比: {blue_hit_rate_per_period:.2%}", file=sys.stdout)
-
-
-                     print("\n中奖层级命中情况(每个组合):", file=sys.stdout)
-                     print(f"  6红+蓝: {len(backtest_results[(backtest_results['red_hits'] == 6) & (backtest_results['blue_hit'] == True)])}", file=sys.stdout)
-                     print(f"  6红(无蓝): {len(backtest_results[(backtest_results['red_hits'] == 6) & (backtest_results['blue_hit'] == False)])}", file=sys.stdout)
-                     print(f"  5红+蓝: {len(backtest_results[(backtest_results['red_hits'] == 5) & (backtest_results['blue_hit'] == True)])}", file=sys.stdout)
-                     print(f"  5红(无蓝): {len(backtest_results[(backtest_results['red_hits'] == 5) & (backtest_results['blue_hit'] == False)])}", file=sys.stdout)
-                     print(f"  4红+蓝: {len(backtest_results[(backtest_results['red_hits'] == 4) & (backtest_results['blue_hit'] == True)])}", file=sys.stdout)
-                     print(f"  4红(无蓝): {len(backtest_results[(backtest_results['red_hits'] == 4) & (backtest_results['blue_hit'] == False)])}", file=sys.stdout)
-                     print(f"  3红+蓝: {len(backtest_results[(backtest_results['red_hits'] == 3) & (backtest_results['blue_hit'] == True)])}", file=sys.stdout)
-                     # Sum of all combinations where blue_hit is True, regardless of red hits
-                     print(f"  精确蓝球命中(任意红球数): {(backtest_results['blue_hit'] == True).sum()}", file=sys.stdout)
-
-                     print("\n与随机机会比较(近似):", file=sys.stdout)
-                     expected_avg_red_hits_random = 6 * (6/33.0)
-                     expected_blue_hits_random = 1/16.0
-                     print(f"  纯随机每组合的期望平均红球命中数: ~{expected_avg_red_hits_random:.2f}", file=sys.stdout)
-                     print(f"  纯随机每组合的期望蓝球命中数: ~{expected_blue_hits_random:.4f}", file=sys.stdout)
-
-
-                else:
-                     print("没有可总结的回测结果。", file=sys.stdout)
-
-                print("="*50, file=sys.stdout)
-                print(" 回测摘要完成 ", file=sys.stdout)
-                print("="*50, file=sys.stdout)
-
-
-                # 4. Generate Final Recommendation Combinations for the next draw
-                print("\n" + "="*50, file=sys.stdout)
-                print(" 生成最终推荐 ", file=sys.stdout)
-                print(f" (基于第 {min_period} 期至第 {max_period} 期全部数据) ", file=sys.stdout)
-                print("="*50, file=sys.stdout)
-
-                # Use SuppressOutput to hide analyze_and_recommend's internal printing/logging
-                # The final recommendation strings will be printed explicitly below
-                with SuppressOutput(suppress_stdout=True, capture_stderr=True):
-                     # Train ML models on the full dataset for the final prediction
-                     final_recommendations_data, final_recommendations_strings, final_analysis_data, final_trained_models = analyze_and_recommend(
-                         df,  # Use the full available data for final prediction
-                         ML_LAG_FEATURES,
-                         NUM_COMBINATIONS_TO_GENERATE,
-                         train_ml=True # Train ML on full data for final recommendation
-                     )
-
-                # Print the final recommendation combinations to the output file
-                if final_recommendations_strings:
-                    for line in final_recommendations_strings:
-                        print(line, file=sys.stdout)
-                else:
-                    print("无法生成最终推荐组合。请检查数据和配置。", file=sys.stdout)
-
-
-                print("="*50, file=sys.stdout)
-                print(" 最终推荐完成 ", file=sys.stdout)
-                print("="*50, file=sys.stdout)
-
-                # 5. Generate 7+7 Multi-bet Selection
-                print("\n" + "="*50, file=sys.stdout)
-                print(" 7+7复式选号 ", file=sys.stdout)
-                print("="*50, file=sys.stdout)
-
-                # Recalculate scores for 7+7 selection using analysis and ML results from the final run
-                # Need to get the predicted probabilities from the final trained models on the full data
-                final_predicted_probabilities = {}
-                if final_trained_models:
-                     final_predicted_probabilities = predict_next_draw_probabilities(df, final_trained_models, ML_LAG_FEATURES)
-                # If ML training failed or no models trained, final_predicted_probabilities will be empty,
-                # and calculate_scores will use default 0 probability scores.
-
-
-                final_scores_data_for_7_7 = calculate_scores(
-                     final_analysis_data.get('freq_omission', {}),
-                     final_analysis_data.get('patterns', {}),
-                     final_predicted_probabilities # Pass probabilities from the final run
-                )
-
-                red_scores_for_7_7 = final_scores_data_for_7_7.get('red_scores', {})
-                blue_scores_for_7_7 = final_scores_data_for_7_7.get('blue_scores', {})
-
-                if not red_scores_for_7_7 or len(red_scores_for_7_7) < 7 or not blue_scores_for_7_7 or len(blue_scores_for_7_7) < 7:
-                     logger.error("不足够的评分号码来选择7红7蓝进行7+7复式投注。请检查数据和配置。")  # Log to console/default stderr
-                     print("无法生成7+7复式选号。", file=sys.stdout)
-                else:
-                     # Sort scores and select the top 7 red and top 7 blue balls
-                     sorted_red_scores = sorted(red_scores_for_7_7.items(), key=lambda item: item[1], reverse=True)
-                     top_7_red_balls = [num for num, score in sorted_red_scores[:7]]
-
-                     sorted_blue_scores = sorted(blue_scores_for_7_7.items(), key=lambda item: item[1], reverse=True)
-                     top_7_blue_balls = [num for num, score in sorted_blue_scores[:7]]
-
-                     # Print to file
-                     print("基于总体分数，为7+7复式投注选择以下号码:", file=sys.stdout)
-                     print(f"选择的7个红球: {sorted(top_7_red_balls)}", file=sys.stdout)
-                     print(f"选择的7个蓝球: {sorted(top_7_blue_balls)}", file=sys.stdout)
-                     print("\n此7+7选择覆盖C(7,6) * C(7,1) = 49个组合。", file=sys.stdout)
-                     print("考虑这些号码如何符合历史模式和您的风险容忍度。", file=sys.stdout)
-
-                     # Also print the 7+7 selection to the console for immediate feedback (using logger)
-                     logger.info("\n--- 7+7复式选号 ---")
-                     logger.info("基于总体分数，为7+7复式投注选择以下号码:")
-                     logger.info(f"选择的7个红球: {sorted(top_7_red_balls)}")
-                     logger.info(f"选择的7个蓝球: {sorted(top_7_blue_balls)}")
-                     logger.info("此7+7选择覆盖49个组合。")
-
-
-                print("="*50, file=sys.stdout)
-                print(" 7+7选择完成 ", file=sys.stdout)
-                print("="*50, file=sys.stdout)
-
-                # 6. Plot results (if enabled) - requires matplotlib to run in an interactive environment or save figures
-                if SHOW_PLOTS:
-                    try:
-                        plot_analysis_results(full_freq_omission_data, full_pattern_analysis_data)
-                    except Exception as e:
-                        logger.warning(f"绘图时出错: {e}")
-                        print(f"\n绘图时出错: {e}", file=sys.stdout)
-
+            logger.info(f"\n>>> Optuna优化完成。")
+            logger.info(f"  最佳目标函数值: {optuna_study.best_value:.4f}")
+            CURRENT_WEIGHTS = updated_weights
+            save_weights_to_file(WEIGHTS_CONFIG_FILE, CURRENT_WEIGHTS)
+            full_history_arm_rules = analyze_associations(main_df, CURRENT_WEIGHTS) 
         else:
-            # Errors during data loading or cleaning/engineering have been logged and printed to file.
-            pass # Skip analysis due to data issues.
+            logger.warning(f"数据不足 ({len(main_df)}期) 进行权重优化 (需要至少 {min_data_for_opt}期)。将使用默认/已加载权重。")
+    else:
+        logger.info("\n>>> 已加载现有权重，跳过优化。")
 
-    except Exception as e:
-        # Catch any unexpected errors in the main try block
-        logger.error(f"执行过程中发生意外错误: {e}", exc_info=True) # Log with traceback to console
-        # If the file is open (sys.stdout is redirected), print the error to the file
-        print(f"\n执行过程中发生意外错误: {e}", file=sys.stdout)
-        # Also print traceback to the file
-        import traceback
-        traceback.print_exc(file=sys.stdout)
-        print("--- 错误跟踪结束 ---", file=sys.stdout)
+    logger.info(f"\n>>> 当前使用权重 (部分展示):")
+    logger.info(f"  NUM_COMBINATIONS_TO_GENERATE: {CURRENT_WEIGHTS['NUM_COMBINATIONS_TO_GENERATE']}")
+    logger.info(f"  DIVERSITY_MIN_DIFFERENT_REDS: {CURRENT_WEIGHTS['DIVERSITY_MIN_DIFFERENT_REDS']}")
+    logger.info(f"  ML_PROB_SCORE_WEIGHT_RED: {CURRENT_WEIGHTS.get('ML_PROB_SCORE_WEIGHT_RED', 0.0):.2f}")
+    logger.info(f"  ARM_COMBINATION_BONUS_WEIGHT: {CURRENT_WEIGHTS.get('ARM_COMBINATION_BONUS_WEIGHT',0.0):.2f}")
 
-    finally:
-        # --- Close file and restore stdout ---
-        if sys.stdout is not None and sys.stdout != sys.__stdout__:
-             sys.stdout.close()
-             sys.stdout = original_stdout # Restore original stdout
+    min_p_val, max_p_val, total_p_val = main_df['期号'].min(), main_df['期号'].max(), len(main_df)
+    last_draw_dt = main_df['日期'].iloc[-1] if '日期' in main_df.columns and not main_df.empty else "未知"
+    last_draw_period = main_df['期号'].iloc[-1] if not main_df.empty else "未知"
+    
+    set_console_verbosity(logging.INFO, use_simple_formatter=False) 
+    logger.info(f"\n{'='*15} 数据概况 {'='*15}")
+    logger.info(f"  数据范围: {min_p_val} - {max_p_val} (共 {total_p_val} 期)")
+    logger.info(f"  最后开奖: {last_draw_dt} (期号: {last_draw_period})")
 
-        # Output final message to console
-        logger.info(f"\n分析完成。完整报告已保存到 {output_filename}")
+    min_periods_for_full_run = (max(ML_LAG_FEATURES) if ML_LAG_FEATURES else 0) + 1 + MIN_POSITIVE_SAMPLES_FOR_ML + BACKTEST_PERIODS_COUNT
+    if total_p_val < min_periods_for_full_run:
+        logger.error(f"数据不足 ({total_p_val}期) 进行完整分析和回测报告 (需 {min_periods_for_full_run}期)。")
+    else:
+        logger.info(f"\n{'='*10} 完整历史统计分析 {'='*10}")
+        original_console_level_stats = global_console_handler.level # Store before changing
+        set_console_verbosity(logging.INFO, use_simple_formatter=False) # Ensure detailed for this section
+        full_freq_d = analyze_frequency_omission(main_df, CURRENT_WEIGHTS)
+        full_patt_d = analyze_patterns(main_df, CURRENT_WEIGHTS)
+        
+        logger.info(f"  热门红球 (Top 5): {[int(x) for x in full_freq_d.get('hot_reds', [])[:5]]}")
+        logger.info(f"  冷门红球 (Bottom 5): {[int(x) for x in full_freq_d.get('cold_reds', [])[-5:]]}")
+        logger.info(f"  最近 {RECENT_FREQ_WINDOW} 期热门红球: " + str(sorted([(int(k),v) for k,v in full_freq_d.get('recent_N_freq_red', {}).items() if v > 0], key=lambda x: x[1], reverse=True)[:5]))
+        logger.info(f"  最常见红球奇偶比: {full_patt_d.get('most_common_odd_even_count')}")
+        if not full_history_arm_rules.empty: logger.info(f"  发现 {len(full_history_arm_rules)} 条关联规则 (Top 3 LIFT): \n{full_history_arm_rules.head(3).to_string(index=False)}")
+        else: logger.info("  未找到显著关联规则.")
+        global_console_handler.setLevel(original_console_level_stats) # Restore console level
+
+        logger.info(f"\n{'='*15} 回测摘要 {'='*15}")
+        set_console_verbosity(logging.INFO, use_simple_formatter=True) 
+        backtest_res_df, extended_bt_stats = backtest(main_df, ML_LAG_FEATURES, CURRENT_WEIGHTS, full_history_arm_rules, BACKTEST_PERIODS_COUNT)
+        set_console_verbosity(logging.INFO, use_simple_formatter=False)
+
+        if not backtest_res_df.empty:
+            s_p_f = backtest_res_df.attrs.get('start_period', 'N/A'); e_p_f = backtest_res_df.attrs.get('end_period', 'N/A')
+            num_tested_periods = backtest_res_df['period'].nunique()
+            logger.info(f"  回测期范围: {s_p_f} 至 {e_p_f} (共测试 {num_tested_periods} 期)")
+            logger.info(f"  每期生成组合数: {extended_bt_stats.get('num_combinations_per_draw_tested', 'N/A')}")
+            logger.info(f"  总评估组合数: {extended_bt_stats.get('total_combinations_evaluated', 'N/A')}")
+            
+            logger.info(f"  --- 整体命中表现 ---")
+            logger.info(f"    每个组合平均红球命中: {backtest_res_df['red_hits'].mean():.3f}")
+            logger.info(f"    每个组合加权(x^1.5)平均红球命中: {(backtest_res_df['red_hits']**1.5).mean():.3f}")
+            
+            blue_hit_overall_rate = backtest_res_df['blue_hit'].mean() * 100 
+            logger.info(f"    蓝球命中率 (每个组合): {blue_hit_overall_rate:.2f}%")
+            
+            periods_any_blue_hit = extended_bt_stats.get('periods_with_any_blue_hit_count', 0)
+            if num_tested_periods > 0:
+                logger.info(f"    至少一个组合命中蓝球的期数占比: {periods_any_blue_hit / num_tested_periods:.2%}")
+
+            logger.info(f"  --- 红球命中数分布 (按组合) ---")
+            hit_counts_dist = backtest_res_df['red_hits'].value_counts(normalize=True).sort_index() * 100
+            for hit_num, pct in hit_counts_dist.items():
+                logger.info(f"    命中 {hit_num} 红球: {pct:.2f}%")
+
+            logger.info(f"  --- 中奖等级统计 (按组合) ---")
+            prize_dist = extended_bt_stats.get('prize_counts', {})
+            if prize_dist:
+                prize_order = {"一等奖": 1, "二等奖": 2, "三等奖": 3, "四等奖": 4, "五等奖": 5, "六等奖": 6}
+                # Use OrderedDict to preserve custom sort order if needed, or just sort by value from prize_order
+                sorted_prize_dist = sorted(prize_dist.items(), key=lambda item: prize_order.get(item[0], 99))
+                for prize_level, count in sorted_prize_dist:
+                    logger.info(f"    {prize_level}: {count} 次")
+            else:
+                logger.info("    未命中任何奖级。")
+
+            best_hits_df = extended_bt_stats.get('best_hit_per_period_df')
+            if best_hits_df is not None and not best_hits_df.empty:
+                logger.info(f"  --- 每期最佳红球命中数分布 ---") # Best hit among N combinations for that period
+                best_red_dist = best_hits_df['max_red_hits'].value_counts(normalize=True).sort_index() * 100
+                for hit_num, pct in best_red_dist.items():
+                    logger.info(f"    最佳命中 {hit_num} 红球的期数占比: {pct:.2f}%")
+                
+                # Periods where blue was hit by any of the N combinations
+                if 'blue_hit_in_period' in best_hits_df.columns:
+                     periods_with_best_blue_hit = best_hits_df['blue_hit_in_period'].sum()
+                     if num_tested_periods > 0:
+                         logger.info(f"    至少一个组合命中蓝球的期数占比 (来自best_hit_per_period): {periods_with_best_blue_hit / num_tested_periods:.2%}")
+
+
+        else: logger.info("  最终回测未产生结果。")
+
+        logger.info(f"\n{'='*12} 最终推荐号码 {'='*12}")
+        set_console_verbosity(logging.INFO, use_simple_formatter=True)
+        final_recs_list, final_rec_strs_list, _, _, final_scores_dict, _ = analyze_and_recommend(
+            main_df, ML_LAG_FEATURES, CURRENT_WEIGHTS, full_history_arm_rules, train_ml=True
+        )
+        for line_str in final_rec_strs_list: logger.info(line_str)
+
+        set_console_verbosity(logging.INFO, use_simple_formatter=False)
+        logger.info(f"\n{'='*8} 中奖红球分数段历史分析 {'='*8}")
+        if final_scores_dict.get('red_scores'):
+            disp_cts, disp_pcts_vals = analyze_winning_red_ball_score_segments(main_df, final_scores_dict['red_scores'], SCORE_SEGMENT_BOUNDARIES, SCORE_SEGMENT_LABELS)
+            tot_win_reds_d = sum(disp_cts.values())
+            logger.info(f"  历史中奖红球分数段分布 (总计 {tot_win_reds_d} 个):")
+            for seg_name in sorted(disp_cts.keys()):
+                logger.info(f"    分数段 {seg_name}: {disp_cts.get(seg_name,0)} 个 ({disp_pcts_vals.get(seg_name,0.0):.2f}%)")
+        else: logger.info("  无法进行分数段分析（无红球得分）。")
+
+        logger.info(f"\n{'='*14} 7+7 复式参考 {'='*14}")
+        r_s_77_f = final_scores_dict.get('red_scores', {}); b_s_77_f = final_scores_dict.get('blue_scores', {})
+        if r_s_77_f and len(r_s_77_f)>=7 and b_s_77_f and len(b_s_77_f)>=7:
+            top_7r_f = sorted([n_val for n_val,_ in sorted(r_s_77_f.items(), key=lambda i_item:i_item[1], reverse=True)[:7]])
+            top_7b_f = sorted([n_val for n_val,_ in sorted(b_s_77_f.items(), key=lambda i_item:i_item[1], reverse=True)[:7]])
+            logger.info(f"  推荐7红球: {[int(x) for x in top_7r_f]}")
+            logger.info(f"  推荐7蓝球: {[int(x) for x in top_7b_f]}")
+        else: logger.info("  评分号码不足以选择7+7。")
+
+    logger.info(f"\n--- 分析报告结束 (详情请查阅日志文件: {log_filename}) ---")
