@@ -10,18 +10,26 @@ jobs:
   daily_process:
     runs-on: ubuntu-latest
     env:
-      TZ: Asia/Shanghai
+      TZ: Asia/Shanghai # Set timezone for consistent date/time operations
 
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v2
+      uses: actions/checkout@v4 # Updated to v4
       with:
-        fetch-depth: 0
+        fetch-depth: 0 # Fetch all history for git operations
 
     - name: Set up Python 3.9
-      uses: actions/setup-python@v2
+      uses: actions/setup-python@v5 # Updated to v5
       with:
         python-version: 3.9
+
+    - name: Cache pip dependencies
+      uses: actions/cache@v4 # Updated to v4
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
 
     - name: Install dependencies
       run: |
@@ -31,91 +39,115 @@ jobs:
     - name: Run data acquisition script
       run: python ssq_data_processor.py
 
-    - name: Run analysis script
+    - name: Run bonus calculation script
       run: python ssq_bonus_calculation.py
       
     - name: Run analysis script
       run: python ssq_analyzer.py
 
-    - name: Create fixed filename copy
+    - name: Create fixed filename copy of latest analysis report
       run: |
-        latest_report=$(ls ssq_analysis_output_*.txt | sort -r | head -n 1)
-        cp "$latest_report" "latest_ssq_analysis.txt"
-        echo "Created fixed filename copy: latest_ssq_analysis.txt"
-
-    - name: Clean old reports - keep only latest 3 by filename timestamp (Debug)
-      run: |
-        echo "--- Debugging File Cleanup ---"
-        echo "Current directory:"
-        pwd
-        echo "Listing all analysis reports before cleanup:"
-        find . -maxdepth 1 -name 'ssq_analysis_output_*.txt' | sort
-
-        file_list_cmd="find . -maxdepth 1 -name 'ssq_analysis_output_*.txt' | sort"
-        count=$(eval "$file_list_cmd" | wc -l)
-        echo "Total number of reports found: $count"
+        set -e # Exit immediately if a command exits with a non-zero status
+        # Find the latest report by lexical sort (assuming YYYYMMDD in filename)
+        # If filenames are like ssq_analysis_log_YYYYMMDD_HHMMSS.txt, sort -r works.
+        # For true latest by modification time, use `ls -1t` if find doesn't sort by time.
+        # However, the original `sort -r` on `ls` output works if filenames are sortable.
+        # Using find and then sort for robustness with filenames:
+        latest_report_file=$(find . -maxdepth 1 -name 'ssq_analysis_log_*.txt' -print0 | xargs -0 ls -1 | sort -r | head -n 1)
         
-        delete_count=$((count - 3))
-        echo "Number of reports to delete: $delete_count"
+        if [ -n "$latest_report_file" ] && [ -f "$latest_report_file" ]; then
+          cp "$latest_report_file" "latest_ssq_analysis.txt"
+          echo "Created fixed filename copy: latest_ssq_analysis.txt from $latest_report_file"
+        else
+          echo "No ssq_analysis_log_*.txt files found, or latest_report_file variable is empty. Skipping copy."
+        fi
 
-        if [ $delete_count -gt 0 ]; then
-          delete_files=$(eval "$file_list_cmd" | head -n $delete_count)
-          echo "Files to delete:"
-          echo "$delete_files"
-          
-          echo "Deleting $delete_count old reports..."
-          echo "$delete_files" | while read file; do
-            if [ -f "$file" ]; then
-              echo "Attempting to remove: $file"
-              rm "$file"
-              exit_status=$?
-              if [ $exit_status -ne 0 ]; then
-                echo "Error removing $file. Exit status: $exit_status"
-              else
-                echo "Successfully removed: $file"
-              fi
+    - name: Clean old reports - keep only latest 3
+      run: |
+        set -e # Exit immediately if a command exits with a non-zero status
+        echo "--- Cleaning old analysis reports ---"
+        
+        # Store sorted list of reports (oldest first based on filename)
+        mapfile -t reports < <(find . -maxdepth 1 -name 'ssq_analysis_log_*.txt' -print0 | xargs -0 ls -1 | sort)
+        
+        count=${#reports[@]}
+        keep=3 # Number of reports to keep
+        
+        echo "Found $count reports. Configured to keep $keep latest."
+        
+        if [ "$count" -gt "$keep" ]; then
+          num_to_delete=$((count - keep))
+          echo "Deleting $num_to_delete oldest reports:"
+          for i in $(seq 0 $((num_to_delete - 1))); do
+            report_to_delete="${reports[$i]}"
+            if [ -f "$report_to_delete" ]; then # Double check file exists
+              echo "Removing: $report_to_delete"
+              rm "$report_to_delete"
             else
-              echo "File not found, skipping removal: $file"
+              echo "Skipping (not found): $report_to_delete" # Should not happen with mapfile from find
             fi
           done
         else
-          echo "No need to clean reports, have $count (≤3) reports."
+          echo "No cleanup needed. $count report(s) found (≤ $keep)."
         fi
         
-        echo "Listing analysis reports after cleanup attempt:"
-        find . -maxdepth 1 -name 'ssq_analysis_output_*.txt' | sort
-        echo "--- End Debugging ---"
+        echo "Listing remaining analysis reports:"
+        find . -maxdepth 1 -name 'ssq_analysis_log_*.txt' | sort
+        echo "--- Finished cleaning reports ---"
 
     - name: Configure Git
       run: |
         git config --local user.email "action@github.com"
         git config --local user.name "GitHub Action"
 
-    - name: Commit updated files (CSV and Analysis Reports)
+    - name: Commit updated files
       run: |
-        echo "--- Debugging Commit Step ---"
-        echo "Files staged before commit:"
-        git status --porcelain
+        set -e
+        echo "--- Staging and Committing Files ---"
         
-        # 关键修复：自动暂存所有已跟踪文件的删除和修改
+        # Stage deletions and modifications of already tracked files
         git add -u
         
-        # 添加可能需要的新生成文件
-        git add shuangseqiu.csv
-        find . -maxdepth 1 -name 'ssq_analysis_output_*.txt' -print0 | xargs -0 git add
-        git add latest_ssq_analysis.txt
-        git add latest_ssq_calculation.txt
-        git add weights_config.json
+        # Add specific generated/updated files.
+        # Use an array to list files for easier management.
+        # These files are expected to be created or modified by the scripts.
+        files_to_commit=(
+          "shuangseqiu.csv"
+          "latest_ssq_analysis.txt"
+          "latest_ssq_calculation.txt" # Assuming ssq_bonus_calculation.py creates/updates this
+          "weights_config.json"        # Assuming one of the scripts creates/updates this
+        )
+        
+        for file_path in "${files_to_commit[@]}"; do
+          if [ -f "$file_path" ]; then
+            git add "$file_path"
+            echo "Staged: $file_path"
+          else
+            echo "Skipping (not found): $file_path"
+          fi
+        done
+        
+        # Add all newly created analysis log files (if any)
+        # The -r flag for xargs ensures 'git add' doesn't run if find returns no files.
+        find . -maxdepth 1 -name 'ssq_analysis_log_*.txt' -print0 | xargs -0 -r git add
+        echo "Staged any new ssq_analysis_log_*.txt files."
 
-        echo "Files staged after add:"
+        echo "Current git status:"
         git status --porcelain
         
-        # 提交所有变更（包括删除）
-        git commit -m "Auto update: Data and Analysis results $(date +'%Y-%m-%d')" || echo "No changes to commit"
-        echo "--- End Debugging Commit Step ---"
+        # Commit if there are any staged changes
+        # The `|| true` handles the case where there are no changes, preventing workflow failure.
+        # A more explicit check:
+        if git diff --staged --quiet; then
+          echo "No changes to commit."
+        else
+          git commit -m "Auto update: Data and Analysis results $(date +'%Y-%m-%d %H:%M:%S %Z')"
+          echo "Changes committed."
+        fi
+        echo "--- Finished Staging and Committing ---"
 
     - name: Push changes
-      uses: ad-m/github-push-action@master
+      uses: ad-m/github-push-action@v0.8.0 # Updated to a tagged version (check for latest)
       with:
         github_token: ${{ secrets.GITHUB_TOKEN }}
-        branch: ${{ github.ref }}
+        branch: ${{ github.ref }} # Pushes to the same branch that triggered the workflow
