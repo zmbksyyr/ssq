@@ -49,17 +49,17 @@ jobs:
       run: |
         set -e # Exit immediately if a command exits with a non-zero status
         # Find the latest report by lexical sort (assuming YYYYMMDD in filename)
-        # If filenames are like ssq_analysis_log_YYYYMMDD_HHMMSS.txt, sort -r works.
+        # If filenames are like ssq_analysis_output_YYYYMMDD_HHMMSS.txt, sort -r works.
         # For true latest by modification time, use `ls -1t` if find doesn't sort by time.
         # However, the original `sort -r` on `ls` output works if filenames are sortable.
         # Using find and then sort for robustness with filenames:
-        latest_report_file=$(find . -maxdepth 1 -name 'ssq_analysis_log_*.txt' -print0 | xargs -0 ls -1 | sort -r | head -n 1)
+        latest_report_file=$(find . -maxdepth 1 -name 'ssq_analysis_output_*.txt' -print0 | xargs -0 ls -1 | sort -r | head -n 1)
         
         if [ -n "$latest_report_file" ] && [ -f "$latest_report_file" ]; then
           cp "$latest_report_file" "latest_ssq_analysis.txt"
           echo "Created fixed filename copy: latest_ssq_analysis.txt from $latest_report_file"
         else
-          echo "No ssq_analysis_log_*.txt files found, or latest_report_file variable is empty. Skipping copy."
+          echo "No ssq_analysis_output_*.txt files found, or latest_report_file variable is empty. Skipping copy."
         fi
 
     - name: Clean old reports - keep only latest 3
@@ -68,7 +68,7 @@ jobs:
         echo "--- Cleaning old analysis reports ---"
         
         # Store sorted list of reports (oldest first based on filename)
-        mapfile -t reports < <(find . -maxdepth 1 -name 'ssq_analysis_log_*.txt' -print0 | xargs -0 ls -1 | sort)
+        mapfile -t reports < <(find . -maxdepth 1 -name 'ssq_analysis_output_*.txt' -print0 | xargs -0 ls -1 | sort)
         
         count=${#reports[@]}
         keep=3 # Number of reports to keep
@@ -92,7 +92,7 @@ jobs:
         fi
         
         echo "Listing remaining analysis reports:"
-        find . -maxdepth 1 -name 'ssq_analysis_log_*.txt' | sort
+        find . -maxdepth 1 -name 'ssq_analysis_output_*.txt' | sort
         echo "--- Finished cleaning reports ---"
 
     - name: Configure Git
@@ -129,8 +129,8 @@ jobs:
         
         # Add all newly created analysis log files (if any)
         # The -r flag for xargs ensures 'git add' doesn't run if find returns no files.
-        find . -maxdepth 1 -name 'ssq_analysis_log_*.txt' -print0 | xargs -0 -r git add
-        echo "Staged any new ssq_analysis_log_*.txt files."
+        find . -maxdepth 1 -name 'ssq_analysis_output_*.txt' -print0 | xargs -0 -r git add
+        echo "Staged any new ssq_analysis_output_*.txt files."
 
         echo "Current git status:"
         git status --porcelain
