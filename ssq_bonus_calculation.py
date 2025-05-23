@@ -7,7 +7,7 @@ from datetime import datetime
 import traceback # For detailed error reporting
 
 # 配置参数
-REPORT_PATTERN = "ssq_analysis_log_*.txt"
+REPORT_PATTERN = "ssq_analysis_output_*.txt"
 CSV_FILE = "shuangseqiu.csv" # Ensure this file is in the CWD or provide an absolute path
 MAIN_REPORT_FILE = "latest_ssq_calculation.txt"
 MAX_NORMAL_RECORDS = 10
