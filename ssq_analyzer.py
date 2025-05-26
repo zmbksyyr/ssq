@@ -79,6 +79,9 @@ DEFAULT_WEIGHTS = { # 默认权重配置
     'DIVERSITY_SUM_DIFF_THRESHOLD': 15, # 不同组合间红球和值的最小差异
     'DIVERSITY_ODDEVEN_DIFF_MIN_COUNT': 1, # 奇偶数个数的最小差异
     'DIVERSITY_ZONE_DIST_MIN_DIFF_ZONES': 2, # 区间分布中计数必须不同的最小区间数量
+    # 新增: 反向思维策略参数
+    'REVERSE_THINKING_ITERATIONS': 3, # 执行反向筛选的迭代次数 (0表示禁用)
+    'REVERSE_THINKING_RED_BALLS_TO_REMOVE_PER_ITER': 4, # 每次迭代要从池中移除的最高分红球数量 (0表示禁用)
     # Optuna 目标函数权重
     'OPTUNA_PRIZE_6_WEIGHT': 0.1,
     'OPTUNA_PRIZE_5_WEIGHT': 0.5,
@@ -623,7 +626,7 @@ def train_single_model(model_type, ball_type_str, ball_number, X, y, params, min
     #     try:
     #         estimator_for_rfe = lgbm_ref(random_state=42, n_jobs=1)
     #         num_features_rfe = max(1, X.shape[1] // 2) # 根据需要调整n_features_to_select
-    #         rfe_selector = RFE(estimator=estimator_for_rfe, n_features_to_select=num_features_rfe, step=0.1)
+    #         rfe_selector = RFE(estimator=estimator_for_rfe, n_features_to_select=num_features_to_select, step=0.1)
     #         rfe_selector.fit(X, y)
     #         X_selected = X.loc[:, rfe_selector.support_]
     #         logger.debug(f"RFE for {model_key}: selected {X_selected.shape[1]}/{X.shape[1]} features.")
@@ -909,11 +912,10 @@ def generate_combinations(scores_data: dict, pattern_analysis_data: dict, associ
     r_scores = scores_data.get('red_scores', {})
     b_scores = scores_data.get('blue_scores', {})
 
-    # --- 改进的红球分段候选池选择 ---
-    r_cand_pool = []
+    # --- 1. Initial Red Ball Candidate Pool Construction ---
+    initial_red_candidate_pool = []
     if r_scores:
         segmented_balls_dict = {name: [] for name in CANDIDATE_POOL_SEGMENT_NAMES}
-        # 根据分数将红球分到高、中、低段
         for ball_num, score_val in r_scores.items():
             if score_val > CANDIDATE_POOL_SCORE_THRESHOLDS['High']:
                 segmented_balls_dict['High'].append(ball_num)
@@ -922,101 +924,129 @@ def generate_combinations(scores_data: dict, pattern_analysis_data: dict, associ
             else:
                 segmented_balls_dict['Low'].append(ball_num)
 
-        # 对每个分段内的球按分数排序
         for seg_name in CANDIDATE_POOL_SEGMENT_NAMES:
             segment_balls_with_scores = {b: r_scores.get(b, 0) for b in segmented_balls_dict[seg_name]}
             segmented_balls_dict[seg_name] = [b for b, _ in sorted(segment_balls_with_scores.items(), key=lambda x: x[1], reverse=True)]
 
-        temp_pool_set = set() # 临时存储已选入池中的球，避免重复
+        temp_pool_set = set()
         
-        # 如果有历史中奖号码的分数段百分比数据，用它来调整各分段的选取比例
         win_seg_pcts_norm = {}
         if winning_segment_percentages and sum(winning_segment_percentages.values()) > 1e-6:
             total_pct = sum(winning_segment_percentages.values())
             win_seg_pcts_norm = {seg: pct/total_pct for seg, pct in winning_segment_percentages.items()}
 
         num_to_pick_segments = {}
-        base_proportions_for_pool = segment_proportions # 如果没有获胜统计数据，则使用默认比例
+        base_proportions_for_pool = segment_proportions
         
-        # 使用获胜号码的区间百分比来调整球池选择的比例
-        # 将分数段标签 (例如 "0-25") 映射到球池分段名称 ('Low', 'Medium', 'High')
-        # 此映射需要稳健。假设 SCORE_SEGMENT_LABELS 是有序的。
         if win_seg_pcts_norm:
             adjusted_proportions = {}
-            # 简化映射：低分段 -> 低分区，高分段 -> 高分区，其他 -> 中分区
-            # 需要仔细考虑 SCORE_SEGMENT_LABELS如何映射到CANDIDATE_POOL_SEGMENT_NAMES
             try:
-                if len(SCORE_SEGMENT_LABELS) >= 3: # 假设至少有低、中、高类似的分数段
+                if len(SCORE_SEGMENT_LABELS) >= 3:
                     adjusted_proportions['Low'] = win_seg_pcts_norm.get(SCORE_SEGMENT_LABELS[0], segment_proportions['Low'])
                     adjusted_proportions['High'] = win_seg_pcts_norm.get(SCORE_SEGMENT_LABELS[-1], segment_proportions['High'])
-                    # 中分区可以是中间分段的总和或默认值
                     medium_sum_pct = sum(win_seg_pcts_norm.get(lbl, 0) for lbl in SCORE_SEGMENT_LABELS[1:-1])
                     adjusted_proportions['Medium'] = medium_sum_pct if medium_sum_pct > 0 else segment_proportions['Medium']
                     
-                    # 归一化调整后的比例，使其总和为1
                     total_adj_prop = sum(adjusted_proportions.values())
                     if total_adj_prop > 1e-6:
                         base_proportions_for_pool = {k: v/total_adj_prop for k,v in adjusted_proportions.items()}
-                    else: # 如果win_seg_pcts_norm导致全为零，则回退
+                    else:
                         base_proportions_for_pool = segment_proportions
-            except IndexError: # 如果SCORE_SEGMENT_LABELS与预期不符，则回退
+            except IndexError:
                  base_proportions_for_pool = segment_proportions
 
-        # 计算每个分段要选取的球数
         for i, seg_name in enumerate(CANDIDATE_POOL_SEGMENT_NAMES):
-            prop = base_proportions_for_pool.get(seg_name, segment_proportions[seg_name]) # 如果可用，则使用调整后的比例，否则使用默认值
+            prop = base_proportions_for_pool.get(seg_name, segment_proportions[seg_name])
             num_to_pick_segments[seg_name] = max(min_per_segment, int(round(prop * target_red_pool_size)))
         
-        # 确保总数不会因为min_per_segment而显著超过target_red_pool_size (允许一些灵活性)
         current_total_pick = sum(num_to_pick_segments.values())
         if current_total_pick > target_red_pool_size * 1.2:
-            scale_down = (target_red_pool_size / current_total_pick) # 如果总和过高，则进行简单归一化
+            scale_down = (target_red_pool_size / current_total_pick)
             for seg_name in num_to_pick_segments:
                 num_to_pick_segments[seg_name] = max(min_per_segment, int(round(num_to_pick_segments[seg_name] * scale_down)))
 
-        # 从各分段选取球加入候选池
-        for seg_name in CANDIDATE_POOL_SEGMENT_NAMES: # 按高、中、低顺序迭代
+        for seg_name in CANDIDATE_POOL_SEGMENT_NAMES:
             balls_from_segment = segmented_balls_dict[seg_name]
             num_to_add = num_to_pick_segments.get(seg_name, min_per_segment)
             added_count = 0
             for ball in balls_from_segment:
-                if len(temp_pool_set) >= target_red_pool_size: break # 池已满
+                if len(temp_pool_set) >= target_red_pool_size: break
                 if ball not in temp_pool_set and added_count < num_to_add:
                     temp_pool_set.add(ball)
                     added_count += 1
             if len(temp_pool_set) >= target_red_pool_size: break
         
-        r_cand_pool = list(temp_pool_set)
+        initial_red_candidate_pool = list(temp_pool_set)
 
-        # 如果球池仍小于目标大小，则用总体最高分填充
-        if len(r_cand_pool) < target_red_pool_size:
+        if len(initial_red_candidate_pool) < target_red_pool_size:
             all_sorted_reds_overall = [n for n, _ in sorted(r_scores.items(), key=lambda item: item[1], reverse=True)]
             for ball in all_sorted_reds_overall:
-                if len(r_cand_pool) >= target_red_pool_size: break
-                if ball not in r_cand_pool: # 如果不存在则添加
-                    r_cand_pool.append(ball)
+                if len(initial_red_candidate_pool) >= target_red_pool_size: break
+                if ball not in initial_red_candidate_pool:
+                    initial_red_candidate_pool.append(ball)
     
-    # 确保球池至少有6个球用于抽样
-    if len(r_cand_pool) < 6:
-        logger.debug(f"红球候选池只有 {len(r_cand_pool)} 个球。扩展到至少6个。")
-        current_pool_set = set(r_cand_pool) # 使用集合以提高查找效率
-        # 如果r_scores可用，则获取按分数排序的所有红球
-        all_sorted_reds_overall = [n for n, _ in sorted(r_scores.items(), key=lambda item: item[1], reverse=True)] if r_scores else list(RED_BALL_RANGE)
+    # Ensure initial_red_candidate_pool has at least 6 balls for sampling
+    if len(initial_red_candidate_pool) < 6:
+        logger.debug(f"红球初始候选池只有 {len(initial_red_candidate_pool)} 个球。扩展到至少6个。")
+        current_pool_set = set(initial_red_candidate_pool)
+        all_sorted_reds_overall_fallback = [n for n, _ in sorted(r_scores.items(), key=lambda item: item[1], reverse=True)] if r_scores else list(RED_BALL_RANGE)
         
-        for ball in all_sorted_reds_overall:
-            if len(r_cand_pool) >= 6: break 
+        for ball in all_sorted_reds_overall_fallback:
+            if len(initial_red_candidate_pool) >= 6: break 
             if ball not in current_pool_set:
-                r_cand_pool.append(ball)
+                initial_red_candidate_pool.append(ball)
                 current_pool_set.add(ball)
-        # 如果仍然不够（例如r_scores为空），则回退
-        if len(r_cand_pool) < 6:
-            remaining_needed = 6 - len(r_cand_pool)
+        if len(initial_red_candidate_pool) < 6:
+            remaining_needed = 6 - len(initial_red_candidate_pool)
             fallback_balls = [b for b in RED_BALL_RANGE if b not in current_pool_set]
-            r_cand_pool.extend(random.sample(fallback_balls, min(remaining_needed, len(fallback_balls))))
-            # 如果仍然不够（使用RED_BALL_RANGE不应发生），则从范围中取前6个
-            if len(r_cand_pool) < 6:
-                 r_cand_pool = list(set(r_cand_pool + list(RED_BALL_RANGE)))[:6]
+            initial_red_candidate_pool.extend(random.sample(fallback_balls, min(remaining_needed, len(fallback_balls))))
+            if len(initial_red_candidate_pool) < 6:
+                 initial_red_candidate_pool = list(set(initial_red_candidate_pool + list(RED_BALL_RANGE)))[:6]
 
+    # --- 2. Apply Reverse Thinking Filter to Red Ball Pool ---
+    final_red_candidate_pool = list(initial_red_candidate_pool) # Start with the initially constructed pool
+
+    reverse_iterations_count = weights_config.get('REVERSE_THINKING_ITERATIONS', 0)
+    balls_to_remove_per_iter = weights_config.get('REVERSE_THINKING_RED_BALLS_TO_REMOVE_PER_ITER', 0)
+
+    if reverse_iterations_count > 0 and balls_to_remove_per_iter > 0:
+        logger.debug(f"Applying reverse thinking: iterations={reverse_iterations_count}, remove_per_iter={balls_to_remove_per_iter}")
+        for i in range(reverse_iterations_count):
+            if len(final_red_candidate_pool) <= balls_to_remove_per_iter:
+                logger.debug(f"Reverse thinking iteration {i+1}: Not enough balls ({len(final_red_candidate_pool)}) in pool to remove {balls_to_remove_per_iter}. Breaking.")
+                break
+
+            # Sort the current pool by their scores in descending order to identify 'top' balls to remove
+            balls_with_scores = [(ball, r_scores.get(ball, 0)) for ball in final_red_candidate_pool]
+            sorted_current_pool_by_score = sorted(balls_with_scores, key=lambda x: x[1], reverse=True)
+
+            # Select 'balls_to_remove_per_iter' highest scoring balls from the current pool
+            # These are the ones we "discard" in this reverse step
+            balls_to_discard_this_iter = [ball for ball, _ in sorted_current_pool_by_score[:balls_to_remove_per_iter]]
+
+            # Update the pool by removing these discarded balls
+            final_red_candidate_pool = [ball for ball in final_red_candidate_pool if ball not in balls_to_discard_this_iter]
+            logger.debug(f"  Reverse thinking iter {i+1}: Discarded {balls_to_discard_this_iter}. Current pool size: {len(final_red_candidate_pool)}")
+        
+        # Final check if pool is too small after reverse thinking, replenish if needed
+        if len(final_red_candidate_pool) < 6:
+            logger.warning(f"After reverse thinking, red ball pool is too small ({len(final_red_candidate_pool)}). Replenishing for final sampling.")
+            temp_set_final = set(final_red_candidate_pool)
+            for ball in initial_red_candidate_pool: # Try to replenish from the initial, larger pool
+                if len(final_red_candidate_pool) >= 6: break
+                if ball not in temp_set_final:
+                    final_red_candidate_pool.append(ball)
+                    temp_set_final.add(ball)
+            if len(final_red_candidate_pool) < 6: # As a last resort, take from the full range
+                for ball in RED_BALL_RANGE:
+                    if len(final_red_candidate_pool) >= 6: break
+                    if ball not in temp_set_final:
+                        final_red_candidate_pool.append(ball)
+                        temp_set_final.add(ball)
+
+    # Use `final_red_candidate_pool` for all subsequent red ball operations
+    r_cand_pool = final_red_candidate_pool 
+    
     # 蓝球候选池
     b_cand_pool = [n for n, _ in sorted(b_scores.items(), key=lambda item: item[1], reverse=True)[:top_n_blue]] if b_scores else list(BLUE_BALL_RANGE)[:top_n_blue]
     if len(b_cand_pool) < 1: b_cand_pool = list(BLUE_BALL_RANGE) # 蓝球球池的回退方案
@@ -1553,6 +1583,10 @@ def objective(trial: optuna.trial.Trial, df_for_optimization: pd.DataFrame, fixe
         'DIVERSITY_ODDEVEN_DIFF_MIN_COUNT': trial.suggest_int('DIVERSITY_ODDEVEN_DIFF_MIN_COUNT', 0, 2), 
         'DIVERSITY_ZONE_DIST_MIN_DIFF_ZONES': trial.suggest_int('DIVERSITY_ZONE_DIST_MIN_DIFF_ZONES', 1, 3),
         
+        # 新增反向思维参数到Optuna
+        'REVERSE_THINKING_ITERATIONS': trial.suggest_int('REVERSE_THINKING_ITERATIONS', 0, 3), # 0表示禁用，最多3次迭代
+        'REVERSE_THINKING_RED_BALLS_TO_REMOVE_PER_ITER': trial.suggest_int('REVERSE_THINKING_RED_BALLS_TO_REMOVE_PER_ITER', 0, 10), # 0表示禁用，每次最多移除10个球
+
         # Optuna目标函数本身的权重
         'OPTUNA_PRIZE_6_WEIGHT': trial.suggest_float('OPTUNA_PRIZE_6_WEIGHT', 0.0, 0.5),
         'OPTUNA_PRIZE_5_WEIGHT': trial.suggest_float('OPTUNA_PRIZE_5_WEIGHT', 0.1, 1.0),
@@ -1704,6 +1738,7 @@ if __name__ == "__main__":
     # 将这两个变量移到 run_optuna_trigger 块内部，但在回调函数定义之前
     # 这样它们在回调函数的作用域内是已定义的，并且不需要 nonlocal
     # 为了在回调函数中修改它们，我们将它们声明为全局的。
+    global start_time_optuna_global, estimated_time_logged_global
     start_time_optuna_global = 0 
     estimated_time_logged_global = False
 
@@ -1730,42 +1765,39 @@ if __name__ == "__main__":
             def optuna_time_estimation_callback(study: optuna.study.Study, trial: optuna.trial.FrozenTrial):
                 global estimated_time_logged_global, start_time_optuna_global
 
-                if estimated_time_logged_global:
-                    return
+                # 只在每次试验结束时计算一次预估时间，而不是每次回调都计算
+                # 并且只在 Trial 0, 10, 20... 时触发
+                if trial.number % 10 != 0 and trial.number != 0 : # 控制触发频率，例如每10次试验
+                     return
 
-                estimation_trigger_trial_count = 1
-                
-                # 使用 len(study.trials) 获取当前已创建（包括正在运行和已完成）的试验数量
-                # 或者 trial.number + 1 (因为trial.number是0-indexed)
-                current_trials_count = trial.number + 1 # trial.number 是当前试验的索引 (从0开始)
-
-                if current_trials_count >= estimation_trigger_trial_count:
+                # 在特定 trial.number (比如 0) 或者当 estimated_time_logged_global 为 False 时，设置它为 True
+                # 以确保即使在达到10次尝试之前，如果时间过长，也会记录一次
+                if not estimated_time_logged_global or trial.number == 0:
                     current_duration = time.time() - start_time_optuna_global
-                    # 使用 current_trials_count 作为已完成（或至少已开始）的试验数
-                    avg_time_per_trial = current_duration / current_trials_count 
-                    remaining_trials = OPTIMIZATION_TRIALS - current_trials_count
+                    current_trials_count = trial.number + 1
                     
-                    # 仅当有剩余试验时才计算预估时间
-                    if remaining_trials > 0:
-                        estimated_remaining_time = avg_time_per_trial * remaining_trials
-                        hours, rem = divmod(estimated_remaining_time, 3600)
-                        minutes, seconds = divmod(rem, 60)
+                    if current_trials_count > 0: # 避免除以零
+                        avg_time_per_trial = current_duration / current_trials_count 
+                        remaining_trials = OPTIMIZATION_TRIALS - current_trials_count
                         
-                        original_console_level_callback = global_console_handler.level
-                        original_console_formatter_callback = global_console_handler.formatter
-                        set_console_verbosity(logging.INFO, use_simple_formatter=False)
-                        
-                        logger.info(f"Optuna 优化进度: 已完成 {current_trials_count}/{OPTIMIZATION_TRIALS} 次试验。")
-                        logger.info(f"  平均每次试验耗时: {avg_time_per_trial:.2f} 秒。")
-                        logger.info(f"  预估剩余完成时间: {int(hours):02d}小时 {int(minutes):02d}分钟 {int(seconds):02d}秒。")
-                        
-                        global_console_handler.setLevel(original_console_level_callback)
-                        global_console_handler.setFormatter(original_console_formatter_callback)
-                    else:
-                        # 如果没有剩余试验（例如，这是最后一次试验），可以不打印预估时间或打印一个完成消息
-                        pass # 或者 logger.info("Optuna 优化即将完成...")
-                        
-                    estimated_time_logged_global = True
+                        if remaining_trials > 0:
+                            estimated_remaining_time = avg_time_per_trial * remaining_trials
+                            hours, rem = divmod(estimated_remaining_time, 3600)
+                            minutes, seconds = divmod(rem, 60)
+                            
+                            original_console_level_callback = global_console_handler.level
+                            original_console_formatter_callback = global_console_handler.formatter
+                            set_console_verbosity(logging.INFO, use_simple_formatter=False)
+                            
+                            logger.info(f"Optuna 优化进度: 已完成 {current_trials_count}/{OPTIMIZATION_TRIALS} 次试验。")
+                            logger.info(f"  平均每次试验耗时: {avg_time_per_trial:.2f} 秒。")
+                            logger.info(f"  预估剩余完成时间: {int(hours):02d}小时 {int(minutes):02d}分钟 {int(seconds):02d}秒。")
+                            
+                            global_console_handler.setLevel(original_console_level_callback)
+                            global_console_handler.setFormatter(original_console_formatter_callback)
+                            estimated_time_logged_global = True # 标记已记录
+                        else:
+                            estimated_time_logged_global = False # 重置，如果循环结束
             # --- 回调结束 ---
 
             try:
@@ -1832,7 +1864,7 @@ if __name__ == "__main__":
 
     # 显示当前使用的部分权重
     logger.info(f"\n>>> 当前使用权重 (部分展示):")
-    for key_to_show in ['NUM_COMBINATIONS_TO_GENERATE', 'DIVERSITY_MIN_DIFFERENT_REDS', 'ML_PROB_SCORE_WEIGHT_RED', 'ARM_COMBINATION_BONUS_WEIGHT', 'DIVERSITY_SUM_DIFF_THRESHOLD', 'ARM_MIN_SUPPORT']:
+    for key_to_show in ['NUM_COMBINATIONS_TO_GENERATE', 'DIVERSITY_MIN_DIFFERENT_REDS', 'ML_PROB_SCORE_WEIGHT_RED', 'ARM_COMBINATION_BONUS_WEIGHT', 'DIVERSITY_SUM_DIFF_THRESHOLD', 'ARM_MIN_SUPPORT', 'REVERSE_THINKING_ITERATIONS', 'REVERSE_THINKING_RED_BALLS_TO_REMOVE_PER_ITER']:
         logger.info(f"  {key_to_show}: {CURRENT_WEIGHTS.get(key_to_show, 'N/A')}")
 
     # 数据概况
