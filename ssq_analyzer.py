@@ -1389,105 +1389,123 @@ def get_prize_level(red_hits: int, blue_hit: bool) -> Optional[str]:
     return None # 其他情况无奖
 
 def backtest(df: pd.DataFrame, ml_lags_list: List[int], weights_config: Dict,
-             arm_rules_for_backtest: pd.DataFrame, # 为清晰起见更改了名称
+             arm_rules_for_backtest: pd.DataFrame, 
              backtest_periods_to_eval: int) -> Tuple[pd.DataFrame, Dict[str, Any]]:
     """执行回测以评估策略性能。"""
     max_hist_lag = max(ml_lags_list) if ml_lags_list else 0
-    # 在进行第一次预测之前，初始训练数据所需的最少周期数 (滞后所需数据 + 训练所需数据)
     min_initial_train_periods = max_hist_lag + 1 + MIN_POSITIVE_SAMPLES_FOR_ML 
     
-    if len(df) < min_initial_train_periods + 1: # +1 因为有一个周期用于实际结果
+    if len(df) < min_initial_train_periods + 1:
         logger.warning(f"回测: 数据不足({len(df)})，需要至少 {min_initial_train_periods + 1} 期 (训练+1预测)。")
         return pd.DataFrame(), {}
 
-    # df中第一个要预测的实际结果所在的索引 (训练数据将是df.iloc[:first_prediction_target_idx])
     first_prediction_target_idx = min_initial_train_periods 
-    # df中可以是实际结果的最后一个索引
     last_prediction_target_idx = len(df) - 1
 
     if first_prediction_target_idx > last_prediction_target_idx:
         logger.warning("回测: 无足够后续数据进行预测评估循环。")
         return pd.DataFrame(), {}
 
-    # 确定用于预测循环的df索引的实际范围 (我们想要评估 backtest_periods_to_eval 个周期)
     loop_start_idx = max(first_prediction_target_idx, last_prediction_target_idx - backtest_periods_to_eval + 1)
+    total_periods_to_loop = last_prediction_target_idx - loop_start_idx + 1
 
-    results_list = [] # 存储每期回测结果
+    results_list = [] 
     red_cols_list = [f'red{i+1}' for i in range(6)]
-    is_opt_run_flag = backtest_periods_to_eval == OPTIMIZATION_BACKTEST_PERIODS # 用于Optuna运行的标志
+    is_opt_run_flag = backtest_periods_to_eval == OPTIMIZATION_BACKTEST_PERIODS 
     
-    prize_counts = Counter() # 统计各奖级次数
-    best_hit_per_period = [] # 存储每个测试周期的最大红球命中数和蓝球命中状态
-    periods_with_any_blue_hit = set() # 存储命中蓝球的期号
+    prize_counts = Counter() 
+    best_hit_per_period = [] 
+    periods_with_any_blue_hit = set() 
     num_combinations_generated_per_run = weights_config.get('NUM_COMBINATIONS_TO_GENERATE', 10)
 
-    # 循环遍历代表我们试图预测的实际结果的df索引
+    backtest_start_time = time.time() # 记录回测开始时间
+
     for df_idx_for_prediction_target in range(loop_start_idx, last_prediction_target_idx + 1):
         
-        # 非Optuna运行的进度记录
-        if not is_opt_run_flag and (df_idx_for_prediction_target - loop_start_idx + 1) % 10 == 0 :
-            current_console_level = global_console_handler.level
-            current_console_formatter = global_console_handler.formatter
-            set_console_verbosity(logging.INFO, use_simple_formatter=True)
-            logger.info(f"  回测进度: {df_idx_for_prediction_target - loop_start_idx + 1} / {last_prediction_target_idx - loop_start_idx + 1}")
-            global_console_handler.setLevel(current_console_level)
-            global_console_handler.setFormatter(current_console_formatter)
+        current_loop_iteration = df_idx_for_prediction_target - loop_start_idx + 1
 
-        # 截至（但不包括）当前目标周期的数据用于训练
+        # ---- 进度记录和时间估算 ----
+        # 条件: 非Optuna运行，并且 (是第一次迭代 OR 是第10, 20, ...次迭代)
+        if not is_opt_run_flag and (current_loop_iteration == 1 or current_loop_iteration % 10 == 0):
+            original_console_level = global_console_handler.level # 保存当前控制台级别
+            original_console_formatter = global_console_handler.formatter # 保存当前控制台格式
+
+            set_console_verbosity(logging.INFO, use_simple_formatter=True) # 用于进度条的简洁格式
+            logger.info(f"  回测进度: {current_loop_iteration} / {total_periods_to_loop}")
+            
+            # 时间估算逻辑 (在第一次迭代和每10次迭代时触发)
+            elapsed_time = time.time() - backtest_start_time
+            if current_loop_iteration > 0: # 确保至少完成了一次迭代
+                avg_time_per_period = elapsed_time / current_loop_iteration
+                remaining_periods = total_periods_to_loop - current_loop_iteration
+                
+                set_console_verbosity(logging.INFO, use_simple_formatter=False) # 切换到详细格式输出时间估算
+                logger.info(f"    回测单期平均耗时: {avg_time_per_period:.2f} 秒。")
+
+                if remaining_periods > 0:
+                    estimated_remaining_time = avg_time_per_period * remaining_periods
+                    hours, rem = divmod(estimated_remaining_time, 3600)
+                    minutes, seconds = divmod(rem, 60)
+                    logger.info(f"    预估剩余完成时间: {int(hours):02d}小时 {int(minutes):02d}分钟 {int(seconds):02d}秒。")
+                elif current_loop_iteration == total_periods_to_loop: # 如果是最后一次迭代
+                     logger.info(f"    回测已完成 {current_loop_iteration}/{total_periods_to_loop} 期。")
+
+
+            # 恢复之前的控制台设置
+            global_console_handler.setLevel(original_console_level)
+            global_console_handler.setFormatter(original_console_formatter)
+        # ------------------------------------
+
         current_train_data = df.iloc[:df_idx_for_prediction_target].copy() 
-        if len(current_train_data) < min_initial_train_periods: # 使用loop_start_idx逻辑不应发生
+        if len(current_train_data) < min_initial_train_periods:
             logger.warning(f"跳过周期 {df.loc[df_idx_for_prediction_target, '期号']}，因训练数据不足 ({len(current_train_data)})。")
             continue
 
-        actual_outcome_row = df.loc[df_idx_for_prediction_target] # 当期实际开奖结果
+        actual_outcome_row = df.loc[df_idx_for_prediction_target] 
         current_period_actual_id = actual_outcome_row['期号']
-        try: # 获取并验证实际开奖号码
+        try:
             actual_red_set = set(actual_outcome_row[red_cols_list].astype(int).tolist())
             actual_blue_val = int(actual_outcome_row['blue'])
             if not (all(1<=r_val<=33 for r_val in actual_red_set) and 1<=actual_blue_val<=16 and len(actual_red_set)==6):
                 raise ValueError("实际球号超出范围或数量不正确")
         except Exception as e_actual:
             logger.debug(f"回测: 获取期号 {current_period_actual_id} 实际结果失败: {e_actual}")
-            logger.debug(f"问题行内容: {actual_outcome_row.to_dict()}") # 记录问题行的更多详细信息以进行调试
-            # 即使结果解析失败也添加条目，以保持周期计数一致
+            logger.debug(f"问题行内容: {actual_outcome_row.to_dict()}")
             best_hit_per_period.append({
                 'period': current_period_actual_id, 'max_red_hits': -1, 'blue_hit_in_period': False, 'error': str(e_actual)
             })
-            continue # 如果实际结果无效则跳过此周期
+            continue
 
-        # 在Optuna运行期间抑制详细日志记录以提高速度
-        original_logger_level = logger.level
-        original_console_level = global_console_handler.level
+        # --- Optuna 运行时抑制日志 ---
+        suppress_context = None
+        original_logger_level_loop = logger.level
+        original_console_level_loop = global_console_handler.level
         
         if is_opt_run_flag: 
             logger.setLevel(logging.CRITICAL) 
             set_console_verbosity(logging.CRITICAL)
+            suppress_context = SuppressOutput(suppress_stdout=True, capture_stderr=True)
+            suppress_context.__enter__() # 手动进入上下文
 
-        # 对于Optuna运行，arm_rules_for_backtest是特定于试验的。
-        # 对于常规回测，它们基于使用当前/最终权重的完整历史。
-        # 此处无需重新计算ARM规则，因为它们已传入。
-        
-        if is_opt_run_flag: # Optuna运行时抑制输出
-            with SuppressOutput(suppress_stdout=True, capture_stderr=True):
-                 predicted_combos_list, _, _, _, _, _ = analyze_and_recommend(
-                     current_train_data, ml_lags_list, weights_config, arm_rules_for_backtest, train_ml=True)
-        else: # 常规回测
-            predicted_combos_list, _, _, _, _, _ = analyze_and_recommend(
-                current_train_data, ml_lags_list, weights_config, arm_rules_for_backtest, train_ml=True)
+        predicted_combos_list, _, _, _, _, _ = analyze_and_recommend(
+            current_train_data, ml_lags_list, weights_config, arm_rules_for_backtest, train_ml=True)
 
-        if is_opt_run_flag: # 恢复日志级别
-            logger.setLevel(original_logger_level)
-            set_console_verbosity(original_console_level)
+        if is_opt_run_flag:
+            if suppress_context:
+                suppress_context.__exit__(None, None, None) # 手动退出上下文
+            logger.setLevel(original_logger_level_loop)
+            set_console_verbosity(original_console_level_loop)
+        # --- 日志抑制结束 ---
 
-        period_max_red_hits = 0 # 当期推荐组合中的最大红球命中数
-        period_blue_hit_achieved_this_draw = False # 在此次抽奖中是否有任何组合命中蓝球？
+        period_max_red_hits = 0 
+        period_blue_hit_achieved_this_draw = False 
 
-        if predicted_combos_list: # 如果有推荐组合
-            for combo_dict_info in predicted_combos_list: # 评估每个推荐组合
+        if predicted_combos_list:
+            for combo_dict_info in predicted_combos_list:
                 pred_r_set = set(combo_dict_info['combination']['red'])
                 pred_b_val = combo_dict_info['combination']['blue']
-                red_h = len(pred_r_set.intersection(actual_red_set)) # 红球命中数
-                blue_h = (pred_b_val == actual_blue_val) # 蓝球是否命中
+                red_h = len(pred_r_set.intersection(actual_red_set)) 
+                blue_h = (pred_b_val == actual_blue_val) 
 
                 results_list.append({
                     'period': current_period_actual_id,
@@ -1495,53 +1513,50 @@ def backtest(df: pd.DataFrame, ml_lags_list: List[int], weights_config: Dict,
                     'actual_red': sorted(list(actual_red_set)), 'actual_blue': actual_blue_val,
                     'red_hits': red_h,
                     'blue_hit': blue_h,
-                    'combination_score': combo_dict_info.get('score', 0.0) # 确保分数存在
+                    'combination_score': combo_dict_info.get('score', 0.0) 
                 })
                 
-                prize = get_prize_level(red_h, blue_h) # 获取奖级
+                prize = get_prize_level(red_h, blue_h) 
                 if prize:
                     prize_counts[prize] += 1
                 
                 if blue_h:
-                    periods_with_any_blue_hit.add(current_period_actual_id) # 添加期号ID
+                    periods_with_any_blue_hit.add(current_period_actual_id) 
                     period_blue_hit_achieved_this_draw = True
                 if red_h > period_max_red_hits:
                     period_max_red_hits = red_h
             
-            best_hit_per_period.append({ # 记录当期最佳表现
+            best_hit_per_period.append({ 
                 'period': current_period_actual_id,
                 'max_red_hits': period_max_red_hits,
                 'blue_hit_in_period': period_blue_hit_achieved_this_draw 
             })
-        else: # 未预测任何组合
+        else: 
             best_hit_per_period.append({
                 'period': current_period_actual_id, 'max_red_hits': 0, 'blue_hit_in_period': False, 'error': 'No combos predicted'
             })
             logger.debug(f"回测: 期号 {current_period_actual_id} 未预测任何组合。")
 
 
-    if not results_list: return pd.DataFrame(), {} # 如果没有有效结果则返回空
+    if not results_list: return pd.DataFrame(), {} 
     
     results_df_final = pd.DataFrame(results_list)
-    # 将周期范围存储在DataFrame属性中，以便以后轻松访问
     if '期号' in df.columns and loop_start_idx < len(df) and last_prediction_target_idx < len(df):
         try:
             results_df_final.attrs['start_period_id'] = df.loc[loop_start_idx, '期号']
             results_df_final.attrs['end_period_id'] = df.loc[last_prediction_target_idx, '期号']
-            results_df_final.attrs['num_periods_tested'] = last_prediction_target_idx - loop_start_idx + 1
-        except KeyError: # 如果索引有效则不应发生
+            results_df_final.attrs['num_periods_tested'] = total_periods_to_loop 
+        except KeyError:
              logger.warning("回测: 由于索引问题，无法设置开始/结束周期属性。")
     
-    # 为Optuna和报告添加扩展统计信息
     extended_stats = {
-        'prize_counts': dict(prize_counts), # 如果需要，将Counter转换为字典以便于JSON序列化
+        'prize_counts': dict(prize_counts), 
         'best_hit_per_period_df': pd.DataFrame(best_hit_per_period) if best_hit_per_period else pd.DataFrame(),
         'total_combinations_evaluated': len(results_df_final),
         'num_combinations_per_draw_tested': num_combinations_generated_per_run,
-        'periods_with_any_blue_hit_count': len(periods_with_any_blue_hit) # 命中蓝球的独立期数
+        'periods_with_any_blue_hit_count': len(periods_with_any_blue_hit) 
     }
     return results_df_final, extended_stats
-
 
 def objective(trial: optuna.trial.Trial, df_for_optimization: pd.DataFrame, fixed_ml_lags: List[int]) -> float:
     """Optuna的目标函数，用于优化权重。"""
