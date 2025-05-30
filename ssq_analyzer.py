@@ -1673,6 +1673,7 @@ if __name__ == "__main__":
     log_filename = os.path.join(SCRIPT_DIR, f"ssq_analysis_output_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.txt")
     file_handler = logging.FileHandler(log_filename, encoding='utf-8')
     file_handler.setFormatter(detailed_formatter)
+    file_handler.setLevel(logging.INFO) 
     logger.addHandler(file_handler)
 
     set_console_verbosity(logging.INFO, use_simple_formatter=True) # 初始控制台日志设为简洁模式
