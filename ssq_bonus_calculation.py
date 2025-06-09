@@ -1,251 +1,234 @@
+# -*- coding: utf-8 -*-
+"""
+双色球推荐结果验证与奖金计算器
+=================================
+
+本脚本旨在自动评估 `ssq_analyzer.py` 生成的推荐号码的实际表现。
+
+工作流程:
+1.  读取 `shuangseqiu.csv` 文件，获取所有历史开奖数据。
+2.  确定最新的一期为“评估期”，倒数第二期为“报告数据截止期”。
+3.  根据“报告数据截止期”，在当前目录下查找对应的分析报告文件
+    (ssq_analysis_report_*.txt)。
+4.  从找到的报告中解析出“单式推荐”和“复式参考”的号码。
+5.  将复式参考号码展开为所有可能的单式投注。
+6.  使用“评估期”的实际开奖号码，核对所有推荐投注的中奖情况。
+7.  计算总奖金，并将详细的中奖结果（包括中奖号码、奖级、金额）
+    追加记录到主报告文件 `latest_ssq_calculation.txt` 中。
+8.  主报告文件会自动管理记录数量，只保留最新的N条评估记录和错误日志。
+"""
+
 import os
 import re
 import glob
 import csv
 from itertools import combinations
 from datetime import datetime
-import traceback # For detailed error reporting
+import traceback
+from typing import Optional, Tuple, List, Dict # <--- [FIX] 导入兼容的类型提示
 
-# 配置参数
-REPORT_PATTERN = "ssq_analysis_output_*.txt"
-CSV_FILE = "shuangseqiu.csv" # Ensure this file is in the CWD or provide an absolute path
+# ==============================================================================
+# --- 配置区 ---
+# ==============================================================================
+
+# 脚本需要查找的分析报告文件名的模式
+REPORT_PATTERN = "ssq_analysis_report_*.txt"
+# 开奖数据源CSV文件
+CSV_FILE = "shuangseqiu.csv"
+# 最终生成的主评估报告文件名
 MAIN_REPORT_FILE = "latest_ssq_calculation.txt"
-MAX_NORMAL_RECORDS = 10
-MAX_ERROR_LOGS = 20
 
-# 日志配置: 1=INFO, 2=WARNING, 3=ERROR
-MIN_LOG_LEVEL = 1
-USE_COLOR_LOGS = False # Set to True to enable ANSI color codes in console output
+# 主报告文件中保留的最大记录数
+MAX_NORMAL_RECORDS = 10  # 保留最近10次评估
+MAX_ERROR_LOGS = 20      # 保留最近20条错误日志
 
-# 奖金对照表
+# 奖金对照表 (元)
 PRIZE_TABLE = {
-    1: 5_000_000, 2: 500_000, 3: 3_000,
-    4: 200, 5: 10, 6: 5
+    1: 5_000_000,  # 一等奖 (浮动，此处为估算)
+    2: 150_000,    # 二等奖 (浮动，此处为估算)
+    3: 3_000,      # 三等奖
+    4: 200,        # 四等奖
+    5: 10,         # 五等奖
+    6: 5,          # 六等奖
 }
 
-class PrizeDataNotFound(Exception):
-    """开奖数据缺失异常"""
-    def __init__(self, target_period):
-        super().__init__(f"找不到期号 {target_period} 的开奖数据")
-        self.target_period = target_period
+# ==============================================================================
+# --- 工具函数 ---
+# ==============================================================================
 
-def debug_log(message, level=1):
-    """分级调试日志"""
-    if level < MIN_LOG_LEVEL:
-        return
+def log_message(message: str, level: str = "INFO"):
+    """一个简单的日志打印函数，用于在控制台显示脚本执行状态。"""
+    print(f"[{level}] {datetime.now().strftime('%H:%M:%S')} - {message}")
 
-    prefixes = {1: "[INFO]", 2: "[WARNING]", 3: "[ERROR]"}
-    
-    color_code_map = {}
-    reset_code_str = ""
-    if USE_COLOR_LOGS: # This flag now controls color output
-        color_code_map = {
-            1: "\033[94m", 2: "\033[93m", 3: "\033[91m"
-        }
-        reset_code_str = "\033[0m"
+def robust_file_read(file_path: str) -> Optional[str]: # <--- [FIX] 使用 Optional[str] 替代 str | None
+    """
+    一个健壮的文件读取函数，能自动尝试多种编码格式。
 
-    prefix = prefixes.get(level, "[DEBUG]") # Default to [DEBUG] if level is not 1,2, or 3
-    color = color_code_map.get(level, "") # Default to no color
-    
-    print(f"{color}{prefix} {datetime.now().strftime('%H:%M:%S')} {message}{reset_code_str}")
+    Args:
+        file_path (str): 待读取文件的路径。
 
-def robust_file_read(file_path):
-    """带编码回退的文件读取"""
-    # It's good practice to work with absolute paths internally if there's any ambiguity
-    absolute_path = os.path.abspath(file_path)
-    if not os.path.exists(absolute_path):
-        debug_log(f"文件未找到: {absolute_path}", level=3)
+    Returns:
+        Optional[str]: 文件内容字符串，如果失败则返回 None。
+    """
+    if not os.path.exists(file_path):
+        log_message(f"文件未找到: {file_path}", "ERROR")
         return None
-
-    encodings = ['utf-8', 'gbk', 'gb2312']
+    encodings = ['utf-8', 'gbk', 'latin-1']
     for encoding in encodings:
         try:
-            with open(absolute_path, 'r', encoding=encoding) as f:
-                content = f.read()
-            debug_log(f"成功使用 {encoding} 编码读取文件: {absolute_path}", level=1)
-            return content
-        except UnicodeDecodeError:
-            debug_log(f"尝试使用 {encoding} 编码读取文件 {absolute_path} 失败。", level=1)
+            with open(file_path, 'r', encoding=encoding) as f:
+                return f.read()
+        except (UnicodeDecodeError, IOError):
             continue
-        except FileNotFoundError: # Should be caught by os.path.exists, but defensive
-            debug_log(f"文件未找到错误 (robust_file_read): {absolute_path}", level=3)
-            return None
-        except Exception as e:
-            debug_log(f"读取文件 {absolute_path} 异常 (编码 {encoding})：{str(e)}", level=3)
-            return None
-    debug_log(f"无法使用所有尝试的编码读取文件: {absolute_path}", level=3)
+    log_message(f"无法使用任何支持的编码打开文件: {file_path}", "ERROR")
     return None
 
-def get_period_data(csv_content):
-    """获取CSV期号数据并按期号排序"""
-    period_map = {}
-    periods_list = []
+# ==============================================================================
+# --- 数据解析与查找模块 ---
+# ==============================================================================
+
+def get_period_data_from_csv(csv_content: str) -> Tuple[Optional[Dict], Optional[List]]: # <--- [FIX] 使用 Tuple 和 Optional 替代
+    """
+    从CSV文件内容中解析出所有期号的开奖数据。
+
+    Args:
+        csv_content (str): 从CSV文件读取的字符串内容。
+
+    Returns:
+        Tuple[Optional[Dict], Optional[List]]:
+            - 一个以期号为键，开奖数据为值的字典。
+            - 一个按升序排序的期号列表。
+            如果解析失败则返回 (None, None)。
+    """
     if not csv_content:
-        debug_log("get_period_data: 接收到空的CSV内容。", level=2)
+        log_message("输入的CSV内容为空。", "WARNING")
         return None, None
+    period_map, periods_list = {}, []
     try:
         reader = csv.reader(csv_content.splitlines())
+        next(reader)  # 跳过表头
         for i, row in enumerate(reader):
-            if len(row) >= 4 and re.match(r'^\d{7}$', row[0]):
-                period, red_str, blue_str = row[0].strip(), row[2].strip(), row[3].strip()
+            if len(row) >= 4 and re.match(r'^\d{4,7}$', row[0]):
                 try:
-                    red_balls = sorted(list(map(int, red_str.split(','))))
+                    period, date, red_str, blue_str = row[0], row[1], row[2], row[3]
+                    red_balls = sorted(map(int, red_str.split(',')))
                     blue_ball = int(blue_str)
-                    if len(red_balls) != 6:
-                         debug_log(f"CSV期号 {period}: 红球数量 {len(red_balls)} 不是6个. 跳过.", 2)
-                         continue
-                    if not all(1 <= r <= 33 for r in red_balls) or not (1 <= blue_ball <= 16):
-                         debug_log(f"CSV期号 {period}: 号码超出范围. 红: {red_balls}, 蓝: {blue_ball}. 跳过.", 2)
-                         continue
-                    period_map[period] = {'date': row[1].strip(), 'red': red_balls, 'blue': blue_ball}
+                    if len(red_balls) != 6 or not all(1 <= r <= 33 for r in red_balls) or not (1 <= blue_ball <= 16):
+                        continue
+                    period_map[period] = {'date': date, 'red': red_balls, 'blue': blue_ball}
                     periods_list.append(period)
-                except ValueError:
-                    debug_log(f"CSV数据格式错误或数字转换失败，跳过第 {i+1} 行: {row}", 2)
-                except Exception as e:
-                    debug_log(f"处理CSV第 {i+1} 行 ({row}) 时发生未知错误: {str(e)}，跳过该行.", 3)
-        
-        sorted_periods = sorted(periods_list, key=int)
-        if not period_map:
-             debug_log("从CSV中未解析到任何有效期号数据。", 2)
-             return None, None
-        debug_log(f"成功从CSV解析到 {len(period_map)} 期数据。", 1)
-        return period_map, sorted_periods
+                except (ValueError, IndexError):
+                    log_message(f"CSV文件第 {i+2} 行数据格式无效，已跳过: {row}", "WARNING")
     except Exception as e:
-        debug_log(f"CSV数据读取或整体解析失败: {str(e)}", 3)
+        log_message(f"解析CSV数据时发生严重错误: {e}", "ERROR")
         return None, None
+    
+    if not period_map:
+        log_message("未能从CSV中解析到任何有效的开奖数据。", "WARNING")
+        return None, None
+        
+    return period_map, sorted(periods_list, key=int)
 
-def find_matching_report(target_period):
-    """查找匹配指定期号(作为数据截止期)的分析报告"""
-    debug_log(f"开始查找数据截止期为 {target_period} 的分析报告...", 1)
+def find_matching_report(target_period: str) -> Optional[str]: # <--- [FIX] 使用 Optional[str] 替代 str | None
+    """
+    在当前目录查找其数据截止期与 `target_period` 匹配的最新分析报告。
+
+    Args:
+        target_period (str): 目标报告的数据截止期号。
+
+    Returns:
+        Optional[str]: 找到的报告文件的路径，如果未找到则返回 None。
+    """
+    log_message(f"正在查找数据截止期为 {target_period} 的分析报告...")
     candidates = []
-    
-    # Assumes REPORT_PATTERN is relative to the Current Working Directory (CWD)
-    # If script is not run from the dir containing reports, this might need SCRIPT_DIR logic
-    report_files = glob.glob(os.path.join('.', REPORT_PATTERN)) 
-
-    if not report_files:
-         debug_log(f"未找到符合模式 '{REPORT_PATTERN}' 的分析报告文件 (CWD: {os.getcwd()})。", 1)
-         return None
-    
-    debug_log(f"发现 {len(report_files)} 个潜在报告文件。", 1)
-
-    for file_name in report_files:
-        content = robust_file_read(file_name) # robust_file_read handles abspath
-        if not content:
-            debug_log(f"跳过读取失败的报告文件: {file_name}", 2)
-            continue
-
-        match = re.search(r'数据范围:\s*(\d{7})\s*-\s*(\d{7})', content)
-        if match:
-            _, extracted_end_period = match.group(1).strip(), match.group(2).strip()
-            if extracted_end_period == target_period:
-                time_match = re.search(r'_(\d{8}_\d{6})\.', os.path.basename(file_name))
-                if time_match:
-                    try:
-                        timestamp = datetime.strptime(time_match.group(1), "%Y%m%d_%H%M%S")
-                        candidates.append((timestamp, os.path.abspath(file_name))) # Store absolute path
-                    except ValueError:
-                         debug_log(f"文件名 {file_name} 时间戳格式不正确. 跳过.", 2)
-                else:
-                     debug_log(f"文件名 {file_name} 未包含时间戳. 跳过.", 2)
-
-    if not candidates:
-        debug_log(f"未找到数据截止期为 {target_period} 的分析报告", 3)
-        return None
-
-    candidates.sort(reverse=True)
-    selected_path = candidates[0][1]
-    debug_log(f"找到 {len(candidates)} 个匹配报告，选择最新: {selected_path}", 1)
-    return selected_path # Return absolute path
-
-def parse_recommendations(content):
-    """解析推荐组合"""
-    debug_log("解析推荐组合...", 1)
-    pattern = re.compile(r'组合\s*\d+\s*:\s*红球\s*\[([\d\s,]+?)\]\s*蓝球\s*(\d+)', re.DOTALL)
-    parsed_rec = []
-    matches = pattern.findall(content)
-    if not matches:
-        debug_log("未找到普通推荐组合。", 1)
-
-    for red_str_match, blue_str in matches:
-        try:
-            red_str = red_str_match.replace(' ', '').strip(',')
-            if not red_str:
-                 debug_log("发现空红球字符串 (普通推荐). 跳过.", 2)
-                 continue
-            red_balls = sorted(map(int, red_str.split(',')))
-            blue_ball = int(blue_str)
-            if len(red_balls) != 6:
-                 debug_log(f"普通推荐红球数量 {len(red_balls)}!=6: '{red_str_match}'. 跳过.", 2)
-                 continue
-            if not all(1 <= r <= 33 for r in red_balls) or not (1 <= blue_ball <= 16):
-                 debug_log(f"普通推荐号码超出范围. 红:{red_balls}, 蓝:{blue_ball}. 跳过.", 2)
-                 continue
-            parsed_rec.append((red_balls, blue_ball))
-        except ValueError:
-            debug_log(f"解析普通推荐时发现无效数字: 红球 '{red_str_match}', 蓝球 '{blue_str}'. 跳过.", 2)
-        except Exception as e:
-             debug_log(f"解析普通推荐时发生未知错误: {str(e)}. 跳过.", 3)
-
-    debug_log(f"成功解析到 {len(parsed_rec)} 个有效普通推荐组合。", 1)
-    return parsed_rec
-
-def parse_complex(content):
-    """解析复式组合"""
-    debug_log("解析复式组合...", 1)
-    complex_red, complex_blue = [], []
-
-    match_red = re.search(r'推荐\d+红球:\s*\[([\d\s,]+?)\]', content, re.DOTALL)
-    if match_red:
-        try:
-            red_str = match_red.group(1).replace(' ', '').strip(',')
-            if red_str: complex_red = sorted(map(int, red_str.split(',')))
-            else: debug_log("解析到空的复式红球字符串。", 2)
-        except ValueError: debug_log(f"解析复式红球时发现无效数字: '{match_red.group(1)}'", 2)
-        except Exception as e: debug_log(f"解析复式红球时发生未知错误: {str(e)}", 3)
-    else:
-        debug_log("未找到复式红球 (推荐X红球).", 1)
-        return [], [] 
-
-    if match_red: 
-        search_content_for_blue = content[match_red.end():]
-        match_blue = re.search(r'推荐\d+蓝球:\s*\[([\d\s,]+?)\]', search_content_for_blue, re.DOTALL)
-        if match_blue:
+    # 使用 SCRIPT_DIR 确保在任何工作目录下都能找到与脚本同级的报告文件
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    for file_path in glob.glob(os.path.join(script_dir, REPORT_PATTERN)):
+        content = robust_file_read(file_path)
+        if not content: continue
+        
+        match = re.search(r'分析基于数据:\s*截至\s*(\d+)\s*期', content)
+        if match and match.group(1) == target_period:
             try:
-                blue_str = match_blue.group(1).replace(' ', '').strip(',')
-                if blue_str: complex_blue = sorted(map(int, blue_str.split(',')))
-                else: debug_log("解析到空的复式蓝球字符串。", 2)
-            except ValueError: debug_log(f"解析复式蓝球时发现无效数字: '{match_blue.group(1)}'", 2)
-            except Exception as e: debug_log(f"解析复式蓝球时发生未知错误: {str(e)}", 3)
-        else:
-            debug_log("未找到复式蓝球 (推荐X蓝球) 在红球之后.", 1)
+                # 从文件名中提取时间戳以确定最新报告
+                timestamp_str_match = re.search(r'_(\d{8}_\d{6})\.txt$', file_path)
+                if timestamp_str_match:
+                    timestamp_str = timestamp_str_match.group(1)
+                    timestamp = datetime.strptime(timestamp_str, "%Y%m%d_%H%M%S")
+                    candidates.append((timestamp, file_path))
+            except (AttributeError, ValueError):
+                continue
+    
+    if not candidates:
+        log_message(f"未找到数据截止期为 {target_period} 的分析报告。", "WARNING")
+        return None
+        
+    candidates.sort(reverse=True)
+    latest_report = candidates[0][1]
+    log_message(f"找到匹配的最新报告: {os.path.basename(latest_report)}", "INFO")
+    return latest_report
 
-    if not complex_red and not complex_blue: return [], []
-    if len(complex_red) < 6 or len(complex_blue) < 1:
-        if complex_red or complex_blue:
-            debug_log(f"解析到不完整的复式号码 (红球需>=6，蓝球需>=1). R:{len(complex_red)}, B:{len(complex_blue)}. 跳过.", 2)
-        return [], []
-    if not all(1 <= r <= 33 for r in complex_red) or not all(1 <= b <= 16 for b in complex_blue):
-        debug_log(f"解析到复式号码超出有效范围. R:{complex_red}, B:{complex_blue}. 跳过.", 2)
-        return [], []
+def parse_recommendations_from_report(content: str) -> Tuple[List, List, List]: # <--- [FIX] 使用 Tuple 和 List
+    """
+    从分析报告内容中解析出单式和复式推荐号码。
 
-    debug_log(f"成功解析复式号码: 红球 {complex_red}, 蓝球 {complex_blue}", 1)
-    return complex_red, complex_blue
+    Args:
+        content (str): 分析报告的文本内容。
 
-def generate_complex_tickets(reds, blues):
-    """从复式号码中生成所有可能的 6红+蓝 投注组合"""
-    if len(reds) < 6 or not blues:
-        debug_log(f"复式号码不足 (R:{len(reds)}, B:{len(blues)}). 无法生成投注.", 1)
-        return []
-    tickets = []
-    max_r, max_b, max_tickets_limit = 15, 16, 20000
-    if len(reds) > max_r or len(blues) > max_b:
-        debug_log(f"复式号码数量过多 (R:{len(reds)}, B:{len(blues)}). 跳过生成.", 2)
-        return []
+    Returns:
+        Tuple[List, List, List]:
+            - 单式推荐列表, e.g., [([1,2,3,4,5,6], 7), ...]
+            - 复式红球列表, e.g., [1,2,3,4,5,6,7]
+            - 复式蓝球列表, e.g., [8,9,10]
+    """
+    # 解析单式推荐
+    rec_pattern = re.compile(r'注\s*\d+:\s*红球\s*\[([\d\s]+)\]\s*蓝球\s*\[(\d+)\]')
+    rec_tickets = []
+    for match in rec_pattern.finditer(content):
+        try:
+            reds = sorted(map(int, match.group(1).split()))
+            blue = int(match.group(2))
+            if len(reds) == 6: rec_tickets.append((reds, blue))
+        except ValueError: continue
+    
+    # 解析复式推荐
+    complex_reds, complex_blues = [], []
+    red_match = re.search(r'红球\s*\(Top\s*\d+\):\s*([\d\s]+)', content)
+    if red_match:
+        try: complex_reds = sorted(map(int, red_match.group(1).split()))
+        except ValueError: pass
+        
+    blue_match = re.search(r'蓝球\s*\(Top\s*\d+\):\s*([\d\s]+)', content)
+    if blue_match:
+        try: complex_blues = sorted(map(int, blue_match.group(1).split()))
+        except ValueError: pass
+        
+    log_message(f"解析到 {len(rec_tickets)} 注单式推荐, 复式红球 {len(complex_reds)} 个, 蓝球 {len(complex_blues)} 个。")
+    return rec_tickets, complex_reds, complex_blues
+
+# ==============================================================================
+# --- 奖金计算与报告生成模块 ---
+# ==============================================================================
+
+def generate_complex_tickets(reds: List, blues: List) -> List: # <--- [FIX] 使用 List
+    """从复式号码中生成所有可能的单式投注组合。"""
+    if len(reds) < 6 or not blues: return []
+    max_tickets_limit = 20000  # 防止组合爆炸
+    
     try:
+        # 使用数学公式预先计算组合数，避免生成超大列表
         from math import comb
         num_combs = comb(len(reds), 6) * len(blues)
-    except ImportError: # math.comb might not be available in older Python (before 3.8)
+
+        if num_combs > max_tickets_limit:
+            log_message(f"复式号码将生成 {num_combs:,} 注，超过 {max_tickets_limit:,} 的限制，已跳过。", "WARNING")
+            return []
+            
+        tickets = [(sorted(list(r_combo)), b) for r_combo in combinations(reds, 6) for b in blues]
+        log_message(f"从复式号码中成功生成 {len(tickets):,} 注投注。")
+        return tickets
+    except ImportError: # Fallback for Python < 3.8
+        log_message("math.comb 不可用，正在使用自定义函数计算组合数。您的 Python 版本可能较低。", "WARNING")
         def combinations_count(n, k):
             if k < 0 or k > n: return 0
             if k == 0 or k == n: return 1
@@ -253,257 +236,200 @@ def generate_complex_tickets(reds, blues):
             res = 1
             for i in range(k): res = res * (n - i) // (i + 1)
             return res
-        try:
-            num_combs = combinations_count(len(reds), 6) * len(blues)
-        except Exception as e_comb_count: # Catch any error during combinations_count
-            debug_log(f"计算复式组合数量时发生异常: {str(e_comb_count)}", 3)
+        num_combs = combinations_count(len(reds), 6) * len(blues)
+        if num_combs > max_tickets_limit:
+            log_message(f"复式号码将生成 {num_combs:,} 注，超过 {max_tickets_limit:,} 的限制，已跳过。", "WARNING")
             return []
-    except Exception as e_comb: # Catch other errors related to comb (though less likely)
-            debug_log(f"计算复式组合数量时发生未知异常: {str(e_comb)}", 3)
-            return []
-
-
-    if num_combs > max_tickets_limit:
-        debug_log(f"复式号码可生成 {num_combs:,} 注，超过限制 {max_tickets_limit:,}. 跳过生成.", 2)
-        return []
-    try:
-        for combo in combinations(reds, 6):
-            for blue in blues: tickets.append((sorted(list(combo)), blue))
-        debug_log(f"从复式号码中成功生成了 {len(tickets):,} 注投注。", 1)
+        tickets = [(sorted(list(r_combo)), b) for r_combo in combinations(reds, 6) for b in blues]
+        log_message(f"从复式号码中成功生成 {len(tickets):,} 注投注。")
         return tickets
     except Exception as e:
-        debug_log(f"生成复式投注时发生异常: {str(e)}", 3)
+        log_message(f"生成复式投注时出错: {e}", "ERROR")
         return []
 
-def calculate_prize(tickets, prize_red, prize_blue):
-    """计算奖金"""
+def calculate_prize(tickets: List, prize_red: List, prize_blue: int) -> Tuple[int, Dict, List]: # <--- [FIX] 使用 Tuple, Dict, List
+    """
+    计算给定投注列表的总奖金、奖级分布和中奖详情。
+
+    Args:
+        tickets (List): 投注列表, 格式为 [([r1..r6], b), ...]。
+        prize_red (List): 中奖红球列表。
+        prize_blue (int): 中奖蓝球。
+
+    Returns:
+        Tuple[int, Dict, List]: 总奖金, 奖级分布字典, 中奖号码详情列表。
+    """
     prize_red_set = set(prize_red)
-    breakdown = {k:0 for k in PRIZE_TABLE}
+    breakdown = {level: 0 for level in PRIZE_TABLE}
     total_prize = 0
-    winning_tickets_list = []
+    winning_tickets_details = []
 
     for red, blue in tickets:
-        matched_red = len(set(red) & prize_red_set)
-        matched_blue = blue == prize_blue
+        red_hits = len(set(red) & prize_red_set)
+        blue_hit = blue == prize_blue
+        
         level = None
-        
-        # Determine prize level based on matches
-        if matched_red == 6 and matched_blue: level = 1
-        elif matched_red == 6 and not matched_blue: level = 2
-        elif matched_red == 5 and matched_blue: level = 3
-        elif matched_red == 5 and not matched_blue: level = 4
-        elif matched_red == 4 and matched_blue: level = 4
-        elif matched_red == 4 and not matched_blue: level = 5
-        elif matched_red == 3 and matched_blue: level = 5
-        elif (matched_red == 2 and matched_blue) or \
-             (matched_red == 1 and matched_blue) or \
-             (matched_red == 0 and matched_blue): level = 6
-        
-        if level is not None and level in PRIZE_TABLE:
+        if blue_hit:
+            if red_hits == 6: level = 1
+            elif red_hits == 5: level = 3
+            elif red_hits == 4: level = 4
+            elif red_hits == 3: level = 5
+            elif red_hits <= 2: level = 6
+        else:
+            if red_hits == 6: level = 2
+            elif red_hits == 5: level = 4
+            elif red_hits == 4: level = 5
+
+        if level and level in PRIZE_TABLE:
+            prize_amount = PRIZE_TABLE[level]
+            total_prize += prize_amount
             breakdown[level] += 1
-            winning_tickets_list.append((red, blue, level))
-
-    for level_won, count in breakdown.items():
-        if count > 0: # No need to check PRIZE_TABLE again if level was set from it
-            total_prize += PRIZE_TABLE[level_won] * count
+            winning_tickets_details.append({'red': red, 'blue': blue, 'level': level})
             
-    # debug_log(f"奖金计算明细: {breakdown}, 总金额: {total_prize}", 1) # Can be verbose
-    return total_prize, breakdown, winning_tickets_list
+    return total_prize, breakdown, winning_tickets_details
 
-def format_winning_tickets(winning_list, winning_red, winning_blue):
-    """格式化中奖号码"""
-    formatted = []
-    winning_red_set = set(winning_red)
-    for red, blue, level in winning_list:
-        matched_r_balls = sorted(list(set(red) & winning_red_set))
-        matched_b_ball = blue if blue == winning_blue else None
-        red_str_parts = [f"**{r}**" if r in matched_r_balls else str(r) for r in sorted(red)]
-        blue_str = f"**{blue}**" if matched_b_ball is not None else str(blue)
-        details = []
-        if matched_r_balls: details.append(f"命中红球: {','.join(map(str, matched_r_balls))}")
-        if matched_b_ball is not None: details.append(f"命中蓝球: {matched_b_ball}")
-        details_str = f" ({'; '.join(details)})" if details else ""
-        formatted.append(f"  - 红[{', '.join(red_str_parts)}] 蓝{blue_str} ({level}等奖){details_str}")
-    return formatted
+def format_winning_tickets_for_report(winning_list: List[Dict], prize_red: List, prize_blue: int) -> List[str]: # <--- [FIX]
+    """格式化中奖号码，高亮命中的数字，用于报告输出。"""
+    formatted_lines = []
+    prize_red_set = set(prize_red)
+    for ticket in winning_list:
+        red, blue, level = ticket['red'], ticket['blue'], ticket['level']
+        red_str = ' '.join(f"**{r:02d}**" if r in prize_red_set else f"{r:02d}" for r in red)
+        blue_str = f"**{blue:02d}**" if blue == prize_blue else f"{blue:02d}"
+        formatted_lines.append(f"  - 红球 [{red_str}] 蓝球 [{blue_str}]  -> {level}等奖")
+    return formatted_lines
 
-def manage_report(new_entry=None, new_error=None):
-    """维护主报告文件"""
-    normal_marker, error_marker = "==== EVALUATION RECORDS =====", "==== ERROR LOGS ===="
-    report_content, normal_entries_from_file, error_logs_from_file = [], [], []
+def manage_report(new_entry: Optional[Dict] = None, new_error: Optional[str] = None): # <--- [FIX]
+    """
+    维护主评估报告文件，自动追加新记录并清理旧记录。
+
+    Args:
+        new_entry (Optional[Dict]): 新的评估结果字典。
+        new_error (Optional[str]): 新的错误日志字符串。
+    """
+    normal_marker, error_marker = "==== 评估记录 ====", "==== 错误日志 ===="
+    content_str = robust_file_read(MAIN_REPORT_FILE) or ""
     
-    absolute_main_report_path = os.path.abspath(MAIN_REPORT_FILE)
-
-    if os.path.exists(absolute_main_report_path):
-        content_read = robust_file_read(absolute_main_report_path) # robust_file_read uses abspath
-        if content_read is not None:
-            report_content = [line.rstrip() for line in content_read.splitlines()]
+    # 分割文件内容为记录块和错误日志
+    parts = content_str.split(error_marker)
+    normal_part = parts[0]
+    error_part = parts[1] if len(parts) > 1 else ""
     
-    normal_start, error_start = -1, -1
-    for i, line in enumerate(report_content):
-        if line.startswith(normal_marker): normal_start = i
-        elif line.startswith(error_marker): error_start = i
+    # 解析现有记录
+    normal_entries = [entry.strip() for entry in normal_part.split('='*20) if entry.strip() and normal_marker not in entry]
+    error_entries = [err.strip() for err in error_part.splitlines() if err.strip()]
 
-    if normal_start != -1:
-        end_slice = error_start if error_start != -1 and error_start > normal_start else len(report_content)
-        normal_entries_from_file = [line for line in report_content[normal_start + 1 : end_slice] if line.strip() or line == ""]
-    if error_start != -1:
-        error_logs_from_file = [line for line in report_content[error_start + 1 :] if line.strip()]
-
+    # 添加新记录
     timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    final_normal_entries = []
-
     if new_entry:
-        eval_p, report_p = new_entry.get('evaluation_period', 'N/A'), new_entry.get('report_cutoff_period', 'N/A')
-        win_r, win_b = new_entry.get('winning_red', []), new_entry.get('winning_blue', 'N/A')
-        overall_prize = new_entry.get('overall_prize', 0)
-        rec_data, complex_data = new_entry.get('recommended', {}), new_entry.get('complex', {})
-        win_r_str = ','.join(map(str, sorted(win_r))) if isinstance(win_r, list) and win_r else 'N/A'
+        entry_lines = [
+            f"评估时间: {timestamp}",
+            f"评估期号 (实际开奖): {new_entry['eval_period']}",
+            f"分析报告数据截止期: {new_entry['report_cutoff_period']}",
+            f"开奖号码: 红球 {new_entry['prize_red']} 蓝球 {new_entry['prize_blue']}",
+            f"总奖金: {new_entry['total_prize']:,} 元",
+            "", "--- 单式推荐详情 ---"
+        ]
+        rec_prize, rec_bd, rec_winners = new_entry['rec_prize'], new_entry['rec_breakdown'], new_entry['rec_winners']
+        if rec_prize > 0:
+            entry_lines.append(f"奖金: {rec_prize:,}元 | 明细: " + ", ".join(f"{k}等奖x{v}" for k,v in rec_bd.items() if v>0))
+            entry_lines.extend(format_winning_tickets_for_report(rec_winners, new_entry['prize_red'], new_entry['prize_blue']))
+        else: entry_lines.append("未中奖")
         
-        entry_block = [f"[评估记录 {timestamp}]", f"评估期号 (实际开奖): {eval_p}", f"评估报告数据截止期: {report_p}",
-                       f"实际开奖号码: 红[{win_r_str}] 蓝{win_b}", f"总中奖金额: {overall_prize:,}元", ""]
+        entry_lines.extend(["", "--- 复式推荐详情 ---"])
+        com_prize, com_bd, com_winners = new_entry['com_prize'], new_entry['com_breakdown'], new_entry['com_winners']
+        if com_prize > 0:
+            entry_lines.append(f"奖金: {com_prize:,}元 | 明细: " + ", ".join(f"{k}等奖x{v}" for k,v in com_bd.items() if v>0))
+            entry_lines.extend(format_winning_tickets_for_report(com_winners, new_entry['prize_red'], new_entry['prize_blue']))
+        else: entry_lines.append("未中奖或未生成投注")
         
-        entry_block.append("--- 普通推荐中奖详情 ---")
-        if rec_data and (rec_data.get('prize', 0) > 0 or rec_data.get('winners')):
-            entry_block.append(f"普通推荐总奖金: {rec_data.get('prize', 0):,}元")
-            bd = ", ".join([f"{lvl}等奖:{cnt}注" for lvl,cnt in sorted(rec_data.get('breakdown',{}).items()) if cnt>0])
-            entry_block.append(f"普通推荐奖金明细: {bd if bd else '无中奖'}")
-            if rec_data.get('winners'): entry_block.extend(["中奖号码:"] + format_winning_tickets(rec_data['winners'], win_r, win_b))
-            else: entry_block.append("无中奖号码")
-        else: entry_block.append("无普通推荐投注或未中奖")
-        entry_block.append("")
+        normal_entries.insert(0, "\n".join(entry_lines))
 
-        entry_block.append("--- 复式生成投注中奖详情 ---")
-        if complex_data and (complex_data.get('prize', 0) > 0 or complex_data.get('winners')):
-            entry_block.append(f"复式生成总奖金: {complex_data.get('prize', 0):,}元")
-            bd = ", ".join([f"{lvl}等奖:{cnt}注" for lvl,cnt in sorted(complex_data.get('breakdown',{}).items()) if cnt>0])
-            entry_block.append(f"复式生成奖金明细: {bd if bd else '无中奖'}")
-            if complex_data.get('winners'): entry_block.extend(["中奖号码:"] + format_winning_tickets(complex_data['winners'], win_r, win_b))
-            else: entry_block.append("无中奖号码")
-        else: entry_block.append("无复式生成投注或未中奖")
-        entry_block.extend(["", "="*60, ""]) # Separator and blank lines
-        final_normal_entries.extend(entry_block)
-
-    final_normal_entries.extend(normal_entries_from_file)
-    
-    # Trim normal entries based on MAX_NORMAL_RECORDS (blocks)
-    block_indices = [i for i, line in enumerate(final_normal_entries) if line.startswith("[评估记录 ")]
-    if len(block_indices) > MAX_NORMAL_RECORDS:
-        # Keep the MAX_NORMAL_RECORDS newest blocks. Since new entries are prepended,
-        # these are the first MAX_NORMAL_RECORDS blocks in block_indices.
-        # We need to find the end of the MAX_NORMAL_RECORDS'th block.
-        # The (MAX_NORMAL_RECORDS+1)'th block starts at block_indices[MAX_NORMAL_RECORDS].
-        # So, slice up to that point.
-        start_of_block_to_cut = block_indices[MAX_NORMAL_RECORDS]
-        final_normal_entries = final_normal_entries[:start_of_block_to_cut]
-
-    final_error_logs = error_logs_from_file # Start with existing errors
     if new_error:
-        final_error_logs.insert(0, f"[错误 {timestamp}] {new_error}") # Prepend new error
-    final_error_logs = final_error_logs[:MAX_ERROR_LOGS] # Trim to max error logs
+        error_entries.insert(0, f"[{timestamp}] {new_error}")
 
+    # 清理旧记录
+    final_normal_entries = normal_entries[:MAX_NORMAL_RECORDS]
+    final_error_entries = error_entries[:MAX_ERROR_LOGS]
+
+    # 写回文件
     try:
-        with open(absolute_main_report_path, 'w', encoding='utf-8') as f:
+        with open(MAIN_REPORT_FILE, 'w', encoding='utf-8') as f:
             f.write(f"{normal_marker}\n")
-            if final_normal_entries: 
-                # Remove trailing blank lines from the block, then add one final newline
-                f.write("\n".join(final_normal_entries).strip('\n') + "\n") 
-            
-            f.write(f"\n{error_marker}\n") # Ensure newline before error marker
-            if final_error_logs: 
-                f.write("\n".join(final_error_logs).strip('\n') + "\n")
-        debug_log(f"主报告已更新: {absolute_main_report_path}", 1)
-    except Exception as e:
-        debug_log(f"写入主报告文件 '{absolute_main_report_path}' 失败: {str(e)}", 3)
+            if final_normal_entries:
+                f.write(("\n" + "="*20 + "\n").join(final_normal_entries))
+            f.write(f"\n\n{error_marker}\n")
+            if final_error_entries:
+                f.write("\n".join(final_error_entries))
+        log_message(f"主报告已更新: {MAIN_REPORT_FILE}", "INFO")
+    except IOError as e:
+        log_message(f"写入主报告文件失败: {e}", "ERROR")
+
+# ==============================================================================
+# --- 主流程 ---
+# ==============================================================================
 
 def main_process():
-    """主处理流程"""
-    debug_log("====== 主流程启动 ======", 1)
+    """主处理流程，串联所有功能。"""
+    log_message("====== 主流程启动 ======", "INFO")
     
-    csv_abs_path = os.path.abspath(CSV_FILE) # For error messages
-    csv_content = robust_file_read(CSV_FILE) 
+    csv_content = robust_file_read(CSV_FILE)
     if not csv_content:
-        err_msg = f"CSV文件 '{CSV_FILE}' (路径: {csv_abs_path}) 读取失败或文件不存在/内容为空."
-        manage_report(new_error=err_msg)
-        debug_log(f"处理停止: {err_msg}", 3)
+        manage_report(new_error=f"无法读取或未找到CSV数据文件: {CSV_FILE}")
         return
 
-    period_map, sorted_periods = get_period_data(csv_content)
-    if not period_map or not sorted_periods:
-        err_msg = f"CSV文件 '{CSV_FILE}' 数据解析失败或无有效数据."
-        manage_report(new_error=err_msg)
-        debug_log(f"处理停止: {err_msg}", 3)
+    period_map, sorted_periods = get_period_data_from_csv(csv_content)
+    if not period_map or not sorted_periods or len(sorted_periods) < 2:
+        manage_report(new_error="CSV数据不足两期或解析失败，无法进行评估。")
         return
 
-    if len(sorted_periods) < 2:
-        err_msg = f"CSV数据不足两期 ({len(sorted_periods)}期). 需要至少两期以进行评估."
-        manage_report(new_error=err_msg)
-        debug_log(f"处理停止: {err_msg}", 2)
+    eval_period = sorted_periods[-1]
+    report_cutoff_period = sorted_periods[-2]
+    log_message(f"评估期号: {eval_period}, 报告数据截止期: {report_cutoff_period}", "INFO")
+
+    report_path = find_matching_report(report_cutoff_period)
+    if not report_path:
+        manage_report(new_error=f"未找到数据截止期为 {report_cutoff_period} 的分析报告。")
         return
 
-    evaluation_period = sorted_periods[-1]
-    report_data_cutoff_period = sorted_periods[-2]
-    debug_log(f"评估期号 (最新CSV期): {evaluation_period}, 报告数据截止期 (CSV倒数第二期): {report_data_cutoff_period}", 1)
-
-    analysis_file_abs_path = find_matching_report(report_data_cutoff_period) # Returns absolute path
-    if not analysis_file_abs_path:
-        err_msg = f"未找到数据截止期为 {report_data_cutoff_period} 的分析报告."
-        manage_report(new_error=err_msg)
-        debug_log(f"处理停止: {err_msg}", 2)
+    report_content = robust_file_read(report_path)
+    if not report_content:
+        manage_report(new_error=f"无法读取分析报告文件: {report_path}")
         return
 
-    analysis_content = robust_file_read(analysis_file_abs_path)
-    if not analysis_content:
-        err_msg = f"分析报告 '{analysis_file_abs_path}' 读取失败或内容为空."
-        manage_report(new_error=err_msg)
-        debug_log(f"处理停止: {err_msg}", 3)
-        return
-
-    rec_tickets = parse_recommendations(analysis_content)
-    complex_red, complex_blue = parse_complex(analysis_content)
-    complex_tickets = generate_complex_tickets(complex_red, complex_blue)
-
+    rec_tickets, complex_reds, complex_blues = parse_recommendations_from_report(report_content)
+    complex_tickets = generate_complex_tickets(complex_reds, complex_blues)
+    
     if not rec_tickets and not complex_tickets:
-         debug_log("未能从分析报告中解析出任何投注组合，将计算奖金为0。", 2)
-
-    if evaluation_period not in period_map:
-         err_msg = f"内部错误: 评估期号 {evaluation_period} 在 sorted_periods 中，但不在 period_map 中."
-         manage_report(new_error=err_msg)
-         debug_log(f"处理停止: {err_msg}", 3)
-         return
-
-    prize_data = period_map[evaluation_period]
-    winning_r, winning_b = prize_data['red'], prize_data['blue']
-    debug_log(f"获取到评估期号 {evaluation_period} ({prize_data['date']}) 的实际开奖数据: 红{winning_r} 蓝{winning_b}", 1)
-
-    rec_prize, rec_bd, rec_wl = calculate_prize(rec_tickets, winning_r, winning_b)
-    complex_prize, complex_bd, complex_wl = calculate_prize(complex_tickets, winning_r, winning_b)
-    overall_prize = rec_prize + complex_prize
-
+         manage_report(new_error=f"未能从报告 {os.path.basename(report_path)} 中解析出任何有效投注。")
+    
+    prize_data = period_map[eval_period]
+    prize_red, prize_blue = prize_data['red'], prize_data['blue']
+    log_message(f"获取到期号 {eval_period} 的开奖数据: 红{prize_red} 蓝{prize_blue}", "INFO")
+    
+    rec_prize, rec_bd, rec_winners = calculate_prize(rec_tickets, prize_red, prize_blue)
+    com_prize, com_bd, com_winners = calculate_prize(complex_tickets, prize_red, prize_blue)
+    
     report_entry = {
-        'evaluation_period': evaluation_period, 'report_cutoff_period': report_data_cutoff_period,
-        'winning_red': winning_r, 'winning_blue': winning_b, 'overall_prize': overall_prize,
-        'recommended': {'prize': rec_prize, 'breakdown': rec_bd, 'winners': rec_wl},
-        'complex': {'prize': complex_prize, 'breakdown': complex_bd, 'winners': complex_wl}
+        'eval_period': eval_period, 'report_cutoff_period': report_cutoff_period,
+        'prize_red': prize_red, 'prize_blue': prize_blue,
+        'total_prize': rec_prize + com_prize,
+        'rec_prize': rec_prize, 'rec_breakdown': rec_bd, 'rec_winners': rec_winners,
+        'com_prize': com_prize, 'com_breakdown': com_bd, 'com_winners': com_winners,
     }
     manage_report(new_entry=report_entry)
-
-    if not rec_tickets and not complex_tickets: # Log this specific failure if it occurs
-         manage_report(new_error=f"未能从分析报告 '{os.path.basename(analysis_file_abs_path)}' (数据截止 {report_data_cutoff_period}) 中解析出任何投注组合.")
     
-    debug_log(f"处理完成！评估报告 (数据截止 {report_data_cutoff_period}) 在期号 {evaluation_period} 开奖结果上的表现，总中奖金额: {overall_prize:,}元。", 1)
-    debug_log("====== 主流程结束 ======", 1)
+    log_message(f"处理完成！总计奖金: {report_entry['total_prize']:,}元。", "INFO")
+    log_message("====== 主流程结束 ======", "INFO")
 
 if __name__ == "__main__":
     try:
         main_process()
     except Exception as e:
-        # Capture full traceback for better debugging
         tb_str = traceback.format_exc()
-        error_message = f"主流程发生未处理异常: {type(e).__name__} - {str(e)}\n详细追溯:\n{tb_str}"
+        error_message = f"主流程发生未捕获的严重异常: {type(e).__name__} - {e}\n{tb_str}"
+        log_message(error_message, "CRITICAL")
         try:
             manage_report(new_error=error_message)
         except Exception as report_e:
-            # If manage_report itself fails, print critical error to console
-            print(f"[CRITICAL ERROR] {datetime.now().strftime('%H:%M:%S')} Failed to write final error to report file: {str(report_e)}")
-            print(f"[CRITICAL ERROR] {datetime.now().strftime('%H:%M:%S')} Original unhandled error: {error_message}")
-        debug_log(error_message, 3) # Ensure it's printed to console as well
+            log_message(f"在记录严重错误时再次发生错误: {report_e}", "CRITICAL")
