@@ -9,7 +9,7 @@
 1.  读取 `shuangseqiu.csv` 文件，获取所有历史开奖数据。
 2.  确定最新的一期为“评估期”，倒数第二期为“报告数据截止期”。
 3.  根据“报告数据截止期”，在当前目录下查找对应的分析报告文件
-    (ssq_analysis_report_*.txt)。
+    (ssq_analysis_output_*.txt)。
 4.  从找到的报告中解析出“单式推荐”和“复式参考”的号码。
 5.  将复式参考号码展开为所有可能的单式投注。
 6.  使用“评估期”的实际开奖号码，核对所有推荐投注的中奖情况。
@@ -32,7 +32,7 @@ from typing import Optional, Tuple, List, Dict # <--- [FIX] 导入兼容的类�
 # ==============================================================================
 
 # 脚本需要查找的分析报告文件名的模式
-REPORT_PATTERN = "ssq_analysis_report_*.txt"
+REPORT_PATTERN = "ssq_analysis_output_*.txt"
 # 开奖数据源CSV文件
 CSV_FILE = "shuangseqiu.csv"
 # 最终生成的主评估报告文件名
