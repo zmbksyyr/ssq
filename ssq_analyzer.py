@@ -853,7 +853,7 @@ def optuna_progress_callback(study: optuna.study.Study, trial: optuna.trial.Froz
 # ==============================================================================
 if __name__ == "__main__":
     # 1. 初始化日志记录器，同时输出到控制台和文件
-    log_filename = os.path.join(SCRIPT_DIR, f"ssq_analysis_report_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.txt")
+    log_filename = os.path.join(SCRIPT_DIR, f"ssq_analysis_output_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.txt")
     file_handler = logging.FileHandler(log_filename, 'w', 'utf-8')
     file_handler.setFormatter(detailed_formatter)
     logger.addHandler(file_handler)
