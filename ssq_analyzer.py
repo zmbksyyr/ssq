@@ -359,7 +359,7 @@ def feature_engineer(df: pd.DataFrame) -> Optional[pd.DataFrame]:
         df_fe[f'red_{zone}_count'] = df_fe[red_cols].apply(lambda r: sum(start <= x <= end for x in r), axis=1)
         
     # 形态特征
-    def count_consecutive(row): return sum(1 for i in range(5) if row[i+1] - row[i] == 1)
+    def count_consecutive(row): return sum(1 for i in range(5) if row.iloc[i+1] - row.iloc[i] == 1)
     df_fe['red_consecutive_count'] = df_fe[red_cols].apply(count_consecutive, axis=1)
     
     # 重号特征 (与上一期的重复个数)
