@@ -14,17 +14,18 @@ jobs:
 
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v4 # Updated to v4
+      uses: actions/checkout@v4
       with:
         fetch-depth: 0 # Fetch all history for git operations
+        # token: ${{ secrets.PAT_FOR_CHECKOUT_AND_PUSH }} # Optional: If GITHUB_TOKEN has permission issues for subsequent pushes or certain repo setups. Usually GITHUB_TOKEN is fine.
 
     - name: Set up Python 3.9
-      uses: actions/setup-python@v5 # Updated to v5
+      uses: actions/setup-python@v5
       with:
         python-version: 3.9
 
     - name: Cache pip dependencies
-      uses: actions/cache@v4 # Updated to v4
+      uses: actions/cache@v4
       with:
         path: ~/.cache/pip
         key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
@@ -47,14 +48,8 @@ jobs:
 
     - name: Create fixed filename copy of latest analysis report
       run: |
-        set -e # Exit immediately if a command exits with a non-zero status
-        # Find the latest report by lexical sort (assuming YYYYMMDD in filename)
-        # If filenames are like ssq_analysis_output_YYYYMMDD_HHMMSS.txt, sort -r works.
-        # For true latest by modification time, use `ls -1t` if find doesn't sort by time.
-        # However, the original `sort -r` on `ls` output works if filenames are sortable.
-        # Using find and then sort for robustness with filenames:
+        set -e
         latest_report_file=$(find . -maxdepth 1 -name 'ssq_analysis_output_*.txt' -print0 | xargs -0 ls -1 | sort -r | head -n 1)
-        
         if [ -n "$latest_report_file" ] && [ -f "$latest_report_file" ]; then
           cp "$latest_report_file" "latest_ssq_analysis.txt"
           echo "Created fixed filename copy: latest_ssq_analysis.txt from $latest_report_file"
@@ -64,33 +59,27 @@ jobs:
 
     - name: Clean old reports - keep only latest 3
       run: |
-        set -e # Exit immediately if a command exits with a non-zero status
+        set -e
         echo "--- Cleaning old analysis reports ---"
-        
-        # Store sorted list of reports (oldest first based on filename)
         mapfile -t reports < <(find . -maxdepth 1 -name 'ssq_analysis_output_*.txt' -print0 | xargs -0 ls -1 | sort)
-        
         count=${#reports[@]}
-        keep=3 # Number of reports to keep
-        
+        keep=3
         echo "Found $count reports. Configured to keep $keep latest."
-        
         if [ "$count" -gt "$keep" ]; then
           num_to_delete=$((count - keep))
           echo "Deleting $num_to_delete oldest reports:"
           for i in $(seq 0 $((num_to_delete - 1))); do
             report_to_delete="${reports[$i]}"
-            if [ -f "$report_to_delete" ]; then # Double check file exists
+            if [ -f "$report_to_delete" ]; then
               echo "Removing: $report_to_delete"
               rm "$report_to_delete"
             else
-              echo "Skipping (not found): $report_to_delete" # Should not happen with mapfile from find
+              echo "Skipping (not found): $report_to_delete"
             fi
           done
         else
           echo "No cleanup needed. $count report(s) found (≤ $keep)."
         fi
-        
         echo "Listing remaining analysis reports:"
         find . -maxdepth 1 -name 'ssq_analysis_output_*.txt' | sort
         echo "--- Finished cleaning reports ---"
@@ -104,20 +93,13 @@ jobs:
       run: |
         set -e
         echo "--- Staging and Committing Files ---"
-        
-        # Stage deletions and modifications of already tracked files
         git add -u
-        
-        # Add specific generated/updated files.
-        # Use an array to list files for easier management.
-        # These files are expected to be created or modified by the scripts.
         files_to_commit=(
           "shuangseqiu.csv"
           "latest_ssq_analysis.txt"
-          "latest_ssq_calculation.txt" # Assuming ssq_bonus_calculation.py creates/updates this
-          "weights_config.json"        # Assuming one of the scripts creates/updates this
+          "latest_ssq_calculation.txt"
+          "weights_config.json"
         )
-        
         for file_path in "${files_to_commit[@]}"; do
           if [ -f "$file_path" ]; then
             git add "$file_path"
@@ -126,18 +108,10 @@ jobs:
             echo "Skipping (not found): $file_path"
           fi
         done
-        
-        # Add all newly created analysis log files (if any)
-        # The -r flag for xargs ensures 'git add' doesn't run if find returns no files.
         find . -maxdepth 1 -name 'ssq_analysis_output_*.txt' -print0 | xargs -0 -r git add
         echo "Staged any new ssq_analysis_output_*.txt files."
-
         echo "Current git status:"
         git status --porcelain
-        
-        # Commit if there are any staged changes
-        # The `|| true` handles the case where there are no changes, preventing workflow failure.
-        # A more explicit check:
         if git diff --staged --quiet; then
           echo "No changes to commit."
         else
@@ -146,8 +120,29 @@ jobs:
         fi
         echo "--- Finished Staging and Committing ---"
 
+    - name: Pull remote changes to sync before push
+      run: |
+        echo "Current branch: $(git rev-parse --abbrev-ref HEAD)"
+        echo "Target branch from GITHUB_REF_NAME: ${{ github.ref_name }}"
+        # Set pull strategy to merge (default, but explicit) or rebase
+        # For automated processes, merge is often safer if conflicts are unlikely
+        # or if a merge commit is acceptable.
+        git config pull.rebase false # Use 'true' for rebase, 'false' for merge
+        
+        # Pull changes from the remote branch.
+        # This will attempt to merge remote changes. If there are conflicts
+        # that Git cannot auto-resolve, this step will fail, and the workflow will stop.
+        # Using --no-edit to avoid an editor opening for the merge commit message.
+        git pull origin ${{ github.ref_name }} --no-edit
+        echo "Successfully pulled and merged remote changes (if any)."
+      # Optional: Add retry logic or specific conflict handling if needed,
+      # but generally, failing on conflict is the safest default for CI.
+
     - name: Push changes
-      uses: ad-m/github-push-action@v0.8.0 # Updated to a tagged version (check for latest)
+      uses: ad-m/github-push-action@v0.8.0
       with:
         github_token: ${{ secrets.GITHUB_TOKEN }}
-        branch: ${{ github.ref }} # Pushes to the same branch that triggered the workflow
+        # Use github.ref_name to get the short branch name (e.g., "main")
+        # This is generally more robust for git commands than the full github.ref (e.g., "refs/heads/main")
+        branch: ${{ github.ref_name }}
+        # force: false # Default. Do not force push unless you absolutely need to and understand the consequences.
