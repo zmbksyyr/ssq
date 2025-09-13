@@ -15,7 +15,7 @@
     表现最佳的一组权重。然后，自动使用这组优化后的权重来完成后续的分析、
     回测和推荐。优化过程和结果也会记录在报告中。
 
-版本: 5.1 (Robust & Well-Commented)
+版本: 5.2 (Customized Generation Logic)
 """
 
 # --- 标准库导入 ---
@@ -108,12 +108,14 @@ DEFAULT_WEIGHTS = {
     'FINAL_COMBO_REVERSE_REMOVE_TOP_PERCENT': 0.3,
 
     # --- 组合生成 ---
-    # 最终向用户推荐的组合（注数）数量
-    'NUM_COMBINATIONS_TO_GENERATE': 10,
+    # [用户修改] 最终向用户推荐的组合（注数）数量
+    'NUM_COMBINATIONS_TO_GENERATE': 15,
+    # [新增] 策略回测时，每期生成的组合（注数）数量
+    'BACKTEST_NUM_COMBINATIONS_TO_GENERATE': 10,
     # 构建红球候选池时，从所有红球中选取分数最高的N个
     'TOP_N_RED_FOR_CANDIDATE': 25,
     # 构建蓝球候选池时，从所有蓝球中选取分数最高的N个
-    'TOP_N_BLUE_FOR_CANDIDATE': 6,
+    'TOP_N_BLUE_FOR_CANDIDATE': 8,
 
     # --- 红球评分权重 ---
     # 红球历史总频率得分的权重
@@ -158,10 +160,6 @@ DEFAULT_WEIGHTS = {
     'ARM_BONUS_LIFT_FACTOR': 0.48,
     # 在计算ARM奖励时，规则的置信度(confidence)对此奖励的贡献乘数因子
     'ARM_BONUS_CONF_FACTOR': 0.25,
-
-    # --- 组合多样性控制 ---
-    # 最终推荐的任意两注组合之间，其红球号码至少要有几个是不同的
-    'DIVERSITY_MIN_DIFFERENT_REDS': 3,
 }
 
 # ==============================================================================
@@ -670,7 +668,7 @@ def generate_combinations(scores_data: Dict, pattern_data: Dict, arm_rules: pd.D
     if len(r_cand_pool) < 6 or not b_cand_pool: return [], ["候选池号码不足。"]
 
     # 2. 生成大量初始组合
-    large_pool_size = max(num_to_gen * 50, 500)
+    large_pool_size = max(num_to_gen * 100, 1000)
     gen_pool, unique_combos = [], set()
     r_weights = np.array([r_scores.get(n, 0) + 1 for n in r_cand_pool])
     r_probs = r_weights / r_weights.sum() if r_weights.sum() > 0 else None
@@ -682,26 +680,29 @@ def generate_combinations(scores_data: Dict, pattern_data: Dict, arm_rules: pd.D
         if (combo_tuple := (tuple(reds), blue)) not in unique_combos:
             gen_pool.append({'red': reds, 'blue': blue}); unique_combos.add(combo_tuple)
 
-    # 3. 评分和筛选
+    # 3. 评分
     scored_combos = []
     for c in gen_pool:
-        # 基础分 = 号码分总和
         base_score = sum(r_scores.get(r, 0) for r in c['red']) + b_scores.get(c['blue'], 0)
         scored_combos.append({'combination': c, 'score': base_score, 'red_tuple': tuple(c['red'])})
 
-    # 4. 多样性筛选和最终选择
+    # 4. [修改] 多样性与唯一性筛选
     sorted_combos = sorted(scored_combos, key=lambda x: x['score'], reverse=True)
-    final_recs = []
-    max_common = 6 - int(weights_config.get('DIVERSITY_MIN_DIFFERENT_REDS', 3))
+    candidate_recs, seen_red_tuples = [], set()
     
-    if sorted_combos:
-        final_recs.append(sorted_combos.pop(0))
-        for cand in sorted_combos:
-            if len(final_recs) >= num_to_gen: break
-            # 检查与已选组合的多样性
-            if all(len(set(cand['red_tuple']) & set(rec['red_tuple'])) <= max_common for rec in final_recs):
-                final_recs.append(cand)
+    for cand in sorted_combos:
+        # 检查红球组合是否已经选过
+        if cand['red_tuple'] not in seen_red_tuples:
+            candidate_recs.append(cand)
+            seen_red_tuples.add(cand['red_tuple'])
     
+    # 确保我们有足够多的候选组合
+    if len(candidate_recs) < num_to_gen:
+        logger.warning(f"生成的唯一红球组合 ({len(candidate_recs)}) 少于目标数量 ({num_to_gen})，将返回所有唯一组合。")
+        num_to_gen = len(candidate_recs)
+
+    final_recs = candidate_recs[:num_to_gen]
+
     # 5. 应用反向思维策略
     applied_msg = ""
     if ENABLE_FINAL_COMBO_REVERSE:
@@ -709,15 +710,15 @@ def generate_combinations(scores_data: Dict, pattern_data: Dict, arm_rules: pd.D
         if 0 < num_to_remove < len(final_recs):
             removed, final_recs = final_recs[:num_to_remove], final_recs[num_to_remove:]
             applied_msg = f" (反向策略: 移除前{num_to_remove}注"
-            if ENABLE_REVERSE_REFILL:
-                # 补充被移除的组合
-                refill_candidates = [c for c in sorted_combos if c not in final_recs and c not in removed]
+            if ENABLE_REVERSE_REFILL and len(candidate_recs) > len(final_recs) + num_to_remove:
+                # 从备选池中补充
+                refill_candidates = [c for c in candidate_recs if c not in final_recs and c not in removed]
                 final_recs.extend(refill_candidates[:num_to_remove])
                 applied_msg += "并补充)"
             else:
                 applied_msg += ")"
-
-    final_recs = sorted(final_recs, key=lambda x: x['score'], reverse=True)[:num_to_gen]
+    
+    final_recs = sorted(final_recs, key=lambda x: x['score'], reverse=True)
 
     # 6. 生成输出字符串
     output_strs = [f"推荐组合 (Top {len(final_recs)}{applied_msg}):"]
@@ -760,6 +761,10 @@ def run_backtest(full_df: pd.DataFrame, ml_lags: List[int], weights_config: Dict
         logger.error(f"数据不足以回测{num_periods}期。需要至少{min_data_needed}期，当前有{len(full_df)}期。")
         return pd.DataFrame(), {}
 
+    # [修改] 为回测创建特定配置，强制使用10注
+    backtest_weights = weights_config.copy()
+    backtest_weights['NUM_COMBINATIONS_TO_GENERATE'] = backtest_weights.get('BACKTEST_NUM_COMBINATIONS_TO_GENERATE', 10)
+
     start_idx = len(full_df) - num_periods
     results, prize_counts, red_cols = [], Counter(), [f'red{i+1}' for i in range(6)]
     best_hits_per_period = []
@@ -771,10 +776,10 @@ def run_backtest(full_df: pd.DataFrame, ml_lags: List[int], weights_config: Dict
         current_iter = i + 1
         current_idx = start_idx + i
         
-        # 使用SuppressOutput避免在回测循环中打印大量日志
         with SuppressOutput(suppress_stdout=True, capture_stderr=True):
             hist_data = full_df.iloc[:current_idx]
-            predicted_combos, _, _, _, _ = run_analysis_and_recommendation(hist_data, ml_lags, weights_config, arm_rules)
+            # [修改] 使用回测专用配置
+            predicted_combos, _, _, _, _ = run_analysis_and_recommendation(hist_data, ml_lags, backtest_weights, arm_rules)
             
         actual_outcome = full_df.loc[current_idx]
         actual_red_set, actual_blue = set(actual_outcome[red_cols]), actual_outcome['blue']
@@ -795,7 +800,6 @@ def run_backtest(full_df: pd.DataFrame, ml_lags: List[int], weights_config: Dict
             
             best_hits_per_period.append({'period': actual_outcome['期号'], 'best_red_hits': period_max_red_hits, 'blue_hit': period_blue_hit_on_max_red, 'prize': get_prize_level(period_max_red_hits, period_blue_hit_on_max_red)})
 
-        # 打印进度
         if current_iter == 1 or current_iter % 10 == 0 or current_iter == num_periods:
             elapsed = time.time() - start_time
             avg_time = elapsed / current_iter
@@ -812,27 +816,26 @@ def objective(trial: optuna.trial.Trial, df_for_opt: pd.DataFrame, ml_lags: List
     """Optuna 的目标函数，用于评估一组给定的权重参数的好坏。"""
     trial_weights = {}
     
-    # 动态地从DEFAULT_WEIGHTS构建搜索空间
+    # [修改] 动态地从DEFAULT_WEIGHTS构建搜索空间，移除组合数量的优化
     for key, value in DEFAULT_WEIGHTS.items():
+        if key in ['NUM_COMBINATIONS_TO_GENERATE', 'BACKTEST_NUM_COMBINATIONS_TO_GENERATE']:
+            continue # 跳过对推荐注数的优化
+
         if isinstance(value, int):
-            if 'NUM_COMBINATIONS' in key: trial_weights[key] = trial.suggest_int(key, 5, 15)
-            elif 'TOP_N' in key: trial_weights[key] = trial.suggest_int(key, 18, 28)
+            if 'TOP_N' in key: trial_weights[key] = trial.suggest_int(key, 18, 28)
             else: trial_weights[key] = trial.suggest_int(key, max(0, value - 2), value + 2)
         elif isinstance(value, float):
-            # 对不同类型的浮点数使用不同的搜索范围
             if any(k in key for k in ['PERCENT', 'FACTOR', 'SUPPORT', 'CONFIDENCE']):
                 trial_weights[key] = trial.suggest_float(key, value * 0.5, value * 1.5)
-            else: # 对权重参数使用更宽的搜索范围
+            else:
                 trial_weights[key] = trial.suggest_float(key, value * 0.5, value * 2.0)
 
     full_trial_weights = DEFAULT_WEIGHTS.copy()
     full_trial_weights.update(trial_weights)
     
-    # 在快速回测中评估这组权重
     with SuppressOutput():
         _, backtest_stats = run_backtest(df_for_opt, ml_lags, full_trial_weights, arm_rules, OPTIMIZATION_BACKTEST_PERIODS)
         
-    # 定义一个分数来衡量表现，高奖金等级的权重更高
     prize_weights = {'一等奖': 1000, '二等奖': 200, '三等奖': 50, '四等奖': 10, '五等奖': 2, '六等奖': 1}
     score = sum(prize_weights.get(p, 0) * c for p, c in backtest_stats.get('prize_counts', {}).items())
     return score
@@ -852,7 +855,7 @@ def optuna_progress_callback(study: optuna.study.Study, trial: optuna.trial.Froz
 # --- 主程序入口 ---
 # ==============================================================================
 if __name__ == "__main__":
-    # 1. 初始化日志记录器，同时输出到控制台和文件
+    # 1. 初始化日志记录器
     log_filename = os.path.join(SCRIPT_DIR, f"ssq_analysis_output_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.txt")
     file_handler = logging.FileHandler(log_filename, 'w', 'utf-8')
     file_handler.setFormatter(detailed_formatter)
@@ -862,7 +865,7 @@ if __name__ == "__main__":
     logger.info("--- 双色球数据分析与推荐系统 ---")
     logger.info("启动数据加载和预处理...")
 
-    # 2. 健壮的数据加载逻辑
+    # 2. 数据加载逻辑
     main_df = None
     if os.path.exists(PROCESSED_CSV_PATH):
         main_df = load_data(PROCESSED_CSV_PATH)
@@ -885,12 +888,9 @@ if __name__ == "__main__":
                         logger.info(f"预处理数据已保存到: {PROCESSED_CSV_PATH}")
                     except IOError as e:
                         logger.error(f"保存预处理数据失败: {e}")
-                else:
-                    logger.error("特征工程失败，无法生成最终数据集。")
-            else:
-                logger.error("数据清洗失败。")
-        else:
-            logger.error("原始数据加载失败。")
+                else: logger.error("特征工程失败，无法生成最终数据集。")
+            else: logger.error("数据清洗失败。")
+        else: logger.error("原始数据加载失败。")
     
     if main_df is None or main_df.empty:
         logger.critical("数据准备失败，无法继续。请检查 'ssq_data_processor.py' 是否已成功运行并生成 'shuangseqiu.csv'。程序终止。")
@@ -899,7 +899,7 @@ if __name__ == "__main__":
     logger.info(f"数据加载完成，共 {len(main_df)} 期有效数据。")
     last_period = main_df['期号'].iloc[-1]
 
-    # 3. 根据模式执行：优化或直接分析
+    # 3. 根据模式执行
     active_weights = DEFAULT_WEIGHTS.copy()
     optuna_summary = None
 
@@ -907,7 +907,6 @@ if __name__ == "__main__":
         logger.info("\n" + "="*25 + " Optuna 参数优化模式 " + "="*25)
         set_console_verbosity(logging.INFO, use_simple_formatter=False)
         
-        # 优化前先进行一次全局关联规则分析
         optuna_arm_rules = analyze_associations(main_df, DEFAULT_WEIGHTS)
         
         study = optuna.create_study(direction="maximize")
@@ -924,7 +923,7 @@ if __name__ == "__main__":
             optuna_summary = {"status": "中断", "error": str(e)}
             logger.warning("优化中断，将使用默认权重继续分析。")
     
-    # 4. 切换到报告模式并打印报告头
+    # 4. 切换到报告模式
     report_formatter = logging.Formatter('%(message)s')
     file_handler.setFormatter(report_formatter)
     global_console_handler.setFormatter(report_formatter)
@@ -957,7 +956,7 @@ if __name__ == "__main__":
     
     if not backtest_results_df.empty:
         num_periods_tested = len(backtest_results_df['period'].unique())
-        num_combos_per_period = active_weights.get('NUM_COMBINATIONS_TO_GENERATE', 10)
+        num_combos_per_period = active_weights.get('BACKTEST_NUM_COMBINATIONS_TO_GENERATE', 10)
         total_bets = len(backtest_results_df)
         logger.info(f"回测周期: 最近 {num_periods_tested} 期 | 每期注数: {num_combos_per_period} | 总投入注数: {total_bets}")
         logger.info("\n--- 1. 奖金与回报分析 ---")
@@ -992,11 +991,31 @@ if __name__ == "__main__":
     logger.info("\n--- 单式推荐 ---")
     for line in final_rec_strings: logger.info(line)
     
-    logger.info("\n--- 复式参考 ---")
-    if final_scores and final_scores.get('red_scores'):
-        top_7_red = sorted([n for n, _ in sorted(final_scores['red_scores'].items(), key=lambda x: x[1], reverse=True)[:7]])
-        top_7_blue = sorted([n for n, _ in sorted(final_scores['blue_scores'].items(), key=lambda x: x[1], reverse=True)[:7]])
-        logger.info(f"  红球 (Top 7): {' '.join(f'{n:02d}' for n in top_7_red)}")
-        logger.info(f"  蓝球 (Top 7): {' '.join(f'{n:02d}' for n in top_7_blue)}")
+    # [修改] 复式参考逻辑，基于最终推荐的单式号码进行统计
+    logger.info("\n--- 复式参考 (源自上方推荐) ---")
+    if final_recs:
+        all_reds = [red for rec in final_recs for red in rec['combination']['red']]
+        all_blues = [rec['combination']['blue'] for rec in final_recs]
+
+        red_counts = Counter(all_reds)
+        blue_counts = Counter(all_blues)
+
+        # 提取出现次数最多的号码
+        top_7_red = sorted([num for num, count in red_counts.most_common(7)])
+        top_7_blue = sorted([num for num, count in blue_counts.most_common(7)])
+        
+        unique_red_count = len(red_counts)
+        unique_blue_count = len(blue_counts)
+
+        logger.info(f"  (总共覆盖 {unique_red_count} 个不同红球, {unique_blue_count} 个不同蓝球)")
+
+        if len(top_7_red) >= 7 and len(top_7_blue) >= 1:
+             logger.info(f"  红球 (Top {len(top_7_red)}): {' '.join(f'{n:02d}' for n in top_7_red)}")
+             logger.info(f"  蓝球 (Top {len(top_7_blue)}): {' '.join(f'{n:02d}' for n in top_7_blue)}")
+        else:
+            logger.info("  推荐组合的多样性不足，无法生成有效的 7+7 复式。")
+    else:
+        logger.info("  没有生成单式推荐，无法提取复式号码。")
+
     
     logger.info("\n" + "="*60 + f"\n--- 报告结束 (详情请查阅: {os.path.basename(log_filename)}) ---\n")
