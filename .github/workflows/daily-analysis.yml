@@ -110,7 +110,7 @@ jobs:
         echo "--- Staging and Committing Files ---"
         
         # 暂存数据文件、固定文件名的报告
-        git add ssq.csv latest_ssq_analysis.txt latest_ssq_calculation.txt
+        git add shuangseqiu.csv latest_ssq_analysis.txt latest_ssq_calculation.txt
         
         # 暂存所有带时间戳的报告文件（git add会智能处理新增和被删除的文件）
         git add ssq_analysis_output_*.txt ssq_bonus_check_*.txt
