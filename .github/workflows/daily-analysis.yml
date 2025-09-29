@@ -41,6 +41,7 @@ jobs:
       run: python ssq_data_processor.py
 
     - name: Step 2 - Run analysis script to generate new prediction report
+      # [文件名确认] 确保执行的是您指定的分析脚本 ssq_analyzer.py
       run: python ssq_analyzer.py
 
     - name: Step 3 - Run bonus calculation script to check previous report
@@ -51,14 +52,13 @@ jobs:
       run: |
         # 定义一个可重用的函数来处理文件
         # 参数1: 文件名前缀 (e.g., "ssq_analysis_output")
-        # 参数2: 固定文件名 (e.g., "ssq_analysis.txt")
+        # 参数2: 固定文件名 (e.g., "latest_ssq_analysis.txt")
         process_files() {
           local prefix=$1
           local fixed_name=$2
           local keep=3
           echo "--- Processing files with prefix: ${prefix}_*.txt ---"
           
-          # 查找所有相关文件并按名称排序（时间戳排序）
           mapfile -t files < <(find . -maxdepth 1 -name "${prefix}_*.txt" -print0 | xargs -0 ls -1 | sort)
           
           local count=${#files[@]}
@@ -69,7 +69,6 @@ jobs:
             return
           fi
 
-          # 1. 复制最新的一个为固定文件名
           latest_file="${files[$((count - 1))]}"
           if [ -f "$latest_file" ]; then
             cp "$latest_file" "$fixed_name"
@@ -78,7 +77,6 @@ jobs:
             echo "Warning: Latest file '$latest_file' not found for copying."
           fi
 
-          # 2. 清理旧文件，只保留最新的3个
           if [ "$count" -gt "$keep" ]; then
             num_to_delete=$((count - keep))
             echo "Keeping latest $keep files. Deleting $num_to_delete oldest files:"
@@ -95,7 +93,7 @@ jobs:
           echo "--- Finished processing for prefix: $prefix ---"
         }
 
-        # 调用函数处理两类报告
+        # [文件名确认] 调用函数处理两类报告，并生成您指定的固定文件名
         process_files "ssq_analysis_output" "latest_ssq_analysis.txt"
         process_files "ssq_bonus_check" "latest_ssq_calculation.txt"
 
@@ -109,11 +107,13 @@ jobs:
         set -e
         echo "--- Staging and Committing Files ---"
         
-        # 暂存数据文件、固定文件名的报告
-        git add shuangseqiu.csv latest_ssq_analysis.txt latest_ssq_calculation.txt
-        
-        # 暂存所有带时间戳的报告文件（git add会智能处理新增和被删除的文件）
-        git add ssq_analysis_output_*.txt ssq_bonus_check_*.txt
+        # [核心修复] 使用 'git add .' 命令。
+        # 这是最关键的修改。它会自动暂存当前目录下的所有变更，包括：
+        # 1. 新增的文件 (如新生成的 ssq_analysis_output_...txt)
+        # 2. 修改过的文件 (如更新后的 shuangseqiu.csv 和被覆盖的 latest_ssq_analysis.txt)
+        # 3. 被删除的文件 (如被清理脚本 rm 掉的旧报告)
+        # 这确保了每一次提交都完整地反映了工作区的最终状态。
+        git add .
 
         echo "Current git status:"
         git status --porcelain
@@ -121,6 +121,7 @@ jobs:
         if git diff --staged --quiet; then
           echo "No changes to commit."
         else
+          # [文件名确认] 在 commit 信息中，我们仍然可以引用日期
           git commit -m "Auto update: Data, analysis, and bonus check for $(date +'%Y-%m-%d')"
           echo "Changes committed."
         fi
@@ -135,4 +136,4 @@ jobs:
       uses: ad-m/github-push-action@v0.8.0
       with:
         github_token: ${{ secrets.GITHUB_TOKEN }}
-        branch: ${{ github.ref_name }}```
+        branch: ${{ github.ref_name }}
