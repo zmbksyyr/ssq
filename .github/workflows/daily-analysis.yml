@@ -1,8 +1,9 @@
-name: Shuangseqiu Data and Analysis
+name: Shuangseqiu Full Process - Data, Analysis, and Bonus Check
 
 on:
   schedule:
     # UTC时间周日、周二、周四的 22:00，对应北京时间周一、周三、周五的 6:00
+    # 在开奖日（周日、周二、周四）的次日凌晨运行，确保能获取到最新开奖数据
     - cron: '0 22 * * 0,2,4'
   workflow_dispatch:
 
@@ -10,14 +11,13 @@ jobs:
   daily_process:
     runs-on: ubuntu-latest
     env:
-      TZ: Asia/Shanghai # Set timezone for consistent date/time operations
+      TZ: Asia/Shanghai # 设置时区以确保日志时间一致
 
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
       with:
-        fetch-depth: 0 # Fetch all history for git operations
-        # token: ${{ secrets.PAT_FOR_CHECKOUT_AND_PUSH }} # Optional: If GITHUB_TOKEN has permission issues for subsequent pushes or certain repo setups. Usually GITHUB_TOKEN is fine.
+        fetch-depth: 0 # 获取所有历史记录以进行git操作
 
     - name: Set up Python 3.9
       uses: actions/setup-python@v5
@@ -37,52 +37,67 @@ jobs:
         python -m pip install --upgrade pip
         pip install -r requirements.txt
 
-    - name: Run data acquisition script
+    - name: Step 1 - Run data acquisition script to update CSV
       run: python ssq_data_processor.py
 
-    - name: Run bonus calculation script
+    - name: Step 2 - Run analysis script to generate new prediction report
+      run: python ssq.py
+
+    - name: Step 3 - Run bonus calculation script to check previous report
       run: python ssq_bonus_calculation.py
       
-    - name: Run analysis script
-      run: python ssq_analyzer.py
-
-    - name: Create fixed filename copy of latest analysis report
+    - name: Step 4 - Clean old files and create fixed-name copies
+      id: file_management
       run: |
-        set -e
-        latest_report_file=$(find . -maxdepth 1 -name 'ssq_analysis_output_*.txt' -print0 | xargs -0 ls -1 | sort -r | head -n 1)
-        if [ -n "$latest_report_file" ] && [ -f "$latest_report_file" ]; then
-          cp "$latest_report_file" "latest_ssq_analysis.txt"
-          echo "Created fixed filename copy: latest_ssq_analysis.txt from $latest_report_file"
-        else
-          echo "No ssq_analysis_output_*.txt files found, or latest_report_file variable is empty. Skipping copy."
-        fi
+        # 定义一个可重用的函数来处理文件
+        # 参数1: 文件名前缀 (e.g., "ssq_analysis_output")
+        # 参数2: 固定文件名 (e.g., "ssq_analysis.txt")
+        process_files() {
+          local prefix=$1
+          local fixed_name=$2
+          local keep=3
+          echo "--- Processing files with prefix: ${prefix}_*.txt ---"
+          
+          # 查找所有相关文件并按名称排序（时间戳排序）
+          mapfile -t files < <(find . -maxdepth 1 -name "${prefix}_*.txt" -print0 | xargs -0 ls -1 | sort)
+          
+          local count=${#files[@]}
+          echo "Found $count files."
+          
+          if [ "$count" -eq 0 ]; then
+            echo "No files found with this prefix. Skipping."
+            return
+          fi
 
-    - name: Clean old reports - keep only latest 3
-      run: |
-        set -e
-        echo "--- Cleaning old analysis reports ---"
-        mapfile -t reports < <(find . -maxdepth 1 -name 'ssq_analysis_output_*.txt' -print0 | xargs -0 ls -1 | sort)
-        count=${#reports[@]}
-        keep=3
-        echo "Found $count reports. Configured to keep $keep latest."
-        if [ "$count" -gt "$keep" ]; then
-          num_to_delete=$((count - keep))
-          echo "Deleting $num_to_delete oldest reports:"
-          for i in $(seq 0 $((num_to_delete - 1))); do
-            report_to_delete="${reports[$i]}"
-            if [ -f "$report_to_delete" ]; then
-              echo "Removing: $report_to_delete"
-              rm "$report_to_delete"
-            else
-              echo "Skipping (not found): $report_to_delete"
-            fi
-          done
-        else
-          echo "No cleanup needed. $count report(s) found (≤ $keep)."
-        fi
-        echo "Listing remaining analysis reports:"
-        find . -maxdepth 1 -name 'ssq_analysis_output_*.txt' | sort
-        echo "--- Finished cleaning reports ---"
+          # 1. 复制最新的一个为固定文件名
+          latest_file="${files[$((count - 1))]}"
+          if [ -f "$latest_file" ]; then
+            cp "$latest_file" "$fixed_name"
+            echo "Copied latest file '$latest_file' to '$fixed_name'"
+          else
+            echo "Warning: Latest file '$latest_file' not found for copying."
+          fi
+
+          # 2. 清理旧文件，只保留最新的3个
+          if [ "$count" -gt "$keep" ]; then
+            num_to_delete=$((count - keep))
+            echo "Keeping latest $keep files. Deleting $num_to_delete oldest files:"
+            for i in $(seq 0 $((num_to_delete - 1))); do
+              file_to_delete="${files[$i]}"
+              if [ -f "$file_to_delete" ]; then
+                echo "Removing: $file_to_delete"
+                rm "$file_to_delete"
+              fi
+            done
+          else
+            echo "No cleanup needed ($count files found <= $keep)."
+          fi
+          echo "--- Finished processing for prefix: $prefix ---"
+        }
+
+        # 调用函数处理两类报告
+        process_files "ssq_analysis_output" "ssq_analysis.txt"
+        process_files "ssq_bonus_check" "ssq_bonus_check.txt"
 
     - name: Configure Git
       run: |
@@ -93,56 +108,31 @@ jobs:
       run: |
         set -e
         echo "--- Staging and Committing Files ---"
-        git add -u
-        files_to_commit=(
-          "shuangseqiu.csv"
-          "latest_ssq_analysis.txt"
-          "latest_ssq_calculation.txt"
-          "weights_config.json"
-        )
-        for file_path in "${files_to_commit[@]}"; do
-          if [ -f "$file_path" ]; then
-            git add "$file_path"
-            echo "Staged: $file_path"
-          else
-            echo "Skipping (not found): $file_path"
-          fi
-        done
-        find . -maxdepth 1 -name 'ssq_analysis_output_*.txt' -print0 | xargs -0 -r git add
-        echo "Staged any new ssq_analysis_output_*.txt files."
+        
+        # 暂存数据文件、固定文件名的报告
+        git add ssq.csv ssq_analysis.txt ssq_bonus_check.txt
+        
+        # 暂存所有带时间戳的报告文件（git add会智能处理新增和被删除的文件）
+        git add ssq_analysis_output_*.txt ssq_bonus_check_*.txt
+
         echo "Current git status:"
         git status --porcelain
+        
         if git diff --staged --quiet; then
           echo "No changes to commit."
         else
-          git commit -m "Auto update: Data and Analysis results $(date +'%Y-%m-%d %H:%M:%S %Z')"
+          git commit -m "Auto update: Data, analysis, and bonus check for $(date +'%Y-%m-%d')"
           echo "Changes committed."
         fi
         echo "--- Finished Staging and Committing ---"
 
     - name: Pull remote changes to sync before push
       run: |
-        echo "Current branch: $(git rev-parse --abbrev-ref HEAD)"
-        echo "Target branch from GITHUB_REF_NAME: ${{ github.ref_name }}"
-        # Set pull strategy to merge (default, but explicit) or rebase
-        # For automated processes, merge is often safer if conflicts are unlikely
-        # or if a merge commit is acceptable.
-        git config pull.rebase false # Use 'true' for rebase, 'false' for merge
-        
-        # Pull changes from the remote branch.
-        # This will attempt to merge remote changes. If there are conflicts
-        # that Git cannot auto-resolve, this step will fail, and the workflow will stop.
-        # Using --no-edit to avoid an editor opening for the merge commit message.
+        git config pull.rebase false
         git pull origin ${{ github.ref_name }} --no-edit
-        echo "Successfully pulled and merged remote changes (if any)."
-      # Optional: Add retry logic or specific conflict handling if needed,
-      # but generally, failing on conflict is the safest default for CI.
 
     - name: Push changes
       uses: ad-m/github-push-action@v0.8.0
       with:
         github_token: ${{ secrets.GITHUB_TOKEN }}
-        # Use github.ref_name to get the short branch name (e.g., "main")
-        # This is generally more robust for git commands than the full github.ref (e.g., "refs/heads/main")
-        branch: ${{ github.ref_name }}
-        # force: false # Default. Do not force push unless you absolutely need to and understand the consequences.
+        branch: ${{ github.ref_name }}```
