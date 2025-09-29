@@ -29,12 +29,17 @@ import csv
 # --- 配置区 ---
 # ==============================================================================
 
-# 获取脚本所在的目录，确保路径的相对性
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+# 获取当前脚本所在的目录 (e.g., /path/to/your_project/py)
+script_dir = os.path.dirname(os.path.abspath(__file__))
 
-# 目标CSV文件的完整路径。此文件将存储所有处理和合并后的数据。
+# <--- MODIFIED: 关键修改 ---
+# 获取项目的根目录，即 py/ 文件夹的上一级目录
+root_dir = os.path.dirname(script_dir)
+
+# [核心] 目标CSV文件的完整路径。现在它指向项目的根目录。
 # 您可以根据需要修改文件名，例如改为 'ssq_results.csv'。
-CSV_FILE_PATH = os.path.join(SCRIPT_DIR, 'shuangseqiu.csv')
+CSV_FILE_PATH = os.path.join(root_dir, 'shuangseqiu.csv')
+# <--- END OF MODIFICATION ---
 
 # 网络数据源URL
 # TXT源：提供包括日期在内的全量历史数据
