@@ -41,7 +41,7 @@ jobs:
       run: python ssq_data_processor.py
 
     - name: Step 2 - Run analysis script to generate new prediction report
-      run: python ssq.py
+      run: python ssq_analyzer.py
 
     - name: Step 3 - Run bonus calculation script to check previous report
       run: python ssq_bonus_calculation.py
