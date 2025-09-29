@@ -1,8 +1,6 @@
 pandas
-numpy
-requests
-beautifulsoup4
-optuna
-lightgbm
-mlxtend
-lxml
+numpy 
+lightgbm 
+joblib 
+tqdm 
+scikit-learn
