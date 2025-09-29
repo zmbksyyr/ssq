@@ -2,8 +2,6 @@ name: Shuangseqiu Full Process - Data, Analysis, and Bonus Check
 
 on:
   schedule:
-    # UTC时间周日、周二、周四的 22:00，对应北京时间周一、周三、周五的 6:00
-    # 在开奖日（周日、周二、周四）的次日凌晨运行，确保能获取到最新开奖数据
     - cron: '0 22 * * 0,2,4'
   workflow_dispatch:
 
@@ -11,13 +9,13 @@ jobs:
   daily_process:
     runs-on: ubuntu-latest
     env:
-      TZ: Asia/Shanghai # 设置时区以确保日志时间一致
+      TZ: Asia/Shanghai
 
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
       with:
-        fetch-depth: 0 # 获取所有历史记录以进行git操作
+        fetch-depth: 0
 
     - name: Set up Python 3.9
       uses: actions/setup-python@v5
@@ -28,55 +26,53 @@ jobs:
       uses: actions/cache@v4
       with:
         path: ~/.cache/pip
-        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+        # [MODIFIED] requirements.txt 现在位于 py/ 文件夹
+        key: ${{ runner.os }}-pip-${{ hashFiles('**/py/requirements.txt') }}
         restore-keys: |
           ${{ runner.os }}-pip-
 
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install -r requirements.txt
+        # [MODIFIED] 指定 py/ 文件夹下的依赖文件
+        pip install -r py/requirements.txt
 
-    - name: Step 1 - Run data acquisition script to update CSV
+    - name: Step 1 - Run data acquisition script
+      # [MODIFIED] 使用 working-directory 指令，让命令在 py/ 文件夹内执行
+      working-directory: ./py
       run: python ssq_data_processor.py
 
-    - name: Step 2 - Run analysis script to generate new prediction report
-      # [文件名确认] 确保执行的是您指定的分析脚本 ssq_analyzer.py
+    - name: Step 2 - Run analysis script
+      working-directory: ./py
       run: python ssq_analyzer.py
 
-    - name: Step 3 - Run bonus calculation script to check previous report
+    - name: Step 3 - Run bonus calculation script
+      working-directory: ./py
       run: python ssq_bonus_calculation.py
       
-    - name: Step 4 - Clean old files and create fixed-name copies
+    - name: Step 4 - Clean reports and create fixed-name copies
       id: file_management
       run: |
-        # 定义一个可重用的函数来处理文件
-        # 参数1: 文件名前缀 (e.g., "ssq_analysis_output")
-        # 参数2: 固定文件名 (e.g., "latest_ssq_analysis.txt")
+        # 函数逻辑不变，但下面的调用路径已更新
         process_files() {
-          local prefix=$1
-          local fixed_name=$2
+          local search_dir=$1
+          local prefix=$2
+          local fixed_name=$3
           local keep=3
-          echo "--- Processing files with prefix: ${prefix}_*.txt ---"
-          
-          mapfile -t files < <(find . -maxdepth 1 -name "${prefix}_*.txt" -print0 | xargs -0 ls -1 | sort)
-          
+          echo "--- Processing files in '${search_dir}' with prefix: '${prefix}_*.txt' ---"
+          mapfile -t files < <(find "${search_dir}" -maxdepth 1 -name "${prefix}_*.txt" -print0 | xargs -0 ls -1 | sort)
           local count=${#files[@]}
           echo "Found $count files."
-          
           if [ "$count" -eq 0 ]; then
-            echo "No files found with this prefix. Skipping."
+            echo "No files found. Skipping."
             return
           fi
-
           latest_file="${files[$((count - 1))]}"
           if [ -f "$latest_file" ]; then
-            cp "$latest_file" "$fixed_name"
-            echo "Copied latest file '$latest_file' to '$fixed_name'"
-          else
-            echo "Warning: Latest file '$latest_file' not found for copying."
+            # [MODIFIED] 将报告复制到根目录
+            cp "$latest_file" "./$fixed_name"
+            echo "Copied latest file '$latest_file' to './$fixed_name'"
           fi
-
           if [ "$count" -gt "$keep" ]; then
             num_to_delete=$((count - keep))
             echo "Keeping latest $keep files. Deleting $num_to_delete oldest files:"
@@ -87,45 +83,32 @@ jobs:
                 rm "$file_to_delete"
               fi
             done
-          else
-            echo "No cleanup needed ($count files found <= $keep)."
           fi
-          echo "--- Finished processing for prefix: $prefix ---"
         }
 
-        # [文件名确认] 调用函数处理两类报告，并生成您指定的固定文件名
-        process_files "ssq_analysis_output" "latest_ssq_analysis.txt"
-        process_files "ssq_bonus_check" "latest_ssq_calculation.txt"
+        # [MODIFIED] 调用函数，指定在 report/ 文件夹中查找
+        process_files "report" "ssq_analysis_output" "latest_ssq_analysis.txt"
+        process_files "report" "ssq_bonus_check" "latest_ssq_calculation.txt"
 
     - name: Configure Git
       run: |
         git config --local user.email "action@github.com"
         git config --local user.name "GitHub Action"
 
-    - name: Commit updated files
+    - name: Commit all changes
       run: |
         set -e
-        echo "--- Staging and Committing Files ---"
-        
-        # [核心修复] 使用 'git add .' 命令。
-        # 这是最关键的修改。它会自动暂存当前目录下的所有变更，包括：
-        # 1. 新增的文件 (如新生成的 ssq_analysis_output_...txt)
-        # 2. 修改过的文件 (如更新后的 shuangseqiu.csv 和被覆盖的 latest_ssq_analysis.txt)
-        # 3. 被删除的文件 (如被清理脚本 rm 掉的旧报告)
-        # 这确保了每一次提交都完整地反映了工作区的最终状态。
+        echo "--- Staging and Committing All Changes ---"
+        # [MODIFIED] 使用 'git add .' 仍然是最佳选择
+        # 它会自动处理所有目录下的新增、修改和删除
         git add .
-
         echo "Current git status:"
         git status --porcelain
-        
         if git diff --staged --quiet; then
           echo "No changes to commit."
         else
-          # [文件名确认] 在 commit 信息中，我们仍然可以引用日期
           git commit -m "Auto update: Data, analysis, and bonus check for $(date +'%Y-%m-%d')"
-          echo "Changes committed."
         fi
-        echo "--- Finished Staging and Committing ---"
 
     - name: Pull remote changes to sync before push
       run: |
