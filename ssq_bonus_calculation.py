@@ -1,435 +1,206 @@
-# -*- coding: utf-8 -*-
-"""
-双色球推荐结果验证与奖金计算器
-=================================
-
-本脚本旨在自动评估 `ssq_analyzer.py` 生成的推荐号码的实际表现。
-
-工作流程:
-1.  读取 `shuangseqiu.csv` 文件，获取所有历史开奖数据。
-2.  确定最新的一期为“评估期”，倒数第二期为“报告数据截止期”。
-3.  根据“报告数据截止期”，在当前目录下查找对应的分析报告文件
-    (ssq_analysis_output_*.txt)。
-4.  从找到的报告中解析出“单式推荐”和“复式参考”的号码。
-5.  将复式参考号码展开为所有可能的单式投注。
-6.  使用“评估期”的实际开奖号码，核对所有推荐投注的中奖情况。
-7.  计算总奖金，并将详细的中奖结果（包括中奖号码、奖级、金额）
-    追加记录到主报告文件 `latest_ssq_calculation.txt` 中。
-8.  主报告文件会自动管理记录数量，只保留最新的N条评估记录和错误日志。
-"""
-
+import pandas as pd
+import datetime
 import os
-import re
 import glob
-import csv
-from itertools import combinations
-from datetime import datetime
-import traceback
-from typing import Optional, Tuple, List, Dict # <--- [FIX] 导入兼容的类型提示
+import re
+from math import comb
 
-# ==============================================================================
-# --- 配置区 ---
-# ==============================================================================
+# --- 1. 全局常量定义 ---
 
-# 脚本需要查找的分析报告文件名的模式
-REPORT_PATTERN = "ssq_analysis_output_*.txt"
-# 开奖数据源CSV文件
-CSV_FILE = "shuangseqiu.csv"
-# 最终生成的主评估报告文件名
-MAIN_REPORT_FILE = "latest_ssq_calculation.txt"
-
-# 主报告文件中保留的最大记录数
-MAX_NORMAL_RECORDS = 10  # 保留最近10次评估
-MAX_ERROR_LOGS = 20      # 保留最近20条错误日志
-
-# 奖金对照表 (元)
-PRIZE_TABLE = {
-    1: 5_000_000,  # 一等奖 (浮动，此处为估算)
-    2: 150_000,    # 二等奖 (浮动，此处为估算)
-    3: 3_000,      # 三等奖
-    4: 200,        # 四等奖
-    5: 10,         # 五等奖
-    6: 5,          # 六等奖
+# 奖金规则与名称定义
+PRIZE_RULES = {
+    (6, 1): 5000000, (6, 0): 100000, (5, 1): 3000, (5, 0): 200,
+    (4, 1): 200, (4, 0): 10, (3, 1): 10, (2, 1): 5, (1, 1): 5, (0, 1): 5
+}
+PRIZE_NAMES = {
+    (6, 1): "一等奖", (6, 0): "二等奖", (5, 1): "三等奖", 
+    (5, 0): "四等奖", (4, 1): "四等奖", (4, 0): "五等奖", 
+    (3, 1): "五等奖", (2, 1): "六等奖", (1, 1): "六等奖", (0, 1): "六等奖"
 }
 
-# ==============================================================================
-# --- 工具函数 ---
-# ==============================================================================
+# --- 2. 核心功能函数 ---
 
-def log_message(message: str, level: str = "INFO"):
-    """一个简单的日志打印函数，用于在控制台显示脚本执行状态。"""
-    print(f"[{level}] {datetime.now().strftime('%H:%M:%S')} - {message}")
-
-def robust_file_read(file_path: str) -> Optional[str]: # <--- [FIX] 使用 Optional[str] 替代 str | None
+def find_matching_report(target_issue):
     """
-    一个健壮的文件读取函数，能自动尝试多种编码格式。
-
-    Args:
-        file_path (str): 待读取文件的路径。
-
-    Returns:
-        Optional[str]: 文件内容字符串，如果失败则返回 None。
+    在当前目录查找所有报告文件，并返回与目标期号匹配的报告文件路径。
     """
-    if not os.path.exists(file_path):
-        log_message(f"文件未找到: {file_path}", "ERROR")
-        return None
-    encodings = ['utf-8', 'gbk', 'latin-1']
-    for encoding in encodings:
+    report_files = glob.glob("ssq_analysis_output_*.txt")
+    if not report_files:
+        return None, "错误: 当前目录未找到任何 'ssq_analysis_output_*.txt' 报告文件。"
+
+    for report_file in sorted(report_files, reverse=True): # 从最新的开始找
         try:
-            with open(file_path, 'r', encoding=encoding) as f:
-                return f.read()
-        except (UnicodeDecodeError, IOError):
+            with open(report_file, 'r', encoding='utf-8') as f:
+                for line in f:
+                    if line.startswith("Prediction_Target_Issue:"):
+                        prediction_target = line.strip().split(": ")[1]
+                        if str(prediction_target) == str(target_issue):
+                            return report_file, None # 找到了匹配的文件
+                        else:
+                            break # 元数据不匹配，检查下一个文件
+        except Exception as e:
+            print(f"警告: 读取文件 {report_file} 时出错: {e}")
             continue
-    log_message(f"无法使用任何支持的编码打开文件: {file_path}", "ERROR")
-    return None
+            
+    return None, f"错误: 未找到预测目标期号为 '{target_issue}' 的报告文件。"
 
-# ==============================================================================
-# --- 数据解析与查找模块 ---
-# ==============================================================================
-
-def get_period_data_from_csv(csv_content: str) -> Tuple[Optional[Dict], Optional[List]]: # <--- [FIX] 使用 Tuple 和 Optional 替代
+def parse_report_bets(filepath):
     """
-    从CSV文件内容中解析出所有期号的开奖数据。
-
-    Args:
-        csv_content (str): 从CSV文件读取的字符串内容。
-
-    Returns:
-        Tuple[Optional[Dict], Optional[List]]:
-            - 一个以期号为键，开奖数据为值的字典。
-            - 一个按升序排序的期号列表。
-            如果解析失败则返回 (None, None)。
+    解析指定的报告文件，提取单式和复式投注。
     """
-    if not csv_content:
-        log_message("输入的CSV内容为空。", "WARNING")
-        return None, None
-    period_map, periods_list = {}, []
-    try:
-        reader = csv.reader(csv_content.splitlines())
-        next(reader)  # 跳过表头
-        for i, row in enumerate(reader):
-            if len(row) >= 4 and re.match(r'^\d{4,7}$', row[0]):
-                try:
-                    period, date, red_str, blue_str = row[0], row[1], row[2], row[3]
-                    red_balls = sorted(map(int, red_str.split(',')))
-                    blue_ball = int(blue_str)
-                    if len(red_balls) != 6 or not all(1 <= r <= 33 for r in red_balls) or not (1 <= blue_ball <= 16):
-                        continue
-                    period_map[period] = {'date': date, 'red': red_balls, 'blue': blue_ball}
-                    periods_list.append(period)
-                except (ValueError, IndexError):
-                    log_message(f"CSV文件第 {i+2} 行数据格式无效，已跳过: {row}", "WARNING")
-    except Exception as e:
-        log_message(f"解析CSV数据时发生严重错误: {e}", "ERROR")
-        return None, None
+    single_bets = []
+    duplex_bet = {'red': [], 'blue': []}
     
-    if not period_map:
-        log_message("未能从CSV中解析到任何有效的开奖数据。", "WARNING")
-        return None, None
-        
-    return period_map, sorted(periods_list, key=int)
+    in_single_section = False
+    in_duplex_section = False
 
-def find_matching_report(target_period: str) -> Optional[str]: # <--- [FIX] 使用 Optional[str] 替代 str | None
-    """
-    在当前目录查找其数据截止期与 `target_period` 匹配的最新分析报告。
-
-    Args:
-        target_period (str): 目标报告的数据截止期号。
-
-    Returns:
-        Optional[str]: 找到的报告文件的路径，如果未找到则返回 None。
-    """
-    log_message(f"正在查找数据截止期为 {target_period} 的分析报告...")
-    candidates = []
-    # 使用 SCRIPT_DIR 确保在任何工作目录下都能找到与脚本同级的报告文件
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    for file_path in glob.glob(os.path.join(script_dir, REPORT_PATTERN)):
-        content = robust_file_read(file_path)
-        if not content: continue
-        
-        match = re.search(r'分析基于数据:\s*截至\s*(\d+)\s*期', content)
-        if match and match.group(1) == target_period:
-            try:
-                # 从文件名中提取时间戳以确定最新报告
-                timestamp_str_match = re.search(r'_(\d{8}_\d{6})\.txt$', file_path)
-                if timestamp_str_match:
-                    timestamp_str = timestamp_str_match.group(1)
-                    timestamp = datetime.strptime(timestamp_str, "%Y%m%d_%H%M%S")
-                    candidates.append((timestamp, file_path))
-            except (AttributeError, ValueError):
+    with open(filepath, 'r', encoding='utf-8') as f:
+        for line in f:
+            line = line.strip()
+            if "【单式推荐 (10组)】" in line:
+                in_single_section = True
+                in_duplex_section = False
                 continue
-    
-    if not candidates:
-        log_message(f"未找到数据截止期为 {target_period} 的分析报告。", "WARNING")
-        return None
-        
-    candidates.sort(reverse=True)
-    latest_report = candidates[0][1]
-    log_message(f"找到匹配的最新报告: {os.path.basename(latest_report)}", "INFO")
-    return latest_report
+            if "【7+7 复式推荐 (1组)】" in line:
+                in_single_section = False
+                in_duplex_section = True
+                continue
 
-def parse_recommendations_from_report(content: str) -> Tuple[List, List, List]: # <--- [FIX] 使用 Tuple 和 List
-    """
-    从分析报告内容中解析出单式和复式推荐号码。
-
-    Args:
-        content (str): 分析报告的文本内容。
-
-    Returns:
-        Tuple[List, List, List]:
-            - 单式推荐列表, e.g., [([1,2,3,4,5,6], 7), ...]
-            - 复式红球列表, e.g., [1,2,3,4,5,6,7]
-            - 复式蓝球列表, e.g., [8,9,10]
-    """
-    # 解析单式推荐
-    rec_pattern = re.compile(r'注\s*\d+:\s*红球\s*\[([\d\s]+)\]\s*蓝球\s*\[(\d+)\]')
-    rec_tickets = []
-    for match in rec_pattern.finditer(content):
-        try:
-            reds = sorted(map(int, match.group(1).split()))
-            blue = int(match.group(2))
-            if len(reds) == 6: rec_tickets.append((reds, blue))
-        except ValueError: continue
-    
-    # 解析复式推荐
-    complex_reds, complex_blues = [], []
-    red_match = re.search(r'红球\s*\(Top\s*\d+\):\s*([\d\s]+)', content)
-    if red_match:
-        try: complex_reds = sorted(map(int, red_match.group(1).split()))
-        except ValueError: pass
-        
-    blue_match = re.search(r'蓝球\s*\(Top\s*\d+\):\s*([\d\s]+)', content)
-    if blue_match:
-        try: complex_blues = sorted(map(int, blue_match.group(1).split()))
-        except ValueError: pass
-        
-    log_message(f"解析到 {len(rec_tickets)} 注单式推荐, 复式红球 {len(complex_reds)} 个, 蓝球 {len(complex_blues)} 个。")
-    return rec_tickets, complex_reds, complex_blues
-
-# ==============================================================================
-# --- 奖金计算与报告生成模块 ---
-# ==============================================================================
-
-def generate_complex_tickets(reds: List, blues: List) -> List: # <--- [FIX] 使用 List
-    """从复式号码中生成所有可能的单式投注组合。"""
-    if len(reds) < 6 or not blues: return []
-    max_tickets_limit = 20000  # 防止组合爆炸
-    
-    try:
-        # 使用数学公式预先计算组合数，避免生成超大列表
-        from math import comb
-        num_combs = comb(len(reds), 6) * len(blues)
-
-        if num_combs > max_tickets_limit:
-            log_message(f"复式号码将生成 {num_combs:,} 注，超过 {max_tickets_limit:,} 的限制，已跳过。", "WARNING")
-            return []
+            if in_single_section and "红球" in line:
+                try:
+                    reds_str = re.search(r'\[(.*?)\]', line).group(1)
+                    blue_str = re.search(r'蓝球 \[(.*?)\]', line).group(1)
+                    reds = [int(r) for r in reds_str.split(', ')]
+                    blue = int(blue_str)
+                    single_bets.append({'red': reds, 'blue': blue})
+                except Exception:
+                    continue # 忽略格式不正确的行
             
-        tickets = [(sorted(list(r_combo)), b) for r_combo in combinations(reds, 6) for b in blues]
-        log_message(f"从复式号码中成功生成 {len(tickets):,} 注投注。")
-        return tickets
-    except ImportError: # Fallback for Python < 3.8
-        log_message("math.comb 不可用，正在使用自定义函数计算组合数。您的 Python 版本可能较低。", "WARNING")
-        def combinations_count(n, k):
-            if k < 0 or k > n: return 0
-            if k == 0 or k == n: return 1
-            if k > n // 2: k = n - k
-            res = 1
-            for i in range(k): res = res * (n - i) // (i + 1)
-            return res
-        num_combs = combinations_count(len(reds), 6) * len(blues)
-        if num_combs > max_tickets_limit:
-            log_message(f"复式号码将生成 {num_combs:,} 注，超过 {max_tickets_limit:,} 的限制，已跳过。", "WARNING")
-            return []
-        tickets = [(sorted(list(r_combo)), b) for r_combo in combinations(reds, 6) for b in blues]
-        log_message(f"从复式号码中成功生成 {len(tickets):,} 注投注。")
-        return tickets
-    except Exception as e:
-        log_message(f"生成复式投注时出错: {e}", "ERROR")
-        return []
+            if in_duplex_section:
+                try:
+                    if "红球:" in line:
+                        reds_str = re.search(r'\[(.*?)\]', line).group(1)
+                        duplex_bet['red'] = [int(r) for r in reds_str.split(', ')]
+                    if "蓝球:" in line:
+                        blues_str = re.search(r'\[(.*?)\]', line).group(1)
+                        duplex_bet['blue'] = [int(b) for b in blues_str.split(', ')]
+                        in_duplex_section = False # 解析完毕
+                except Exception:
+                    continue
 
-def calculate_prize(tickets: List, prize_red: List, prize_blue: int) -> Tuple[int, Dict, List]: # <--- [FIX] 使用 Tuple, Dict, List
-    """
-    计算给定投注列表的总奖金、奖级分布和中奖详情。
+    return single_bets, duplex_bet
 
-    Args:
-        tickets (List): 投注列表, 格式为 [([r1..r6], b), ...]。
-        prize_red (List): 中奖红球列表。
-        prize_blue (int): 中奖蓝球。
+def calculate_single_prize(bet_reds, bet_blue, winning_reds, winning_blue):
+    """计算单式票的奖金和中奖等级。"""
+    red_hits = len(set(bet_reds) & winning_reds)
+    blue_hit = 1 if bet_blue == winning_blue else 0
+    hit_key = (red_hits, blue_hit)
+    
+    prize = PRIZE_RULES.get(hit_key, 0)
+    prize_name = PRIZE_NAMES.get(hit_key, "未中奖")
+    
+    return prize, prize_name, f"命中{red_hits}+{blue_hit}"
 
-    Returns:
-        Tuple[int, Dict, List]: 总奖金, 奖级分布字典, 中奖号码详情列表。
-    """
-    prize_red_set = set(prize_red)
-    breakdown = {level: 0 for level in PRIZE_TABLE}
+def calculate_duplex_prize(bet_reds, bet_blues, winning_reds, winning_blue):
+    """使用组合数学计算复式票的总奖金和奖项构成。"""
     total_prize = 0
-    winning_tickets_details = []
+    prize_breakdown = {}
+    
+    red_hits = len(set(bet_reds) & winning_reds)
+    red_misses = len(bet_reds) - red_hits
+    blue_hit = 1 if winning_blue in set(bet_blues) else 0
 
-    for red, blue in tickets:
-        red_hits = len(set(red) & prize_red_set)
-        blue_hit = blue == prize_blue
+    for (r_needed, b_needed), prize_value in PRIZE_RULES.items():
+        if r_needed > red_hits:
+            continue
         
-        level = None
-        if blue_hit:
-            if red_hits == 6: level = 1
-            elif red_hits == 5: level = 3
-            elif red_hits == 4: level = 4
-            elif red_hits == 3: level = 5
-            elif red_hits <= 2: level = 6
-        else:
-            if red_hits == 6: level = 2
-            elif red_hits == 5: level = 4
-            elif red_hits == 4: level = 5
-
-        if level and level in PRIZE_TABLE:
-            prize_amount = PRIZE_TABLE[level]
-            total_prize += prize_amount
-            breakdown[level] += 1
-            winning_tickets_details.append({'red': red, 'blue': blue, 'level': level})
+        # 计算红球组合数
+        red_combos = comb(red_hits, r_needed) * comb(red_misses, 6 - r_needed)
+        
+        # 检查蓝球是否匹配
+        if blue_hit == b_needed:
+            prize_name = PRIZE_NAMES.get((r_needed, b_needed))
+            prize_breakdown[prize_name] = prize_breakdown.get(prize_name, 0) + red_combos
+            total_prize += red_combos * prize_value
             
-    return total_prize, breakdown, winning_tickets_details
+    summary = f"总计命中 {red_hits} 个红球, {blue_hit} 个蓝球"
+    return total_prize, prize_breakdown, summary
 
-def format_winning_tickets_for_report(winning_list: List[Dict], prize_red: List, prize_blue: int) -> List[str]: # <--- [FIX]
-    """格式化中奖号码，高亮命中的数字，用于报告输出。"""
-    formatted_lines = []
-    prize_red_set = set(prize_red)
-    for ticket in winning_list:
-        red, blue, level = ticket['red'], ticket['blue'], ticket['level']
-        red_str = ' '.join(f"**{r:02d}**" if r in prize_red_set else f"{r:02d}" for r in red)
-        blue_str = f"**{blue:02d}**" if blue == prize_blue else f"{blue:02d}"
-        formatted_lines.append(f"  - 红球 [{red_str}] 蓝球 [{blue_str}]  -> {level}等奖")
-    return formatted_lines
+# --- 3. 主执行逻辑 ---
 
-def manage_report(new_entry: Optional[Dict] = None, new_error: Optional[str] = None): # <--- [FIX]
-    """
-    维护主评估报告文件，自动追加新记录并清理旧记录。
-
-    Args:
-        new_entry (Optional[Dict]): 新的评估结果字典。
-        new_error (Optional[str]): 新的错误日志字符串。
-    """
-    normal_marker, error_marker = "==== 评估记录 ====", "==== 错误日志 ===="
-    content_str = robust_file_read(MAIN_REPORT_FILE) or ""
-    
-    # 分割文件内容为记录块和错误日志
-    parts = content_str.split(error_marker)
-    normal_part = parts[0]
-    error_part = parts[1] if len(parts) > 1 else ""
-    
-    # 解析现有记录
-    normal_entries = [entry.strip() for entry in normal_part.split('='*20) if entry.strip() and normal_marker not in entry]
-    error_entries = [err.strip() for err in error_part.splitlines() if err.strip()]
-
-    # 添加新记录
-    timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    if new_entry:
-        entry_lines = [
-            f"评估时间: {timestamp}",
-            f"评估期号 (实际开奖): {new_entry['eval_period']}",
-            f"分析报告数据截止期: {new_entry['report_cutoff_period']}",
-            f"开奖号码: 红球 {new_entry['prize_red']} 蓝球 {new_entry['prize_blue']}",
-            f"总奖金: {new_entry['total_prize']:,} 元",
-            "", "--- 单式推荐详情 ---"
-        ]
-        rec_prize, rec_bd, rec_winners = new_entry['rec_prize'], new_entry['rec_breakdown'], new_entry['rec_winners']
-        if rec_prize > 0:
-            entry_lines.append(f"奖金: {rec_prize:,}元 | 明细: " + ", ".join(f"{k}等奖x{v}" for k,v in rec_bd.items() if v>0))
-            entry_lines.extend(format_winning_tickets_for_report(rec_winners, new_entry['prize_red'], new_entry['prize_blue']))
-        else: entry_lines.append("未中奖")
-        
-        entry_lines.extend(["", "--- 复式推荐详情 ---"])
-        com_prize, com_bd, com_winners = new_entry['com_prize'], new_entry['com_breakdown'], new_entry['com_winners']
-        if com_prize > 0:
-            entry_lines.append(f"奖金: {com_prize:,}元 | 明细: " + ", ".join(f"{k}等奖x{v}" for k,v in com_bd.items() if v>0))
-            entry_lines.extend(format_winning_tickets_for_report(com_winners, new_entry['prize_red'], new_entry['prize_blue']))
-        else: entry_lines.append("未中奖或未生成投注")
-        
-        normal_entries.insert(0, "\n".join(entry_lines))
-
-    if new_error:
-        error_entries.insert(0, f"[{timestamp}] {new_error}")
-
-    # 清理旧记录
-    final_normal_entries = normal_entries[:MAX_NORMAL_RECORDS]
-    final_error_entries = error_entries[:MAX_ERROR_LOGS]
-
-    # 写回文件
+if __name__ == '__main__':
+    # 1. 获取最新开奖结果
     try:
-        with open(MAIN_REPORT_FILE, 'w', encoding='utf-8') as f:
-            f.write(f"{normal_marker}\n")
-            if final_normal_entries:
-                f.write(("\n" + "="*20 + "\n").join(final_normal_entries))
-            f.write(f"\n\n{error_marker}\n")
-            if final_error_entries:
-                f.write("\n".join(final_error_entries))
-        log_message(f"主报告已更新: {MAIN_REPORT_FILE}", "INFO")
-    except IOError as e:
-        log_message(f"写入主报告文件失败: {e}", "ERROR")
-
-# ==============================================================================
-# --- 主流程 ---
-# ==============================================================================
-
-def main_process():
-    """主处理流程，串联所有功能。"""
-    log_message("====== 主流程启动 ======", "INFO")
-    
-    csv_content = robust_file_read(CSV_FILE)
-    if not csv_content:
-        manage_report(new_error=f"无法读取或未找到CSV数据文件: {CSV_FILE}")
-        return
-
-    period_map, sorted_periods = get_period_data_from_csv(csv_content)
-    if not period_map or not sorted_periods or len(sorted_periods) < 2:
-        manage_report(new_error="CSV数据不足两期或解析失败，无法进行评估。")
-        return
-
-    eval_period = sorted_periods[-1]
-    report_cutoff_period = sorted_periods[-2]
-    log_message(f"评估期号: {eval_period}, 报告数据截止期: {report_cutoff_period}", "INFO")
-
-    report_path = find_matching_report(report_cutoff_period)
-    if not report_path:
-        manage_report(new_error=f"未找到数据截止期为 {report_cutoff_period} 的分析报告。")
-        return
-
-    report_content = robust_file_read(report_path)
-    if not report_content:
-        manage_report(new_error=f"无法读取分析报告文件: {report_path}")
-        return
-
-    rec_tickets, complex_reds, complex_blues = parse_recommendations_from_report(report_content)
-    complex_tickets = generate_complex_tickets(complex_reds, complex_blues)
-    
-    if not rec_tickets and not complex_tickets:
-         manage_report(new_error=f"未能从报告 {os.path.basename(report_path)} 中解析出任何有效投注。")
-    
-    prize_data = period_map[eval_period]
-    prize_red, prize_blue = prize_data['red'], prize_data['blue']
-    log_message(f"获取到期号 {eval_period} 的开奖数据: 红{prize_red} 蓝{prize_blue}", "INFO")
-    
-    rec_prize, rec_bd, rec_winners = calculate_prize(rec_tickets, prize_red, prize_blue)
-    com_prize, com_bd, com_winners = calculate_prize(complex_tickets, prize_red, prize_blue)
-    
-    report_entry = {
-        'eval_period': eval_period, 'report_cutoff_period': report_cutoff_period,
-        'prize_red': prize_red, 'prize_blue': prize_blue,
-        'total_prize': rec_prize + com_prize,
-        'rec_prize': rec_prize, 'rec_breakdown': rec_bd, 'rec_winners': rec_winners,
-        'com_prize': com_prize, 'com_breakdown': com_bd, 'com_winners': com_winners,
-    }
-    manage_report(new_entry=report_entry)
-    
-    log_message(f"处理完成！总计奖金: {report_entry['total_prize']:,}元。", "INFO")
-    log_message("====== 主流程结束 ======", "INFO")
-
-if __name__ == "__main__":
-    try:
-        main_process()
+        ssq_df = pd.read_csv("shuangseqiu.csv", header=0)
+        latest_draw = ssq_df.iloc[-1]
+        target_issue = latest_draw['期号']
+        winning_reds = set([int(r) for r in latest_draw['红球'].split(',')])
+        winning_blue = int(latest_draw['蓝球'])
     except Exception as e:
-        tb_str = traceback.format_exc()
-        error_message = f"主流程发生未捕获的严重异常: {type(e).__name__} - {e}\n{tb_str}"
-        log_message(error_message, "CRITICAL")
-        try:
-            manage_report(new_error=error_message)
-        except Exception as report_e:
-            log_message(f"在记录严重错误时再次发生错误: {report_e}", "CRITICAL")
+        print(f"读取 ssq.csv 文件失败: {e}")
+        exit()
+
+    # 2. 查找匹配的报告
+    report_filepath, error_msg = find_matching_report(target_issue)
+    if error_msg:
+        print(error_msg)
+        exit()
+        
+    # 3. 解析报告中的投注
+    single_bets, duplex_bet = parse_report_bets(report_filepath)
+    if not single_bets or not duplex_bet['red']:
+        print(f"错误: 未能从报告 {report_filepath} 中成功解析出投注号码。")
+        exit()
+
+    # 4. 计算奖金
+    total_single_bonus = 0
+    single_details = []
+    for i, bet in enumerate(single_bets, 1):
+        prize, prize_name, summary = calculate_single_prize(bet['red'], bet['blue'], winning_reds, winning_blue)
+        total_single_bonus += prize
+        single_details.append(f"  组合 {i:>2}: {str(bet['red']):<24} 蓝球 [{bet['blue']:02d}] -> {summary}, {prize_name}, 奖金: {prize} 元")
+
+    duplex_prize, duplex_breakdown, duplex_summary = calculate_duplex_prize(duplex_bet['red'], duplex_bet['blue'], winning_reds, winning_blue)
+
+    # 5. 构建并输出报告
+    report_lines = []
+    report_lines.append("="*70)
+    report_lines.append("          双色球推荐核对报告")
+    report_lines.append("="*70)
+    report_lines.append(f"\n报告生成时间: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    report_lines.append(f"核对报告文件: {os.path.basename(report_filepath)}")
+    report_lines.append(f"核对开奖期数: {target_issue}")
+    report_lines.append(f"官方开奖号码: 红球 {sorted(list(winning_reds))}  蓝球 [{winning_blue}]")
+
+    report_lines.append("\n--- 1. 单式推荐核对详情 ---")
+    report_lines.extend(single_details)
+    report_lines.append(f"\n单式推荐总奖金: {total_single_bonus} 元")
+
+    report_lines.append("\n--- 2. 复式推荐核对详情 ---")
+    report_lines.append(f"  红球: {duplex_bet['red']}")
+    report_lines.append(f"  蓝球: {duplex_bet['blue']}")
+    report_lines.append(f"  核对结果: {duplex_summary}")
+    if not duplex_breakdown:
+        report_lines.append("  奖项构成: 未中任何奖项。")
+    else:
+        report_lines.append("  奖项构成:")
+        for name, count in sorted(duplex_breakdown.items(), key=lambda item: list(PRIZE_NAMES.values()).index(item[0])):
+             report_lines.append(f"    - {name}: {count} 注")
+    report_lines.append(f"\n复式推荐总奖金: {duplex_prize} 元")
+    
+    report_lines.append("\n" + "-"*70)
+    report_lines.append(f"总计中奖金额: {total_single_bonus + duplex_prize} 元")
+    report_lines.append("="*70)
+
+    final_report_string = "\n".join(report_lines)
+    print("\n" + final_report_string)
+
+    # 6. 写入文件
+    try:
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"ssq_bonus_check_{timestamp}.txt"
+        with open(filename, 'w', encoding='utf-8') as f:
+            f.write(final_report_string)
+        print(f"\n核对报告已成功保存到文件: {filename}")
+    except Exception as e:
+        print(f"\n写入核对报告文件失败: {e}")
