@@ -1,8 +1,0 @@
-pandas
-numpy 
-lightgbm 
-joblib 
-tqdm 
-scikit-learn
-requests
-beautifulsoup4
