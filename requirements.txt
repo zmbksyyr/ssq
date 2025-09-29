@@ -4,3 +4,4 @@ lightgbm
 joblib 
 tqdm 
 scikit-learn
+requests
