@@ -5,6 +5,12 @@ import glob
 import re
 from math import comb
 
+# --- 动态路径设置 ---
+script_dir = os.path.dirname(os.path.abspath(__file__))
+root_dir = os.path.dirname(script_dir)
+CSV_PATH = os.path.join(root_dir, 'shuangseqiu.csv')
+REPORT_DIR = os.path.join(root_dir, 'report')
+
 # --- 1. 全局常量定义 ---
 
 # 奖金规则与名称定义
@@ -22,9 +28,12 @@ PRIZE_NAMES = {
 
 def find_matching_report(target_issue):
     """
-    在当前目录查找所有报告文件，并返回与目标期号匹配的报告文件路径。
+    在 report/ 目录查找所有报告文件，并返回与目标期号匹配的报告文件路径。
     """
-    report_files = glob.glob("ssq_analysis_output_*.txt")
+    # <--- MODIFIED: 在 report/ 文件夹中查找 ---
+    report_pattern = os.path.join(REPORT_DIR, "ssq_analysis_output_*.txt")
+    report_files = glob.glob(report_pattern)
+    
     if not report_files:
         return None, "错误: 当前目录未找到任何 'ssq_analysis_output_*.txt' 报告文件。"
 
@@ -131,13 +140,13 @@ def calculate_duplex_prize(bet_reds, bet_blues, winning_reds, winning_blue):
 if __name__ == '__main__':
     # 1. 获取最新开奖结果
     try:
-        ssq_df = pd.read_csv("shuangseqiu.csv", header=0)
+        ssq_df = pd.read_csv(CSV_PATH, header=0)
         latest_draw = ssq_df.iloc[-1]
         target_issue = latest_draw['期号']
         winning_reds = set([int(r) for r in latest_draw['红球'].split(',')])
         winning_blue = int(latest_draw['蓝球'])
     except Exception as e:
-        print(f"读取 ssq.csv 文件失败: {e}")
+        print(f"读取 {CSV_PATH} 文件失败: {e}")
         exit()
 
     # 2. 查找匹配的报告
@@ -197,10 +206,17 @@ if __name__ == '__main__':
 
     # 6. 写入文件
     try:
+        # <--- MODIFIED: 确保报告目录存在 ---
+        os.makedirs(REPORT_DIR, exist_ok=True)
+        
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"ssq_bonus_check_{timestamp}.txt"
-        with open(filename, 'w', encoding='utf-8') as f:
+        
+        # <--- MODIFIED: 将核奖报告写入 report/ 文件夹 ---
+        filepath = os.path.join(REPORT_DIR, filename)
+        
+        with open(filepath, 'w', encoding='utf-8') as f:
             f.write(final_report_string)
-        print(f"\n核对报告已成功保存到文件: {filename}")
+        print(f"\n核对报告已成功保存到文件: {filepath}")
     except Exception as e:
         print(f"\n写入核对报告文件失败: {e}")
