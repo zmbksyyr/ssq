@@ -1,0 +1,14 @@
+{
+    "decay_factor": 0.999,
+    "weight_freq": 0.3,
+    "weight_omission": 0.4,
+    "weight_ml": 0.3,
+    "hot_lookback": 10,
+    "hot_threshold": 2,
+    "hot_bonus": 1.2,
+    "cold_lookback": 30,
+    "cold_bonus": 1.05,
+    "repeat_bonus": 1.15,
+    "weight_blue_freq": 0.4,
+    "weight_blue_ml": 0.6
+}
