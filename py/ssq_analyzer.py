@@ -624,7 +624,11 @@ def run_full_backtest(full_df, params, feature_columns, num_periods):
             # 2. 使用刚刚训练好的【局部模型】进行评分和筛选
             red_scores, blue_scores = run_strategy_and_get_scores(history_df_for_step, params, local_ml_models_red, local_ml_models_blue, feature_columns)
             
-            red_pool = [item[0] for item in sorted(red_scores.items(), key=lambda x: (-x[1], x[0]))[:POOL_SIZE_RED]]
+            # --- 修改开始：反向策略 ---
+            # 原逻辑：取评分最高的前N个 ([:POOL_SIZE_RED])
+            # 新逻辑：抛弃前N个，取剩余所有的球 ([POOL_SIZE_RED:])
+            # 也就是选出那些“没进入原本大底”的球
+            red_pool = [item[0] for item in sorted(red_scores.items(), key=lambda x: (-x[1], x[0]))[POOL_SIZE_RED:]]
             # 在回测中，我们假设每期只追评分最高的那个蓝球
             recommended_blue = sorted(blue_scores, key=blue_scores.get, reverse=True)[0]
             
@@ -728,7 +732,12 @@ if __name__ == '__main__':
     print(f"\n[阶段 4/8] 正在为下一期号码进行机器学习评分...")
     red_scores, blue_scores = run_strategy_and_get_scores(full_df, params, final_ml_models_red, final_ml_models_blue, FEATURE_COLUMNS)
     red_scores_list = sorted(list(red_scores.items()), key=lambda item: (-item[1], item[0]))
-    red_pool = [item[0] for item in red_scores_list[:POOL_SIZE_RED]]
+    # --- 修改开始：反向策略 ---
+    # 原逻辑：red_pool = [item[0] for item in red_scores_list[:POOL_SIZE_RED]]
+    # 新逻辑：取切片 [POOL_SIZE_RED:]，即跳过前 POOL_SIZE_RED 个，取剩下的。
+    # 假如 POOL_SIZE_RED=16，总红球33个，这里会选出剩下的17个球。
+    red_pool = [item[0] for item in red_scores_list[POOL_SIZE_RED:]]
+    # --- 修改结束 ---
     recommended_blues = sorted(blue_scores, key=blue_scores.get, reverse=True)[:NUM_BLUE_BALLS]
     print(f"已根据ML评分选出 {POOL_SIZE_RED} 个红球大底: {sorted(red_pool)}")
 
