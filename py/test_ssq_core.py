@@ -5,7 +5,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from ssq_core import (
+    BLUE_BALLS,
     LOCAL_TIMEZONE,
+    PRIME_RED_BALLS,
+    RED_BALLS,
     atomic_write_text,
     infer_next_issue,
     local_now,
@@ -17,6 +20,14 @@ from ssq_core import (
 
 
 class CoreValidationTests(unittest.TestCase):
+    def test_shared_ball_domains_are_complete(self):
+        self.assertEqual(RED_BALLS, tuple(range(1, 34)))
+        self.assertEqual(BLUE_BALLS, tuple(range(1, 17)))
+        self.assertEqual(
+            PRIME_RED_BALLS,
+            frozenset({2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31}),
+        )
+
     def test_local_now_uses_shanghai_timezone(self):
         current = local_now()
 

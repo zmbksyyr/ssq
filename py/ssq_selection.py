@@ -14,7 +14,7 @@ from ssq_config import (
     REJECTION_SEED_MULTIPLIER,
     TOTAL_RED_COMBINATIONS,
 )
-from ssq_core import parse_issue
+from ssq_core import RED_BALLS, parse_issue
 from ssq_rules import (
     build_rank_center_scores,
     passes_red_filters,
@@ -136,7 +136,7 @@ def make_rejection_set(size, rng=None):
     rng = rng or random.Random(RANDOM_SEED)
     rejection_set = set()
     while len(rejection_set) < size:
-        rejection_set.add(tuple(sorted(rng.sample(range(1, 34), 6))))
+        rejection_set.add(tuple(sorted(rng.sample(RED_BALLS, 6))))
     return rejection_set
 
 

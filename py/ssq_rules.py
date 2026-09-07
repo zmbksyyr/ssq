@@ -3,7 +3,8 @@ from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from itertools import combinations
 
-PRIMES_IN_33 = frozenset({2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31})
+from ssq_core import PRIME_RED_BALLS
+
 COMBINATION_SIGNAL_WEIGHT = 0.50
 DEFAULT_NUM_RECOMMENDATIONS = 10
 DEFAULT_MAX_SHARED_RED_BALLS = 4
@@ -27,7 +28,7 @@ class RuleDefinition:
 
 
 def is_prime(number):
-    return number in PRIMES_IN_33
+    return number in PRIME_RED_BALLS
 
 
 def calculate_ac_value(combo):

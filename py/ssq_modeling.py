@@ -6,9 +6,8 @@ from itertools import combinations, pairwise
 import lightgbm as lgb
 import numpy as np
 import pandas as pd
+from ssq_core import BLUE_BALLS, PRIME_RED_BALLS, RED_BALLS
 from tqdm import tqdm
-
-RED_PRIME_NUMBERS = {2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31}
 
 
 def _count_consecutive_groups(numbers):
@@ -46,7 +45,7 @@ def feature_engineer(df):
         lambda numbers: sum(number > 16 for number in numbers)
     )
     df['red_prime_count'] = df['红球'].apply(
-        lambda numbers: sum(number in RED_PRIME_NUMBERS for number in numbers)
+        lambda numbers: sum(number in PRIME_RED_BALLS for number in numbers)
     )
     df['red_sum_tail'] = df['red_sum'].apply(lambda value: value % 10)
     df['red_consecutive_groups'] = df['红球'].apply(_count_consecutive_groups)
@@ -78,7 +77,7 @@ def get_omission(df):
     return {
         ball: total_draws - last_positions[ball] - 1
         if ball in last_positions else total_draws
-        for ball in range(1, 34)
+        for ball in RED_BALLS
     }
 
 
@@ -113,7 +112,7 @@ def apply_red_score_adjustments(red_scores, df_history, params):
         recent_numbers = {
             ball for draw in df_history.tail(cold_lookback)['红球'] for ball in draw
         }
-        for ball in set(range(1, 34)) - recent_numbers:
+        for ball in set(RED_BALLS) - recent_numbers:
             adjusted[ball] *= params.get('cold_bonus', 1.0)
 
     if not df_history.empty:
@@ -156,7 +155,7 @@ def train_prediction_models(training_df, feature_columns, show_progress=False):
     red_models = train_ball_models(
         training_df,
         feature_columns,
-        range(1, 34),
+        RED_BALLS,
         '红球',
         lambda draw, ball: ball in draw,
         '训练红球模型' if show_progress else None,
@@ -164,7 +163,7 @@ def train_prediction_models(training_df, feature_columns, show_progress=False):
     blue_models = train_ball_models(
         training_df,
         feature_columns,
-        range(1, 17),
+        BLUE_BALLS,
         '蓝球',
         lambda drawn, ball: drawn == ball,
         '训练蓝球模型' if show_progress else None,
@@ -173,8 +172,8 @@ def train_prediction_models(training_df, feature_columns, show_progress=False):
 
 
 def validate_model_sets(red_models, blue_models):
-    missing_red = sorted(set(range(1, 34)) - set(red_models))
-    missing_blue = sorted(set(range(1, 17)) - set(blue_models))
+    missing_red = sorted(set(RED_BALLS) - set(red_models))
+    missing_blue = sorted(set(BLUE_BALLS) - set(blue_models))
     if missing_red or missing_blue:
         raise ValueError(f"模型训练不完整: 红球缺失 {missing_red}, 蓝球缺失 {missing_blue}")
 
@@ -214,7 +213,7 @@ def run_strategy_and_get_scores(
     red_omission = get_omission(df_history)
     red_ml_probs = {
         ball: predict_positive_probability(ml_models_red[ball], last_features)[0]
-        for ball in range(1, 34)
+        for ball in RED_BALLS
     }
     max_red_freq = red_weighted_freq.max() or 1
     max_red_omission = max(red_omission.values()) or 1
@@ -225,7 +224,7 @@ def run_strategy_and_get_scores(
             * params['weight_omission']
             + red_ml_probs[ball] * params['weight_ml']
         )
-        for ball in range(1, 34)
+        for ball in RED_BALLS
     }
     red_scores = apply_red_score_adjustments(red_scores, df_history, params)
 
@@ -234,7 +233,7 @@ def run_strategy_and_get_scores(
     )
     blue_ml_probs = {
         ball: predict_positive_probability(ml_models_blue[ball], last_features)[0]
-        for ball in range(1, 17)
+        for ball in BLUE_BALLS
     }
     max_blue_freq = blue_weighted_freq.max() or 1
     blue_scores = {
@@ -243,6 +242,6 @@ def run_strategy_and_get_scores(
             * params['weight_blue_freq']
             + blue_ml_probs[ball] * params['weight_blue_ml']
         )
-        for ball in range(1, 17)
+        for ball in BLUE_BALLS
     }
     return red_scores, blue_scores
