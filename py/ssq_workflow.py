@@ -1,5 +1,9 @@
 """Application workflow for loading data, running analysis, and saving reports."""
 
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import Any
+
 import ssq_history_evaluation as _history_evaluation
 import ssq_history_preparation as _history_preparation
 import ssq_paths as _paths
@@ -61,6 +65,20 @@ CurrentSelection = _workflow_models.CurrentSelection
 
 
 collect_runtime_versions = _report_output.collect_runtime_versions
+
+
+@dataclass(frozen=True)
+class AnalysisWorkflowDependencies:
+    prepare_history: Callable[..., Any]
+    evaluate_history: Callable[..., Any]
+    train_models: Callable[..., Any]
+    select_current: Callable[..., Any]
+    display_candidates: Callable[..., Any]
+    rank_duplex: Callable[..., Any]
+    build_report_data: Callable[..., Any]
+    now: Callable[..., Any]
+    collect_versions: Callable[..., Any]
+    save_report: Callable[..., Any]
 
 
 def load_strategy_params(filepath=PARAMS_JSON_PATH):
@@ -159,24 +177,40 @@ def save_analysis_report(data):
     return _report_output.save_analysis_report(data, REPORT_DIR, dependencies)
 
 
-def run_analysis(options):
+def default_analysis_dependencies():
+    return AnalysisWorkflowDependencies(
+        prepare_history=prepare_history,
+        evaluate_history=evaluate_history,
+        train_models=train_final_models,
+        select_current=select_current_issue,
+        display_candidates=display_passed_combinations,
+        rank_duplex=rank_duplex_candidates,
+        build_report_data=build_analysis_report_data,
+        now=local_now,
+        collect_versions=collect_runtime_versions,
+        save_report=save_analysis_report,
+    )
+
+
+def run_analysis(options, dependencies=None):
     """Execute one complete analysis run and return the saved report path."""
+    dependencies = dependencies or default_analysis_dependencies()
     print('=' * 70)
     print('         双色球策略分析器 v7.0')
     print('=' * 70)
 
     print('\n[阶段 1/8] 正在加载和处理历史数据...')
-    history = prepare_history()
+    history = dependencies.prepare_history()
     print('数据加载与特征工程完成。')
 
     print('\n[阶段 2/8] 正在执行历史规则审计与滚动回测...')
-    evaluation = evaluate_history(history, options)
+    evaluation = dependencies.evaluate_history(history, options)
 
     print('\n[阶段 3/8] 正在使用全部历史数据，训练用于最终预测的模型...')
-    models = train_final_models(history)
+    models = dependencies.train_models(history)
 
     print('\n[阶段 4/8] 正在为下一期号码进行机器学习评分...')
-    current = select_current_issue(
+    current = dependencies.select_current(
         history,
         options,
         evaluation.loaded_params.values,
@@ -184,13 +218,13 @@ def run_analysis(options):
     )
 
     print('\n[阶段 6/8] 正在整理通过硬规则的候选组合...')
-    display_passed_combinations(
+    dependencies.display_candidates(
         current.candidate_selection.passed_combos,
         options.non_interactive,
     )
 
     print('\n[阶段 7/8] 正在从最终组合中，生成高重合度的7红球大底...')
-    best_7_reds = rank_duplex_candidates(DuplexSelectionRequest(
+    best_7_reds = dependencies.rank_duplex(DuplexSelectionRequest(
         passed_combos=current.candidate_selection.passed_combos,
         red_pool=current.candidate_selection.red_pool,
         red_scores=current.red_scores,
@@ -198,18 +232,18 @@ def run_analysis(options):
     ))
 
     print('\n[阶段 8/8] 正在生成最终推荐报告...')
-    generated_at = local_now()
-    report_data = build_analysis_report_data(
+    generated_at = dependencies.now()
+    report_data = dependencies.build_report_data(
         history,
         evaluation,
         current,
         options,
         best_7_reds,
         generated_at,
-        collect_runtime_versions(),
+        dependencies.collect_versions(),
         MODEL_TRAINING_PARAMS,
     )
-    return save_analysis_report(report_data)
+    return dependencies.save_report(report_data)
 
 
 def main(argv=None):
