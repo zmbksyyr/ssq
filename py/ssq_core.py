@@ -1,10 +1,11 @@
 """Shared domain rules for the Double Color Ball lottery."""
 
+import os
+import tempfile
 from datetime import date, datetime, timedelta
 from math import isfinite
 from numbers import Integral, Real
-import os
-import tempfile
+from zoneinfo import ZoneInfo
 
 RED_MIN = 1
 RED_MAX = 33
@@ -12,6 +13,7 @@ BLUE_MIN = 1
 BLUE_MAX = 16
 RED_COUNT = 6
 DRAW_WEEKDAYS = {1, 3, 6}  # Tuesday, Thursday, Sunday
+LOCAL_TIMEZONE = ZoneInfo('Asia/Shanghai')
 
 PRIZE_RULES = {
     (6, 1): 5_000_000,
@@ -42,7 +44,7 @@ PRIZE_NAMES = {
 
 def parse_integer(value, field_name):
     if isinstance(value, bool):
-        raise ValueError(f"{field_name}必须为整数")
+        raise TypeError(f"{field_name}必须为整数")
     if isinstance(value, Integral):
         return int(value)
     if isinstance(value, Real):
@@ -53,6 +55,14 @@ def parse_integer(value, field_name):
     if not text or not text.lstrip('+-').isdigit():
         raise ValueError(f"{field_name}必须为整数")
     return int(text)
+
+
+def local_now():
+    return datetime.now(LOCAL_TIMEZONE)
+
+
+def local_today():
+    return local_now().date()
 
 
 def parse_issue(value):

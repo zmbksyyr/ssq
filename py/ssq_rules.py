@@ -1,8 +1,7 @@
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import dataclass
 from itertools import combinations
-from typing import Callable
-
 
 PRIMES_IN_33 = frozenset({2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31})
 COMBINATION_SIGNAL_WEIGHT = 0.50

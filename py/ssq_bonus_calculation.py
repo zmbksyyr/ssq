@@ -1,12 +1,18 @@
-import pandas as pd
-import datetime
-import os
 import glob
+import os
 import re
 from math import comb
+
+import pandas as pd
 from ssq_core import (
-    PRIZE_NAMES, PRIZE_RULES, atomic_write_text, parse_blue_ball,
-    parse_blue_balls, parse_issue, parse_red_balls,
+    PRIZE_NAMES,
+    PRIZE_RULES,
+    atomic_write_text,
+    local_now,
+    parse_blue_ball,
+    parse_blue_balls,
+    parse_issue,
+    parse_red_balls,
 )
 
 # --- 动态路径设置 ---
@@ -37,7 +43,7 @@ def find_matching_report(target_issue):
                             return report_file, None # 找到了匹配的文件
                         else:
                             break # 元数据不匹配，检查下一个文件
-        except Exception as e:
+        except (OSError, UnicodeError, IndexError) as e:
             print(f"警告: 读取文件 {report_file} 时出错: {e}")
             continue
             
@@ -196,7 +202,9 @@ if __name__ == '__main__':
         target_issue = latest_draw['issue']
         winning_reds = latest_draw['red']
         winning_blue = latest_draw['blue']
-    except Exception as e:
+    except (
+        OSError, UnicodeError, TypeError, ValueError, pd.errors.ParserError
+    ) as e:
         print(f"读取 {CSV_PATH} 文件失败: {e}")
         raise SystemExit(1)
 
@@ -222,7 +230,7 @@ if __name__ == '__main__':
     for i, bet in enumerate(single_bets, 1):
         prize, prize_name, summary = calculate_single_prize(bet['red'], bet['blue'], winning_reds, winning_blue)
         total_single_bonus += prize
-        single_details.append(f"  组合 {i:>2}: {str(bet['red']):<24} 蓝球 [{bet['blue']:02d}] -> {summary}, {prize_name}, 参考奖金: {prize} 元")
+        single_details.append(f"  组合 {i:>2}: {bet['red']!s:<24} 蓝球 [{bet['blue']:02d}] -> {summary}, {prize_name}, 参考奖金: {prize} 元")
 
     duplex_prize, duplex_breakdown, duplex_summary = calculate_duplex_prize(duplex_bet['red'], duplex_bet['blue'], winning_reds, winning_blue)
 
@@ -231,10 +239,10 @@ if __name__ == '__main__':
     report_lines.append("="*70)
     report_lines.append("          双色球推荐核对报告")
     report_lines.append("="*70)
-    report_lines.append(f"\n报告生成时间: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    report_lines.append(f"\n报告生成时间: {local_now().strftime('%Y-%m-%d %H:%M:%S')}")
     report_lines.append(f"核对报告文件: {os.path.basename(report_filepath)}")
     report_lines.append(f"核对开奖期数: {target_issue}")
-    report_lines.append(f"官方开奖号码: 红球 {sorted(list(winning_reds))}  蓝球 [{winning_blue}]")
+    report_lines.append(f"官方开奖号码: 红球 {sorted(winning_reds)}  蓝球 [{winning_blue}]")
     report_lines.append("奖金说明: 使用固定参考金额估算；一等奖、二等奖实际金额以官方派奖为准。")
 
     report_lines.append("\n--- 1. 单式推荐核对详情 ---")
@@ -264,12 +272,12 @@ if __name__ == '__main__':
     try:
         os.makedirs(REPORT_DIR, exist_ok=True)
         
-        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        timestamp = local_now().strftime("%Y%m%d_%H%M%S")
         filename = f"ssq_bonus_check_{timestamp}.txt"
         
         filepath = os.path.join(REPORT_DIR, filename)
         
         atomic_write_text(filepath, final_report_string)
         print(f"\n核对报告已成功保存到文件: {filepath}")
-    except Exception as e:
+    except OSError as e:
         raise SystemExit(f"\n写入核对报告文件失败: {e}")

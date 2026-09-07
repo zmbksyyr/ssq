@@ -1,37 +1,49 @@
 # --- 核心库导入 ---
-import pandas as pd
-import numpy as np
-import lightgbm as lgb
+import argparse
+import json
+import os
+import random
+import sys
+import threading
+import time
+from collections import Counter
+from dataclasses import dataclass, field
 from itertools import combinations
 from math import comb
-from collections import Counter
-import datetime
-from tqdm import tqdm
-import os
-import json
-import random
-import time
-import threading
-import sys
-import argparse
-from dataclasses import dataclass, field
+
+import lightgbm as lgb
+import numpy as np
+import pandas as pd
 from ssq_core import (
-    PRIZE_NAMES, PRIZE_RULES, atomic_write_text, infer_next_issue,
-    parse_blue_ball, parse_issue, parse_red_balls,
+    PRIZE_NAMES,
+    PRIZE_RULES,
+    atomic_write_text,
+    infer_next_issue,
+    local_now,
+    parse_blue_ball,
+    parse_issue,
+    parse_red_balls,
 )
 from ssq_rules import (
-    FILTER_NAMES, HARD_FILTER_NAMES, RED_RULES, build_rank_center_scores,
-    explain_filter_failures, filter_pipeline_stats, passes_red_filters,
-    score_red_combination, select_recommendations,
+    FILTER_NAMES,
+    HARD_FILTER_NAMES,
+    RED_RULES,
+    build_rank_center_scores,
+    explain_filter_failures,
+    filter_pipeline_stats,
+    passes_red_filters,
+    score_red_combination,
+    select_recommendations,
 )
+from tqdm import tqdm
 
 # --- 平台特定模块导入, 用于实现非阻塞的键盘输入监听 ---
 try:
     # 尝试导入 msvcrt, 这是 Windows 平台专用的库
-    import msvcrt 
+    import msvcrt
 except ImportError:
     # 如果导入失败 (说明不是 Windows 平台), 则导入 select, 适用于 Linux/Mac
-    import select 
+    import select
 
 # --- 1. 全局可调参数与路径设置 ---
 
@@ -173,6 +185,9 @@ class StrategyConfig:
             raise ValueError(
                 f'rejection_lib_size must be between 0 and {TOTAL_RED_COMBINATIONS}'
             )
+
+
+DEFAULT_STRATEGY_CONFIG = StrategyConfig()
 
 
 @dataclass(frozen=True)
@@ -320,7 +335,7 @@ def load_and_preprocess_data(filepath=CSV_PATH):
         df = pd.read_csv(filepath, header=0)
         # 为了代码的健壮性，强制重命名列
         df.columns = ['期号', '日期', '红球', '蓝球']
-    except Exception as e:
+    except (OSError, UnicodeError, ValueError, pd.errors.ParserError) as e:
         # 如果文件读取失败（例如文件不存在、格式错误），打印错误信息并中断程序
         print(f"错误: 无法加载数据文件 '{filepath}': {e}")
         return None
@@ -397,9 +412,13 @@ def feature_engineer(df):
     # 特征11: 连号组数
     df['red_consecutive_groups'] = df['红球'].apply(count_consecutive_groups)
     # 特征12: AC值 - 号码间两两之差的绝对值的唯一数量，反映号码的离散程度
-    df['red_ac_value'] = df['红球'].apply(lambda nums: len(set(abs(n1-n2) for n1, n2 in combinations(nums, 2))))
+    df['red_ac_value'] = df['红球'].apply(
+        lambda nums: len({abs(n1 - n2) for n1, n2 in combinations(nums, 2)})
+    )
     # 特征13: 尾数唯一值个数 - 6个号码的个位数有多少种不同的值
-    df['red_tail_uniques'] = df['红球'].apply(lambda x: len(set(n % 10 for n in x)))
+    df['red_tail_uniques'] = df['红球'].apply(
+        lambda numbers: len({number % 10 for number in numbers})
+    )
     
     # --- 涉及多期数据的移动平均(MA)和滞后(Lag)特征 ---
     window_size = 5 # 定义移动平均的窗口大小为5期
@@ -496,7 +515,9 @@ def train_ball_models(training_df, feature_columns, candidates, outcome_column,
     features = training_df[feature_columns]
     for candidate in iterator:
         target = training_df[outcome_column].apply(
-            lambda outcome: int(contains_candidate(outcome, candidate))
+            lambda outcome, current=candidate: int(
+                contains_candidate(outcome, current)
+            )
         ).shift(-1)
         valid_rows = target.notna() & features.notna().all(axis=1)
         if not valid_rows.any():
@@ -641,7 +662,7 @@ def count_actual_reds_by_rank_band(red_scores, actual_reds):
     return counts
 
 
-def build_red_pool(red_scores, config=StrategyConfig(), mode="mixed"):
+def build_red_pool(red_scores, config=DEFAULT_STRATEGY_CONFIG, mode="mixed"):
     """Build a red pool from one score band or a high/middle/low mixture."""
     ranked = [ball for ball, _ in sorted(red_scores.items(), key=lambda item: (-item[1], item[0]))]
     if mode == "high":
@@ -660,7 +681,7 @@ def build_red_pool(red_scores, config=StrategyConfig(), mode="mixed"):
     available_end = len(ranked) - config.low_count if config.low_count else len(ranked)
     middle_start = available_start + max(0, (available_end - available_start - middle_count) // 2)
     middle = ranked[middle_start:middle_start + middle_count]
-    return sorted(list(dict.fromkeys(high + middle + low)))
+    return sorted(dict.fromkeys(high + middle + low))
 
 
 def make_rejection_set(size, rng=None):
@@ -877,7 +898,7 @@ def evaluate_backtest_mode(mode, current, actual_red_set, actual_blue,
 
 
 def run_full_backtest(full_df, params, feature_columns, num_periods,
-                      pool_modes=("mixed",), config=StrategyConfig()):
+                      pool_modes=("mixed",), config=DEFAULT_STRATEGY_CONFIG):
     """
     对最近 N 期执行滚动策略回测。
     每一步仅使用当前期之前的数据重新训练模型，避免未来数据泄露。
@@ -925,7 +946,7 @@ def run_full_backtest(full_df, params, feature_columns, num_periods,
             red_scores, blue_scores = run_strategy_and_get_scores(history_df_for_step, params, local_ml_models_red, local_ml_models_blue, feature_columns)
             
             # 在回测中，我们假设每期只追评分最高的那个蓝球
-            recommended_blue = sorted(blue_scores, key=blue_scores.get, reverse=True)[0]
+            recommended_blue = max(blue_scores, key=blue_scores.get)
             rank_band_hits = count_actual_reds_by_rank_band(red_scores, actual_red_set)
             
             # --- 在回测的每一步都重新应用完整的过滤流程 ---
@@ -1106,7 +1127,7 @@ if __name__ == '__main__':
     report_lines.append("\n--- 0. 报告元数据 ---")
     report_lines.append(f"Data_Basis_Issue: {latest_issue}")
     report_lines.append(f"Prediction_Target_Issue: {target_issue}")
-    report_lines.append(f"报告生成时间: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    report_lines.append(f"报告生成时间: {local_now().strftime('%Y-%m-%d %H:%M:%S')}")
     
     report_lines.append("\n--- 1. 策略参数与回测 ---")
     mode_desc = "加载已固化的参数" if params_loaded else "使用内置的默认参数"
@@ -1236,7 +1257,7 @@ if __name__ == '__main__':
             limit=config.recommendation_count,
         )
         for i, combo in enumerate(final_selection, 1):
-            report_lines.append(f"  组合 {i:>2}: 红球 {str(list(combo)):<24} 蓝球 [{top_blue:02d}]")
+            report_lines.append(f"  组合 {i:>2}: 红球 {list(combo)!s:<24} 蓝球 [{top_blue:02d}]")
     else:
         report_lines.append("  - 未能生成足够的单式组合。")
         
@@ -1255,10 +1276,10 @@ if __name__ == '__main__':
 
     try:
         os.makedirs(REPORT_DIR, exist_ok=True)
-        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        timestamp = local_now().strftime("%Y%m%d_%H%M%S")
         filename = f"ssq_analysis_output_{timestamp}.txt"
         filepath = os.path.join(REPORT_DIR, filename)
         atomic_write_text(filepath, final_report_string)
         print(f"\n\n报告已成功保存到文件: {filepath}")
-    except Exception as e:
+    except OSError as e:
         raise SystemExit(f"\n\n写入报告文件失败: {e}")

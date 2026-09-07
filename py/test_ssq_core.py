@@ -1,16 +1,28 @@
 import sys
-import unittest
 import tempfile
+import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from ssq_core import (
-    atomic_write_text, infer_next_issue, parse_blue_ball, parse_blue_balls,
-    parse_issue, parse_red_balls,
+    LOCAL_TIMEZONE,
+    atomic_write_text,
+    infer_next_issue,
+    local_now,
+    parse_blue_ball,
+    parse_blue_balls,
+    parse_issue,
+    parse_red_balls,
 )
 
 
 class CoreValidationTests(unittest.TestCase):
+    def test_local_now_uses_shanghai_timezone(self):
+        current = local_now()
+
+        self.assertEqual(current.tzinfo, LOCAL_TIMEZONE)
+        self.assertEqual(current.tzinfo.key, 'Asia/Shanghai')
+
     def test_parses_and_sorts_valid_red_balls(self):
         self.assertEqual(parse_red_balls('06,01,10,03,08,02'), [1, 2, 3, 6, 8, 10])
 
@@ -21,9 +33,11 @@ class CoreValidationTests(unittest.TestCase):
 
     def test_rejects_invalid_blue_ball(self):
         self.assertEqual(parse_blue_ball('09'), 9)
-        for value in (0, 17, 9.5, True):
+        for value in (0, 17, 9.5):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 parse_blue_ball(value)
+        with self.assertRaises(TypeError):
+            parse_blue_ball(True)
 
     def test_parses_and_validates_blue_pool(self):
         self.assertEqual(parse_blue_balls('01, 03,16'), [1, 3, 16])

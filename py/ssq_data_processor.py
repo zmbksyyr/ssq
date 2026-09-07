@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 双色球数据处理器
 ================
@@ -12,18 +11,19 @@
 3. 校验、去重并原子更新主 CSV 文件。
 """
 
-import pandas as pd
-import sys
-import os
-import requests
-from requests.adapters import HTTPAdapter
-from bs4 import BeautifulSoup
-import logging
 import csv
+import logging
+import os
+import sys
 import tempfile
-from datetime import date, datetime
+from datetime import date
+
+import pandas as pd
+import requests
+from bs4 import BeautifulSoup
+from requests.adapters import HTTPAdapter
+from ssq_core import local_today, parse_blue_ball, parse_issue, parse_red_balls
 from urllib3.util.retry import Retry
-from ssq_core import parse_blue_ball, parse_issue, parse_red_balls
 
 # ==============================================================================
 # --- 配置区 ---
@@ -187,17 +187,20 @@ def parse_txt_data(data_lines: list) -> list:
         try:
             # 数据格式: [期号, 日期, 红1, 红2, 红3, 红4, 红5, 红6, 蓝]
             qihao = parse_issue(fields[0])
-            date = fields[1]
+            date_text = fields[1]
             red_balls = ",".join(fields[2:8])
             blue_ball = fields[8]
             red_numbers = parse_red_balls(red_balls)
             blue_number = parse_blue_ball(blue_ball)
-            datetime.strptime(date, "%Y-%m-%d")
+            parsed_date = date.fromisoformat(date_text)
+            if parsed_date.isoformat() != date_text:
+                raise ValueError("日期必须使用 YYYY-MM-DD 格式")
             parsed_data.append([
-                str(qihao), date, ",".join(f"{number:02d}" for number in red_numbers),
+                str(qihao), date_text,
+                ",".join(f"{number:02d}" for number in red_numbers),
                 f"{blue_number:02d}"
             ])
-        except (IndexError, ValueError) as exc:
+        except (IndexError, TypeError, ValueError) as exc:
             logger.warning(f"解析TXT行失败: {line}. 错误: {exc}")
             continue
     logger.info(f"从TXT数据中成功解析出 {len(parsed_data)} 条有效记录。")
@@ -247,7 +250,7 @@ def validate_authoritative_snapshot(new_data, existing_data, today=None):
             f"权威全量快照仅有 {len(new_data)} 条，少于最低要求 "
             f"{MIN_FULL_SNAPSHOT_RECORDS} 条"
         )
-    today = today or date.today()
+    today = today or local_today()
     latest_date = pd.to_datetime(new_data['日期'], format='%Y-%m-%d').max().date()
     if latest_date > today:
         raise ValueError(f"权威全量快照包含未来开奖日期: {latest_date}")
@@ -365,7 +368,9 @@ def update_csv_file(csv_path: str, all_new_data: list, require_full_snapshot=Fal
         logger.info(f"CSV文件已成功更新并保存至: {csv_path}。总计 {len(final_df)} 条记录。")
         return True
 
-    except Exception as e:
+    except (
+        OSError, UnicodeError, TypeError, ValueError, pd.errors.ParserError
+    ) as e:
         logger.error(f"更新CSV文件时发生严重错误: {e}")
         return False
 
