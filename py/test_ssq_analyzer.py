@@ -511,6 +511,21 @@ class AnalyzerTests(unittest.TestCase):
     with self.assertRaises(ValueError):
       selection.make_rejection_set(config.TOTAL_RED_COMBINATIONS + 1)
 
+  def test_rejection_set_has_a_stable_seed_fingerprint(self):
+    self.assertEqual(
+        selection.make_rejection_set(8, random.Random(7)),
+        {
+            (2, 3, 10, 13, 21, 33),
+            (2, 4, 6, 19, 27, 28),
+            (2, 4, 13, 15, 19, 31),
+            (2, 7, 17, 19, 24, 33),
+            (3, 5, 10, 15, 18, 28),
+            (3, 6, 8, 14, 31, 33),
+            (4, 10, 18, 19, 27, 32),
+            (7, 12, 19, 21, 31, 32),
+        },
+    )
+
   def test_rejection_seed_is_reproducible_and_issue_specific(self):
     first = selection.rejection_seed_for_issue(42, 2026104)
     self.assertEqual(first, selection.rejection_seed_for_issue(42, "2026104"))
