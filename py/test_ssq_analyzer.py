@@ -12,17 +12,18 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent))
 import ssq_analyzer as analyzer
+import ssq_config as config
 import ssq_rules as rules
 
 
 class AnalyzerTests(unittest.TestCase):
   def test_cli_options_build_runtime_configuration(self):
-    defaults = analyzer.parse_cli_options([])
+    defaults = config.parse_cli_options([])
     self.assertEqual(defaults.rejection_size, 500_000)
     self.assertEqual(defaults.backtest_pool_modes, ('mixed',))
     self.assertEqual(defaults.strategy_config.rejection_lib_size, 500_000)
 
-    options = analyzer.parse_cli_options([
+    options = config.parse_cli_options([
         '--backtest-periods', '12',
         '--rejection-size', '34',
         '--seed', '7',
@@ -34,7 +35,7 @@ class AnalyzerTests(unittest.TestCase):
     self.assertEqual(options.backtest_periods, 12)
     self.assertEqual(options.rule_audit_periods, 50)
     self.assertEqual(options.pool_mode, 'middle')
-    self.assertEqual(options.backtest_pool_modes, analyzer.RED_POOL_MODES)
+    self.assertEqual(options.backtest_pool_modes, config.RED_POOL_MODES)
     self.assertTrue(options.non_interactive)
     self.assertEqual(options.strategy_config.random_seed, 7)
     self.assertEqual(options.strategy_config.rejection_lib_size, 34)
@@ -43,19 +44,24 @@ class AnalyzerTests(unittest.TestCase):
     for argv in (
         ['--backtest-periods', '-1'],
         ['--rule-audit-periods', '-1'],
-        ['--rejection-size', str(analyzer.TOTAL_RED_COMBINATIONS + 1)],
+        ['--rejection-size', str(config.TOTAL_RED_COMBINATIONS + 1)],
     ):
       with (
           self.subTest(argv=argv),
-          patch.object(analyzer.sys, 'stderr', io.StringIO()),
+          patch.object(sys, 'stderr', io.StringIO()),
           self.assertRaises(SystemExit),
       ):
-        analyzer.parse_cli_options(argv)
+        config.parse_cli_options(argv)
 
     with self.assertRaises(ValueError):
-      analyzer.AnalyzerOptions(backtest_periods=-1)
+      config.AnalyzerOptions(backtest_periods=-1)
     with self.assertRaises(ValueError):
-      analyzer.AnalyzerOptions(pool_mode='invalid')
+      config.AnalyzerOptions(pool_mode='invalid')
+
+  def test_analyzer_reexports_strategy_configuration(self):
+    self.assertIs(analyzer.StrategyConfig, config.StrategyConfig)
+    self.assertIs(analyzer.parse_cli_options, config.parse_cli_options)
+    self.assertEqual(analyzer.DEFAULT_PARAMS, config.DEFAULT_PARAMS)
 
   def test_strategy_param_loader_distinguishes_file_states(self):
     with tempfile.TemporaryDirectory() as directory:
