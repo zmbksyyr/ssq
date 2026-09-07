@@ -1,12 +1,11 @@
 """Application workflow for loading data, running analysis, and saving reports."""
 
 import os
-import platform
-from importlib.metadata import version
 
 import ssq_history_evaluation as _history_evaluation
 import ssq_history_preparation as _history_preparation
 import ssq_prediction_workflow as _prediction_workflow
+import ssq_report_output as _report_output
 import ssq_strategy_params as _strategy_params
 import ssq_workflow_models as _workflow_models
 from ssq_anti_crowding import make_rejection_set, rejection_seed_for_issue
@@ -24,11 +23,7 @@ from ssq_console import (
 from ssq_console import (
     is_confirmation_input as _is_confirmation_input,
 )
-from ssq_core import (
-    atomic_write_text,
-    infer_next_issue,
-    local_now,
-)
+from ssq_core import atomic_write_text, infer_next_issue, local_now
 from ssq_draw_data import (
     fingerprint_draw_frame,
     normalize_draw_frame,
@@ -60,17 +55,13 @@ PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
 CSV_PATH = os.path.join(PROJECT_ROOT, 'shuangseqiu.csv')
 PARAMS_JSON_PATH = os.path.join(PROJECT_ROOT, 'best_params.json')
 REPORT_DIR = os.path.join(PROJECT_ROOT, 'report')
-RUNTIME_PACKAGES = ('numpy', 'pandas', 'lightgbm', 'scikit-learn')
+RUNTIME_PACKAGES = _report_output.RUNTIME_PACKAGES
 PreparedHistory = _workflow_models.PreparedHistory
 HistoricalEvaluation = _workflow_models.HistoricalEvaluation
 CurrentSelection = _workflow_models.CurrentSelection
 
 
-def collect_runtime_versions():
-    return {
-        'python': platform.python_version(),
-        **{package: version(package) for package in RUNTIME_PACKAGES},
-    }
+collect_runtime_versions = _report_output.collect_runtime_versions
 
 
 def load_strategy_params(filepath=PARAMS_JSON_PATH):
@@ -161,18 +152,12 @@ def display_passed_combinations(passed_combos, non_interactive):
 
 
 def save_analysis_report(data):
-    """Build, print, and atomically persist an analysis report."""
-    report = build_analysis_report(data)
-    print('\n\n' + report)
-    try:
-        os.makedirs(REPORT_DIR, exist_ok=True)
-        timestamp = data.generated_at.strftime('%Y%m%d_%H%M%S')
-        filepath = os.path.join(REPORT_DIR, f'ssq_analysis_output_{timestamp}.txt')
-        atomic_write_text(filepath, report)
-    except OSError as exc:
-        raise SystemExit(f'\n\n写入报告文件失败: {exc}') from exc
-    print(f'\n\n报告已成功保存到文件: {filepath}')
-    return filepath
+    """Compatibility wrapper for analysis report persistence."""
+    dependencies = _report_output.ReportOutputDependencies(
+        build_report=build_analysis_report,
+        write_text=atomic_write_text,
+    )
+    return _report_output.save_analysis_report(data, REPORT_DIR, dependencies)
 
 
 def run_analysis(options):
