@@ -2,8 +2,9 @@
 
 import os
 
-import pandas as pd
+import ssq_latest_draw as _latest_draw
 import ssq_report_discovery as _report_discovery
+from pandas.errors import ParserError
 from ssq_bonus_reporting import BonusReportData, format_bonus_report
 from ssq_draw_data import normalize_draw_frame, validate_draw_dates_not_future
 from ssq_draw_schedule import local_now
@@ -24,16 +25,12 @@ def find_matching_report(target_issue, report_dir=REPORT_DIR):
 
 
 def load_latest_draw(filepath=CSV_PATH):
-    frame = normalize_draw_frame(pd.read_csv(filepath, header=0))
-    validate_draw_dates_not_future(frame)
-    if frame.empty:
-        raise ValueError('开奖数据为空')
-    latest = frame.iloc[-1]
-    return {
-        'issue': int(latest['期号']),
-        'red': set(latest['红球']),
-        'blue': latest['蓝球'],
-    }
+    """Compatibility wrapper using workflow-level validation dependencies."""
+    return _latest_draw.load_latest_draw(
+        filepath,
+        normalize=normalize_draw_frame,
+        validate_dates=validate_draw_dates_not_future,
+    )
 
 
 def run_bonus_check(
@@ -45,7 +42,7 @@ def run_bonus_check(
     try:
         latest_draw = load_latest_draw(csv_path)
     except (
-        OSError, UnicodeError, TypeError, ValueError, pd.errors.ParserError
+        OSError, UnicodeError, TypeError, ValueError, ParserError
     ) as exc:
         raise SystemExit(f'读取 {csv_path} 文件失败: {exc}') from exc
 
