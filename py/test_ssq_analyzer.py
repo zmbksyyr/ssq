@@ -22,6 +22,7 @@ import ssq_backtesting as backtesting
 import ssq_config as config
 import ssq_modeling as modeling
 import ssq_reporting as reporting
+import ssq_rule_auditing as auditing
 import ssq_rules as rules
 import ssq_selection as selection
 import ssq_workflow as workflow
@@ -1261,7 +1262,7 @@ class AnalyzerTests(unittest.TestCase):
             'run_strategy_and_get_scores',
             return_value=(red_scores, blue_scores),
         ),
-        patch.object(backtesting, 'get_omission', return_value={}),
+        patch.object(auditing, 'get_omission', return_value={}),
         patch.object(backtesting, 'make_rejection_set', return_value=set()),
         patch.object(
             selection, 'build_red_pool', return_value=[1, 2, 3, 4, 5, 6]
@@ -1376,7 +1377,7 @@ class AnalyzerTests(unittest.TestCase):
         ),
         patch.object(backtesting, "rejection_seed_for_issue", return_value=123) as seed_mock,
         patch.object(backtesting, "make_rejection_set", return_value=set()) as rejection_mock,
-        patch.object(backtesting, "get_omission", return_value={}),
+        patch.object(auditing, "get_omission", return_value={}),
         patch.object(
             selection, "build_red_pool", return_value=[1, 2, 3, 4, 13, 14]
         ) as pool_mock,
@@ -1485,7 +1486,7 @@ class AnalyzerTests(unittest.TestCase):
         rules.RuleDefinition('second', True, lambda combo, *_: combo[-1] % 2 == 0),
         rules.RuleDefinition('soft', False, lambda combo, *_: False),
     )
-    with patch.object(backtesting, 'RED_RULES', custom_rules):
+    with patch.object(auditing, 'RED_RULES', custom_rules):
       result = backtesting.audit_historical_hard_pipeline(frame, periods=3)
 
     self.assertEqual(result['total'], 3)

@@ -13,8 +13,6 @@ from typing import Any
 import pandas as pd
 from ssq_backtesting import (
     BacktestRequest,
-    audit_historical_hard_pipeline,
-    audit_historical_rule_coverage,
     run_backtest,
 )
 from ssq_config import (
@@ -44,6 +42,10 @@ from ssq_modeling import (
     validate_model_sets,
 )
 from ssq_reporting import AnalysisReportData, build_analysis_report
+from ssq_rule_auditing import (
+    audit_historical_hard_pipeline,
+    audit_historical_rule_coverage,
+)
 from ssq_rules import RuleContext, filter_pipeline_stats
 from ssq_selection import (
     CandidateGenerationRequest,
