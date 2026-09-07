@@ -1,52 +1,26 @@
 """Application workflow for checking recommendations against a draw."""
 
-import glob
 import os
-import re
 
 import pandas as pd
+import ssq_report_discovery as _report_discovery
 from ssq_bonus_reporting import BonusReportData, format_bonus_report
 from ssq_draw_data import normalize_draw_frame, validate_draw_dates_not_future
 from ssq_draw_schedule import local_now
 from ssq_file_io import atomic_write_text
-from ssq_parsing import parse_issue
 from ssq_prizes import parse_report_bets
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
 CSV_PATH = os.path.join(PROJECT_ROOT, 'shuangseqiu.csv')
 REPORT_DIR = os.path.join(PROJECT_ROOT, 'report')
-TARGET_ISSUE_PATTERN = re.compile(
-    r'^Prediction_Target_Issue:[ \t]*(\S+)[ \t]*$',
-    re.MULTILINE,
-)
-
-
-def parse_report_target_issue(content):
-    """Return the report's single validated prediction target issue."""
-    matches = TARGET_ISSUE_PATTERN.findall(content)
-    if len(matches) != 1:
-        raise ValueError(f'报告目标期号元数据必须恰好出现一次，实际 {len(matches)} 次')
-    return parse_issue(matches[0])
+TARGET_ISSUE_PATTERN = _report_discovery.TARGET_ISSUE_PATTERN
+parse_report_target_issue = _report_discovery.parse_report_target_issue
 
 
 def find_matching_report(target_issue, report_dir=REPORT_DIR):
-    """Return the newest analysis report targeting the requested issue."""
-    target_issue = parse_issue(target_issue)
-    report_pattern = os.path.join(report_dir, 'ssq_analysis_output_*.txt')
-    report_files = glob.glob(report_pattern)
-    if not report_files:
-        return None, "错误: 当前目录未找到任何 'ssq_analysis_output_*.txt' 报告文件。"
-
-    for report_file in sorted(report_files, reverse=True):
-        try:
-            with open(report_file, encoding='utf-8') as handle:
-                prediction_target = parse_report_target_issue(handle.read())
-            if prediction_target == target_issue:
-                return report_file, None
-        except (OSError, UnicodeError, TypeError, ValueError) as exc:
-            print(f'警告: 读取文件 {report_file} 时出错: {exc}')
-    return None, f"错误: 未找到预测目标期号为 '{target_issue}' 的报告文件。"
+    """Compatibility wrapper using the default report directory."""
+    return _report_discovery.find_matching_report(target_issue, report_dir)
 
 
 def load_latest_draw(filepath=CSV_PATH):
