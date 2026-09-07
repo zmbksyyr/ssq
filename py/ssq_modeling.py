@@ -6,6 +6,7 @@ from itertools import combinations, pairwise
 import lightgbm as lgb
 import numpy as np
 import pandas as pd
+from ssq_config import validate_strategy_params
 from ssq_core import (
     BLUE_BALLS,
     PRIME_RED_BALLS,
@@ -260,6 +261,7 @@ def run_strategy_and_get_scores(
     feature_columns,
 ):
     """Combine frequency, omission, and model signals into ball scores."""
+    params = validate_strategy_params(params)
     validate_model_sets(ml_models_red, ml_models_blue)
     feature_columns = validate_feature_columns(df_history, feature_columns)
     if df_history.empty:

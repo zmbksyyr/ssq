@@ -10,6 +10,7 @@ from ssq_config import (
     RULE_AUDIT_PERIODS,
     StrategyConfig,
     normalize_integer_param,
+    validate_strategy_params,
 )
 from ssq_core import BLUE_BALLS, PRIZE_RULES, RED_BALLS
 from ssq_modeling import (
@@ -366,6 +367,7 @@ def run_full_backtest(
         pool_modes,
         config,
     )
+    params = validate_strategy_params(params)
     print('\n' + '=' * 70)
     print(f'        最近 {num_periods} 期完整策略滚动回测')
     print('=' * 70)

@@ -660,6 +660,29 @@ class AnalyzerTests(unittest.TestCase):
           modeling.FEATURE_COLUMNS,
       )
 
+  def test_execution_boundaries_validate_strategy_params_before_work(self):
+    invalid_params = {'weight_freq': 0.9}
+    with patch.object(modeling, 'validate_model_sets') as validate_models:
+      with self.assertRaisesRegex(ValueError, '总和为 1'):
+        modeling.run_strategy_and_get_scores(
+            pd.DataFrame(columns=modeling.FEATURE_COLUMNS),
+            invalid_params,
+            {},
+            {},
+            modeling.FEATURE_COLUMNS,
+        )
+      validate_models.assert_not_called()
+
+    with patch.object(backtesting, 'train_prediction_models') as train:
+      with self.assertRaisesRegex(ValueError, '总和为 1'):
+        backtesting.run_full_backtest(
+            pd.DataFrame(),
+            invalid_params,
+            modeling.FEATURE_COLUMNS,
+            1,
+        )
+      train.assert_not_called()
+
   def test_strategy_scores_with_single_class_training_history(self):
     history = modeling.feature_engineer(pd.DataFrame({
         '红球': [[1, 2, 3, 4, 5, 6] for _ in range(12)],
