@@ -394,6 +394,7 @@ class AnalyzerTests(unittest.TestCase):
     self.assertEqual(result.recommendations, result.passed_combos[:2])
     self.assertEqual(check.call_count, 7)
     self.assertEqual(select.call_args.kwargs['limit'], 2)
+    self.assertIs(select.call_args.kwargs['context'], context)
 
   def test_strategy_config_rejects_incoherent_selection_limits(self):
     with self.assertRaises(ValueError):
@@ -580,6 +581,32 @@ class AnalyzerTests(unittest.TestCase):
         rules.score_red_combination(combo, scores, last_draw, previous_draw),
         expected,
     )
+
+  def test_combination_scoring_receives_the_complete_rule_context(self):
+    scores = {ball: float(ball) for ball in range(1, 34)}
+    combo = (3, 8, 14, 21, 27, 32)
+    context = rules.RuleContext(
+        omission_values={1: 7},
+        recent_draws=({1, 2, 3},),
+        last_draw={4},
+        previous_draw={5},
+    )
+    context_rule = rules.RuleDefinition(
+        'context_rule',
+        False,
+        lambda _combo, _context: True,
+        0.25,
+        lambda _combo, actual_context: (
+            actual_context.omission_values[1] / 7
+            if actual_context.recent_draws else 0.0
+        ),
+    )
+
+    with patch.object(rules, 'RED_RULES', (context_rule,)):
+      score = rules.score_red_combination(combo, scores, context=context)
+
+    expected_signal = rules.score_rank_center_preference(combo, scores)
+    self.assertAlmostEqual(score, 0.50 * expected_signal + 0.25)
 
   def test_rank_signal_prefers_center_over_both_extremes(self):
     scores = {n: float(34 - n) for n in range(1, 34)}

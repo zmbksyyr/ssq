@@ -144,9 +144,8 @@ def generate_red_candidates(
     recommendations = tuple(select_recommendations(
         passed_combos,
         red_scores,
-        context.last_draw,
-        context.previous_draw,
         limit=config.recommendation_count,
+        context=context,
     ))
     return RedCandidateSelection(
         red_pool=red_pool,
@@ -180,6 +179,7 @@ def find_best_7_red_combinations(
     red_scores=None,
     last_draw_set=None,
     last_2_draw_set=None,
+    context=None,
 ):
     """Rank every 7-red ticket by valid subticket coverage, then strategy score."""
     if not passed_combos_tuples:
@@ -209,6 +209,7 @@ def find_best_7_red_combinations(
                     last_draw_set,
                     last_2_draw_set,
                     rank_center_scores,
+                    context,
                 )
                 for subticket in subtickets
             ) / len(subtickets)

@@ -291,11 +291,14 @@ def score_rank_center_preference(combo, red_scores, rank_center_scores=None):
 
 
 def score_red_combination(combo, red_scores, last_draw=None, previous_draw=None,
-                          rank_center_scores=None):
+                          rank_center_scores=None, context=None):
     signal = score_rank_center_preference(
         combo, red_scores, rank_center_scores
     )
-    context = RuleContext(last_draw=last_draw, previous_draw=previous_draw)
+    context = context or RuleContext(
+        last_draw=last_draw,
+        previous_draw=previous_draw,
+    )
     rule_score = sum(
         rule.score_weight * rule.scorer(combo, context)
         for rule in RED_RULES if rule.scorer is not None
@@ -310,18 +313,23 @@ def select_recommendations(
     previous_draw=None,
     limit=DEFAULT_NUM_RECOMMENDATIONS,
     max_shared=DEFAULT_MAX_SHARED_RED_BALLS,
+    context=None,
 ):
     if limit <= 0:
         return []
     if not 0 <= max_shared <= 6:
         raise ValueError('max_shared must be between 0 and 6')
     rank_center_scores = build_rank_center_scores(red_scores)
+    context = context or RuleContext(
+        last_draw=last_draw,
+        previous_draw=previous_draw,
+    )
     ranked = sorted(
         passed_combos,
         key=lambda combo: (
             -score_red_combination(
                 combo, red_scores, last_draw, previous_draw,
-                rank_center_scores,
+                rank_center_scores, context,
             ),
             combo,
         ),

@@ -246,8 +246,7 @@ def run_analysis(options):
         selection.passed_combos,
         selection.red_pool,
         red_scores,
-        last_draw,
-        previous_draw,
+        context=context,
     )
 
     print('\n--- 正在生成最终推荐报告 ---')
