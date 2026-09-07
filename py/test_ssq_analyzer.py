@@ -4,6 +4,7 @@ import random
 import sys
 import tempfile
 import unittest
+from collections import Counter
 from datetime import datetime, timezone
 from itertools import combinations
 from pathlib import Path
@@ -15,6 +16,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent))
 import ssq_analyzer as analyzer
+import ssq_backtesting as backtesting
 import ssq_config as config
 import ssq_modeling as modeling
 import ssq_rules as rules
@@ -79,6 +81,10 @@ class AnalyzerTests(unittest.TestCase):
     self.assertIs(analyzer.build_red_pool, selection.build_red_pool)
     self.assertIs(analyzer.generate_red_candidates, selection.generate_red_candidates)
 
+  def test_analyzer_reexports_backtesting_functions(self):
+    self.assertIs(analyzer.BacktestResult, backtesting.BacktestResult)
+    self.assertIs(analyzer.run_full_backtest, backtesting.run_full_backtest)
+
   def test_strategy_param_loader_distinguishes_file_states(self):
     with tempfile.TemporaryDirectory() as directory:
       path = Path(directory) / 'params.json'
@@ -97,7 +103,7 @@ class AnalyzerTests(unittest.TestCase):
       self.assertEqual(loaded.values, analyzer.DEFAULT_PARAMS)
 
   def test_analysis_report_builder_preserves_section_contracts(self):
-    backtest = analyzer.BacktestResult(0, 0, 0, 0, 0, analyzer.Counter())
+    backtest = backtesting.BacktestResult(0, 0, 0, 0, 0, Counter())
     candidate_selection = selection.RedCandidateSelection((), (), (), ())
     coverage = {
         name: {'passed': 0, 'total': 0, 'rate': 0.0}
@@ -442,13 +448,13 @@ class AnalyzerTests(unittest.TestCase):
     self.assertEqual(ranked[0], ((2, 3, 4, 5, 6, 7, 8), 7))
 
   def test_backtest_result_metrics(self):
-    result = analyzer.BacktestResult(
+    result = backtesting.BacktestResult(
         50, 48, 480, 960, 280, {}, evaluated_periods=50,
-        pool_red_hits=155, ticket_red_hit_counts=analyzer.Counter({2: 360, 3: 100, 4: 20}),
+        pool_red_hits=155, ticket_red_hit_counts=Counter({2: 360, 3: 100, 4: 20}),
         candidate_tickets=480,
-        candidate_red_hit_counts=analyzer.Counter({1: 100, 2: 280, 3: 80, 4: 20}),
+        candidate_red_hit_counts=Counter({1: 100, 2: 280, 3: 80, 4: 20}),
         blue_hit_periods=4,
-        rank_band_hits=analyzer.Counter({"high": 30, "middle": 100, "low": 20, "other": 150}),
+        rank_band_hits=Counter({"high": 30, "middle": 100, "low": 20, "other": 150}),
     )
     self.assertEqual(result.profit, -680)
     self.assertAlmostEqual(result.roi, 280 / 960)
@@ -496,13 +502,19 @@ class AnalyzerTests(unittest.TestCase):
     )
 
     with (
-        patch.object(analyzer, "train_prediction_models", return_value=(red_models, blue_models)),
         patch.object(
-            analyzer, "run_strategy_and_get_scores", return_value=(red_scores, blue_scores)
+            backtesting,
+            "train_prediction_models",
+            return_value=(red_models, blue_models),
+        ) as train_mock,
+        patch.object(
+            backtesting,
+            "run_strategy_and_get_scores",
+            return_value=(red_scores, blue_scores),
         ),
-        patch.object(analyzer, "rejection_seed_for_issue", return_value=123) as seed_mock,
-        patch.object(analyzer, "make_rejection_set", return_value=set()) as rejection_mock,
-        patch.object(analyzer, "get_omission", return_value={}),
+        patch.object(backtesting, "rejection_seed_for_issue", return_value=123) as seed_mock,
+        patch.object(backtesting, "make_rejection_set", return_value=set()) as rejection_mock,
+        patch.object(backtesting, "get_omission", return_value={}),
         patch.object(
             selection, "build_red_pool", return_value=[1, 2, 3, 4, 13, 14]
         ) as pool_mock,
@@ -513,11 +525,14 @@ class AnalyzerTests(unittest.TestCase):
             return_value=[(1, 2, 3, 4, 13, 14)],
         ) as selection_mock,
     ):
-      result = analyzer.run_full_backtest(
+      result = backtesting.run_full_backtest(
           frame, analyzer.DEFAULT_PARAMS, [], 1, config=config
       )["mixed"]
 
     seed_mock.assert_called_once_with(99, 2025051)
+    training_frame = train_mock.call_args.args[0]
+    self.assertEqual(training_frame.iloc[-1]['期号'], 2025050)
+    self.assertNotIn(2025051, training_frame['期号'].tolist())
     self.assertEqual(rejection_mock.call_args.args[0], 1234)
     pool_mock.assert_called_once_with(red_scores, config=config, mode="mixed")
     self.assertEqual(selection_mock.call_args.kwargs['limit'], 3)
@@ -587,7 +602,7 @@ class AnalyzerTests(unittest.TestCase):
         '红球': [[1, 5, 10, 18, 25, 31] for _ in range(12)],
         '蓝球': [1 for _ in range(12)],
     })
-    result = analyzer.audit_historical_rule_coverage(frame, periods=2)
+    result = backtesting.audit_historical_rule_coverage(frame, periods=2)
     self.assertEqual(set(result), set(analyzer.FILTER_NAMES))
     self.assertTrue(all(item['total'] == 2 for item in result.values()))
 
@@ -604,8 +619,8 @@ class AnalyzerTests(unittest.TestCase):
         rules.RuleDefinition('second', True, lambda combo, *_: combo[-1] % 2 == 0),
         rules.RuleDefinition('soft', False, lambda combo, *_: False),
     )
-    with patch.object(analyzer, 'RED_RULES', custom_rules):
-      result = analyzer.audit_historical_hard_pipeline(frame, periods=3)
+    with patch.object(backtesting, 'RED_RULES', custom_rules):
+      result = backtesting.audit_historical_hard_pipeline(frame, periods=3)
 
     self.assertEqual(result['total'], 3)
     self.assertEqual(result['passed'], 1)

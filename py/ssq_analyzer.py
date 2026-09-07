@@ -4,10 +4,18 @@ import os
 import random
 import sys
 import time
-from collections import Counter
-from dataclasses import dataclass, field
 
 import pandas as pd
+from ssq_backtesting import (  # noqa: F401 - compatibility exports
+    FILTER_NAMES,
+    BacktestAccumulator,
+    BacktestResult,
+    audit_historical_hard_pipeline,
+    audit_historical_rule_coverage,
+    evaluate_backtest_mode,
+    historical_rule_context,
+    run_full_backtest,
+)
 from ssq_config import (  # noqa: F401 - compatibility exports
     BACKTEST_PERIODS,
     COUNTDOWN_SECONDS,
@@ -34,7 +42,6 @@ from ssq_config import (  # noqa: F401 - compatibility exports
     validate_strategy_params,
 )
 from ssq_core import (
-    PRIZE_RULES,
     atomic_write_text,
     infer_next_issue,
     local_now,
@@ -54,13 +61,7 @@ from ssq_modeling import (  # noqa: F401 - compatibility exports
     validate_model_sets,
 )
 from ssq_reporting import AnalysisReportData, build_analysis_report
-from ssq_rules import (
-    FILTER_NAMES,
-    RED_RULES,
-    RuleContext,
-    explain_filter_failures,
-    filter_pipeline_stats,
-)
+from ssq_rules import RuleContext, filter_pipeline_stats
 from ssq_selection import (  # noqa: F401 - compatibility exports
     RANK_BAND_WIDTHS,
     RANK_BANDS,
@@ -74,7 +75,6 @@ from ssq_selection import (  # noqa: F401 - compatibility exports
     rejection_seed_for_issue,
     select_recommendations,
 )
-from tqdm import tqdm
 
 # --- 平台特定模块导入, 用于实现非阻塞的键盘输入监听 ---
 try:
@@ -83,121 +83,6 @@ try:
 except ImportError:
     # 如果导入失败 (说明不是 Windows 平台), 则导入 select, 适用于 Linux/Mac
     import select
-
-@dataclass(frozen=True)
-class BacktestResult:
-    periods: int
-    active_periods: int
-    tickets: int
-    cost: int
-    winnings: int
-    prize_counts: Counter
-    evaluated_periods: int = 0
-    pool_red_hits: int = 0
-    ticket_red_hit_counts: Counter = field(default_factory=Counter)
-    candidate_tickets: int = 0
-    candidate_red_hit_counts: Counter = field(default_factory=Counter)
-    blue_hit_periods: int = 0
-    rank_band_hits: Counter = field(default_factory=Counter)
-
-    @property
-    def profit(self):
-        return self.winnings - self.cost
-
-    @property
-    def roi(self):
-        return self.winnings / self.cost if self.cost else 0.0
-
-    @property
-    def average_pool_red_hits(self):
-        return self.pool_red_hits / self.evaluated_periods if self.evaluated_periods else 0.0
-
-    @property
-    def average_ticket_red_hits(self):
-        if not self.tickets:
-            return 0.0
-        total_hits = sum(hits * count for hits, count in self.ticket_red_hit_counts.items())
-        return total_hits / self.tickets
-
-    @property
-    def three_plus_red_tickets(self):
-        return sum(count for hits, count in self.ticket_red_hit_counts.items() if hits >= 3)
-
-    @property
-    def three_plus_red_rate(self):
-        return self.three_plus_red_tickets / self.tickets if self.tickets else 0.0
-
-    @property
-    def average_candidate_red_hits(self):
-        if not self.candidate_tickets:
-            return 0.0
-        total_hits = sum(
-            hits * count for hits, count in self.candidate_red_hit_counts.items()
-        )
-        return total_hits / self.candidate_tickets
-
-    @property
-    def candidate_three_plus_red_rate(self):
-        if not self.candidate_tickets:
-            return 0.0
-        three_plus = sum(
-            count for hits, count in self.candidate_red_hit_counts.items() if hits >= 3
-        )
-        return three_plus / self.candidate_tickets
-
-    @property
-    def ranking_red_hit_delta(self):
-        return self.average_ticket_red_hits - self.average_candidate_red_hits
-
-    @property
-    def ranking_three_plus_delta(self):
-        return self.three_plus_red_rate - self.candidate_three_plus_red_rate
-
-    @property
-    def blue_hit_rate(self):
-        return self.blue_hit_periods / self.evaluated_periods if self.evaluated_periods else 0.0
-
-    def rank_band_rate(self, band):
-        total_actual_reds = self.evaluated_periods * 6
-        return self.rank_band_hits[band] / total_actual_reds if total_actual_reds else 0.0
-
-    def rank_band_lift(self, band):
-        expected_rate = RANK_BAND_WIDTHS[band] / 33
-        return self.rank_band_rate(band) / expected_rate if expected_rate else 0.0
-
-
-@dataclass
-class BacktestAccumulator:
-    prize_counts: Counter = field(default_factory=Counter)
-    cost: int = 0
-    winnings: int = 0
-    active_periods: int = 0
-    evaluated_periods: int = 0
-    tickets: int = 0
-    pool_red_hits: int = 0
-    ticket_red_hit_counts: Counter = field(default_factory=Counter)
-    candidate_tickets: int = 0
-    candidate_red_hit_counts: Counter = field(default_factory=Counter)
-    blue_hit_periods: int = 0
-    rank_band_hits: Counter = field(default_factory=Counter)
-
-    def to_result(self, periods):
-        return BacktestResult(
-            periods=periods,
-            active_periods=self.active_periods,
-            tickets=self.tickets,
-            cost=self.cost,
-            winnings=self.winnings,
-            prize_counts=self.prize_counts,
-            evaluated_periods=self.evaluated_periods,
-            pool_red_hits=self.pool_red_hits,
-            ticket_red_hit_counts=self.ticket_red_hit_counts,
-            candidate_tickets=self.candidate_tickets,
-            candidate_red_hit_counts=self.candidate_red_hit_counts,
-            blue_hit_periods=self.blue_hit_periods,
-            rank_band_hits=self.rank_band_hits,
-        )
-
 
 # --- 文件路径设置 ---
 # 获取当前脚本文件所在的目录的绝对路径
@@ -267,85 +152,6 @@ def load_and_preprocess_data(filepath=CSV_PATH):
         return None
     return df.drop(columns=['_parsed_date'])
 
-def historical_rule_context(full_df, index):
-    """Build rule inputs using only draws before the audited issue."""
-    history = full_df.iloc[:index]
-    recent = [set(draw) for draw in history.iloc[-10:]['红球']]
-    return RuleContext(
-        omission_values=get_omission(history),
-        recent_draws=recent,
-        last_draw=recent[-1],
-        previous_draw=recent[-2],
-    )
-
-
-def audit_historical_rule_coverage(full_df, periods=RULE_AUDIT_PERIODS):
-    """Measure how often each strategy rule accepts actual historical draws."""
-    if periods <= 0 or len(full_df) < 11:
-        return {name: {'passed': 0, 'total': 0, 'rate': 0.0} for name in FILTER_NAMES}
-    start = max(10, len(full_df) - periods)
-    passed_counts = Counter()
-    total = 0
-    for index in range(start, len(full_df)):
-        combo = tuple(full_df.iloc[index]['红球'])
-        failures = set(explain_filter_failures(
-            combo, historical_rule_context(full_df, index)
-        ))
-        for name in FILTER_NAMES:
-            if name not in failures:
-                passed_counts[name] += 1
-        total += 1
-    return {
-        name: {'passed': passed_counts[name], 'total': total,
-               'rate': passed_counts[name] / total if total else 0.0}
-        for name in FILTER_NAMES
-    }
-
-
-def audit_historical_hard_pipeline(full_df, periods=RULE_AUDIT_PERIODS):
-    """Measure cumulative survival of actual draws through ordered hard rules."""
-    hard_rules = [rule for rule in RED_RULES if rule.hard]
-    if periods <= 0 or len(full_df) < 11:
-        return {
-            'total': 0,
-            'passed': 0,
-            'rate': 0.0,
-            'stages': [
-                {'rule': rule.name, 'before': 0, 'removed': 0, 'remaining': 0}
-                for rule in hard_rules
-            ],
-        }
-
-    start = max(10, len(full_df) - periods)
-    total = len(full_df) - start
-    remaining_counts = Counter()
-    for index in range(start, len(full_df)):
-        combo = tuple(full_df.iloc[index]['红球'])
-        context = historical_rule_context(full_df, index)
-        for rule in hard_rules:
-            if not rule.evaluator(combo, context):
-                break
-            remaining_counts[rule.name] += 1
-
-    stages = []
-    before = total
-    for rule in hard_rules:
-        remaining = remaining_counts[rule.name]
-        stages.append({
-            'rule': rule.name,
-            'before': before,
-            'removed': before - remaining,
-            'remaining': remaining,
-        })
-        before = remaining
-    return {
-        'total': total,
-        'passed': before,
-        'rate': before / total if total else 0.0,
-        'stages': stages,
-    }
-
-
 # --- 3. 交互式输入模块 ---
 
 
@@ -378,128 +184,6 @@ def get_user_input_with_timeout(timeout):
     sys.stdout.write("\n倒计时结束。\n")
     sys.stdout.flush()
     return confirmed
-
-# --- 4. 核心功能模块 (回测与预测) ---
-
-def evaluate_backtest_mode(mode, current, actual_red_set, actual_blue,
-                           recommended_blue, rank_band_hits, red_scores,
-                           context, rejection_set, config):
-    """Evaluate one pool mode for one historical issue."""
-    selection = generate_red_candidates(
-        red_scores, context, rejection_set, config=config, mode=mode
-    )
-    current.evaluated_periods += 1
-    current.pool_red_hits += len(set(selection.red_pool) & actual_red_set)
-    current.rank_band_hits.update(rank_band_hits)
-    if recommended_blue == actual_blue:
-        current.blue_hit_periods += 1
-
-    if not selection.passed_combos:
-        return
-
-    red_hits_by_combo = {
-        combo: len(set(combo) & actual_red_set)
-        for combo in selection.passed_combos
-    }
-    current.candidate_tickets += len(selection.passed_combos)
-    current.candidate_red_hit_counts.update(red_hits_by_combo.values())
-    current.active_periods += 1
-    current.tickets += len(selection.recommendations)
-    current.cost += len(selection.recommendations) * 2
-    blue_hits = int(recommended_blue == actual_blue)
-    for combo in selection.recommendations:
-        red_hits = red_hits_by_combo[combo]
-        current.ticket_red_hit_counts[red_hits] += 1
-        hit_key = (red_hits, blue_hits)
-        prize = PRIZE_RULES.get(hit_key, 0)
-        if prize > 0:
-            current.winnings += prize
-            current.prize_counts[hit_key] += 1
-
-
-def run_full_backtest(full_df, params, feature_columns, num_periods,
-                      pool_modes=("mixed",), config=DEFAULT_STRATEGY_CONFIG):
-    """
-    对最近 N 期执行滚动策略回测。
-    每一步仅使用当前期之前的数据重新训练模型，避免未来数据泄露。
-    返回每种候选池模式对应的 BacktestResult。
-    """
-    print("\n" + "="*70)
-    print(f"        最近 {num_periods} 期完整策略滚动回测")
-    print("="*70)
-    
-    # 检查是否有足够的数据进行回测 (需要回测期数 + 至少50期用于模型初次训练)
-    if len(full_df) < num_periods + 50:
-        print(f"历史数据不足 {num_periods + 50} 期，无法执行回测。跳过此步骤。")
-        return {mode: BacktestResult(0, 0, 0, 0, 0, Counter()) for mode in pool_modes}
-
-    metrics = {mode: BacktestAccumulator() for mode in pool_modes}
-    
-    # 定义回测的时间范围，从倒数第N期到倒数第1期
-    backtest_range = range(len(full_df) - num_periods, len(full_df))
-    
-    # 开始回测循环，使用tqdm显示进度条
-    with tqdm(total=len(backtest_range), desc="执行严谨回测", ncols=80) as pbar:
-        for i in backtest_range:
-            # 1. 准备当期的数据：i之前是历史，i是当期的开奖结果
-            history_df_for_step = full_df.iloc[:i]
-            actual_draw = full_df.iloc[i]
-            actual_red_set = set(actual_draw['红球'])
-            actual_blue = actual_draw['蓝球']
-            
-            # --- 核心修正部分: 在每次循环内部，仅使用当前的历史数据重新训练一套全新的模型 ---
-            training_data_for_step = history_df_for_step.iloc[5:].copy()
-            if len(training_data_for_step) < 20: # 如果用于训练的数据太少，则跳过本期回测
-                pbar.update(1)
-                continue
-            
-            local_ml_models_red, local_ml_models_blue = train_prediction_models(
-                training_data_for_step, feature_columns
-            )
-            
-            if len(local_ml_models_red) != 33 or len(local_ml_models_blue) != 16: # 如果模型训练不完整，跳过
-                pbar.update(1)
-                continue
-            # --- 核心修正部分结束 ---
-
-            # 2. 使用刚刚训练好的【局部模型】进行评分和筛选
-            red_scores, blue_scores = run_strategy_and_get_scores(history_df_for_step, params, local_ml_models_red, local_ml_models_blue, feature_columns)
-            
-            # 在回测中，我们假设每期只追评分最高的那个蓝球
-            recommended_blue = max(blue_scores, key=blue_scores.get)
-            rank_band_hits = count_actual_reds_by_rank_band(red_scores, actual_red_set)
-            
-            # --- 在回测的每一步都重新应用完整的过滤流程 ---
-            rejection_seed = rejection_seed_for_issue(
-                config.random_seed, actual_draw['期号']
-            )
-            rejection_set = make_rejection_set(
-                config.rejection_lib_size, random.Random(rejection_seed)
-            )
-            omission = get_omission(history_df_for_step)
-            last_10 = [set(d) for d in history_df_for_step.iloc[-10:]['红球'].tolist()]
-            last_1 = last_10[-1]; last_2 = last_10[-2]
-            context = RuleContext(
-                omission_values=omission,
-                recent_draws=last_10,
-                last_draw=last_1,
-                previous_draw=last_2,
-            )
-            
-            for mode in pool_modes:
-                evaluate_backtest_mode(
-                    mode, metrics[mode], actual_red_set, actual_blue,
-                    recommended_blue, rank_band_hits, red_scores, context,
-                    rejection_set, config,
-                )
-            pbar.update(1)
-
-    print("回测完成。\n")
-    return {
-        mode: value.to_result(len(backtest_range))
-        for mode, value in metrics.items()
-    }
-
 
 # --- 5. 主执行逻辑 ---
 if __name__ == '__main__':

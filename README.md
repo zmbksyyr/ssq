@@ -7,7 +7,7 @@
 ## 流程
 
 1. `ssq_data_processor.py` 使用含日期的 TXT 权威源更新 `shuangseqiu.csv`，并用 HTML 源交叉核对号码。
-2. `ssq_config.py` 管理策略默认值、参数校验和命令行选项，`ssq_modeling.py` 负责特征工程、模型训练和号码评分，`ssq_selection.py` 构建候选池并执行反撞号与组合选择，`ssq_analyzer.py` 执行滚动回测和流程编排，`ssq_rules.py` 集中管理硬规则与软评分，`ssq_reporting.py` 独立生成分析报告。
+2. `ssq_config.py` 管理策略默认值、参数校验和命令行选项，`ssq_modeling.py` 负责特征工程、模型训练和号码评分，`ssq_selection.py` 构建候选池并执行反撞号与组合选择，`ssq_backtesting.py` 负责历史规则审计和严格滚动回测，`ssq_analyzer.py` 负责数据加载与流程编排，`ssq_rules.py` 集中管理硬规则与软评分，`ssq_reporting.py` 独立生成分析报告。
 3. `ssq_bonus_calculation.py` 使用最新开奖结果核对对应预测报告。
 4. GitHub Actions 每周一、三、五北京时间 06:00 自动运行并提交结果。
 
