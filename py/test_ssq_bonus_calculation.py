@@ -43,16 +43,52 @@ class BonusCalculationTests(unittest.TestCase):
         self.assertEqual(duplex['blue'], [1, 3, 5, 7, 9, 11, 13])
 
     def test_invalid_duplex_numbers_are_rejected(self):
-        content = """【7+N 复式推荐 (1组)】
+        content = """【单式推荐 (0组)】
+【7+N 复式推荐 (1组)】
   红球: [1, 2, 3, 4, 5, 6, 6]
   蓝球: [1, 1]
 """
         with tempfile.NamedTemporaryFile('w', encoding='utf-8', delete=False) as handle:
             handle.write(content)
             path = handle.name
-        _, duplex = bonus.parse_report_bets(path)
-        Path(path).unlink()
-        self.assertEqual(duplex, {'red': [], 'blue': []})
+        try:
+            with self.assertRaisesRegex(ValueError, '复式投注解析失败'):
+                bonus.parse_report_bets(path)
+        finally:
+            Path(path).unlink()
+
+    def test_report_rejects_missing_single_bets(self):
+        content = """【单式推荐 (2组)】
+组合 1: 红球 [1, 2, 3, 4, 5, 6] 蓝球 [09]
+【7+N 复式推荐 (1组)】
+红球: [1, 2, 3, 4, 5, 6, 7]
+蓝球: [1, 3, 5, 7, 9, 11, 13]
+"""
+        with tempfile.NamedTemporaryFile('w', encoding='utf-8', delete=False) as handle:
+            handle.write(content)
+            path = handle.name
+        try:
+            with self.assertRaisesRegex(ValueError, '声明 2 注，实际解析 1 注'):
+                bonus.parse_report_bets(path)
+        finally:
+            Path(path).unlink()
+
+    def test_report_rejects_duplicate_single_bets(self):
+        content = """【单式推荐 (2组)】
+组合 1: 红球 [1, 2, 3, 4, 5, 6] 蓝球 [09]
+组合 2: 红球 [1, 2, 3, 4, 5, 6] 蓝球 [09]
+【7+N 复式推荐 (1组)】
+红球: [1, 2, 3, 4, 5, 6, 7]
+蓝球: [1, 3, 5, 7, 9, 11, 13]
+"""
+        with tempfile.NamedTemporaryFile('w', encoding='utf-8', delete=False) as handle:
+            handle.write(content)
+            path = handle.name
+        try:
+            with self.assertRaisesRegex(ValueError, '重复单式投注'):
+                bonus.parse_report_bets(path)
+        finally:
+            Path(path).unlink()
 
     def test_duplex_counts_hit_and_missed_blue_subtickets(self):
         total, breakdown, _ = bonus.calculate_duplex_prize(
