@@ -114,7 +114,11 @@ def parse_report_bets(filepath):
 
 def calculate_single_prize(bet_reds, bet_blue, winning_reds, winning_blue):
     """计算单式票的奖金和中奖等级。"""
-    red_hits = len(set(bet_reds) & winning_reds)
+    bet_red_set = set(parse_red_balls(bet_reds))
+    winning_red_set = set(parse_red_balls(winning_reds))
+    bet_blue = parse_blue_ball(bet_blue)
+    winning_blue = parse_blue_ball(winning_blue)
+    red_hits = len(bet_red_set & winning_red_set)
     blue_hit = 1 if bet_blue == winning_blue else 0
     hit_key = (red_hits, blue_hit)
     
@@ -125,6 +129,10 @@ def calculate_single_prize(bet_reds, bet_blue, winning_reds, winning_blue):
 
 def calculate_duplex_prize(bet_reds, bet_blues, winning_reds, winning_blue):
     """使用组合数学计算复式票的总奖金和奖项构成。"""
+    bet_reds = parse_red_balls(bet_reds, expected_count=7)
+    bet_blues = parse_blue_balls(bet_blues)
+    winning_reds = set(parse_red_balls(winning_reds))
+    winning_blue = parse_blue_ball(winning_blue)
     total_prize = 0
     prize_breakdown = {}
     
@@ -162,7 +170,17 @@ def load_latest_draw(filepath=CSV_PATH):
     frame['期号'] = frame['期号'].apply(parse_issue)
     if frame['期号'].duplicated().any():
         raise ValueError("开奖数据存在重复期号")
-    latest = frame.sort_values('期号').iloc[-1]
+    if frame.empty:
+        raise ValueError("开奖数据为空")
+    frame['_parsed_date'] = pd.to_datetime(
+        frame['日期'], format='%Y-%m-%d', errors='raise'
+    )
+    if ((frame['期号'] // 1000) != frame['_parsed_date'].dt.year).any():
+        raise ValueError("期号年份与开奖日期不一致")
+    ordered = frame.sort_values('期号')
+    if not ordered['_parsed_date'].is_monotonic_increasing:
+        raise ValueError("期号与开奖日期顺序不一致")
+    latest = ordered.iloc[-1]
     return {
         'issue': int(latest['期号']),
         'red': set(parse_red_balls(latest['红球'])),
@@ -204,7 +222,7 @@ if __name__ == '__main__':
     for i, bet in enumerate(single_bets, 1):
         prize, prize_name, summary = calculate_single_prize(bet['red'], bet['blue'], winning_reds, winning_blue)
         total_single_bonus += prize
-        single_details.append(f"  组合 {i:>2}: {str(bet['red']):<24} 蓝球 [{bet['blue']:02d}] -> {summary}, {prize_name}, 奖金: {prize} 元")
+        single_details.append(f"  组合 {i:>2}: {str(bet['red']):<24} 蓝球 [{bet['blue']:02d}] -> {summary}, {prize_name}, 参考奖金: {prize} 元")
 
     duplex_prize, duplex_breakdown, duplex_summary = calculate_duplex_prize(duplex_bet['red'], duplex_bet['blue'], winning_reds, winning_blue)
 
@@ -217,10 +235,11 @@ if __name__ == '__main__':
     report_lines.append(f"核对报告文件: {os.path.basename(report_filepath)}")
     report_lines.append(f"核对开奖期数: {target_issue}")
     report_lines.append(f"官方开奖号码: 红球 {sorted(list(winning_reds))}  蓝球 [{winning_blue}]")
+    report_lines.append("奖金说明: 使用固定参考金额估算；一等奖、二等奖实际金额以官方派奖为准。")
 
     report_lines.append("\n--- 1. 单式推荐核对详情 ---")
     report_lines.extend(single_details)
-    report_lines.append(f"\n单式推荐总奖金: {total_single_bonus} 元")
+    report_lines.append(f"\n单式推荐参考奖金: {total_single_bonus} 元")
 
     report_lines.append("\n--- 2. 复式推荐核对详情 ---")
     report_lines.append(f"  红球: {duplex_bet['red']}")
@@ -232,10 +251,10 @@ if __name__ == '__main__':
         report_lines.append("  奖项构成:")
         for name, count in sorted(duplex_breakdown.items(), key=lambda item: list(PRIZE_NAMES.values()).index(item[0])):
              report_lines.append(f"    - {name}: {count} 注")
-    report_lines.append(f"\n复式推荐总奖金: {duplex_prize} 元")
+    report_lines.append(f"\n复式推荐参考奖金: {duplex_prize} 元")
     
     report_lines.append("\n" + "-"*70)
-    report_lines.append(f"总计中奖金额: {total_single_bonus + duplex_prize} 元")
+    report_lines.append(f"总计参考奖金: {total_single_bonus + duplex_prize} 元")
     report_lines.append("="*70)
 
     final_report_string = "\n".join(report_lines)

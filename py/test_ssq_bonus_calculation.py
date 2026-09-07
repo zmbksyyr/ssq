@@ -25,6 +25,20 @@ class BonusCalculationTests(unittest.TestCase):
         self.assertEqual(latest['red'], {7, 8, 9, 10, 11, 12})
         self.assertEqual(latest['blue'], 16)
 
+    def test_latest_draw_rejects_issue_date_year_mismatch(self):
+        content = (
+            '期号,日期,红球,蓝球\n'
+            '2026001,2025-12-31,"01,02,03,04,05,06",07\n'
+        )
+        with tempfile.NamedTemporaryFile('w', encoding='utf-8', delete=False) as handle:
+            handle.write(content)
+            path = handle.name
+        try:
+            with self.assertRaisesRegex(ValueError, '期号年份'):
+                bonus.load_latest_draw(path)
+        finally:
+            Path(path).unlink()
+
     def test_parse_current_report_format(self):
         content = """【单式推荐 (2组)】
 组合 1: 红球 [1,2, 3, 4, 5, 6] 蓝球 [09]
@@ -105,6 +119,17 @@ class BonusCalculationTests(unittest.TestCase):
         )
         self.assertEqual(total, 708_400)
         self.assertEqual(sum(breakdown.values()), 49)
+
+    def test_prize_calculators_reject_invalid_direct_inputs(self):
+        with self.assertRaisesRegex(ValueError, '不能重复'):
+            bonus.calculate_single_prize(
+                [1, 1, 2, 3, 4, 5], 7, {1, 2, 3, 4, 5, 6}, 7
+            )
+        with self.assertRaisesRegex(ValueError, '不能重复'):
+            bonus.calculate_duplex_prize(
+                [1, 2, 3, 4, 5, 6, 7], [1, 1],
+                {1, 2, 3, 4, 5, 6}, 7,
+            )
 
 
 if __name__ == '__main__':

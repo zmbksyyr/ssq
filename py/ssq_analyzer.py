@@ -1146,15 +1146,15 @@ if __name__ == '__main__':
         f"{backtest.evaluated_periods} ({backtest.blue_hit_rate:.2%})"
     )
     report_lines.append(f"  - 总投入: {backtest.cost:.2f} 元")
-    report_lines.append(f"  - 总奖金: {backtest.winnings:.2f} 元")
-    report_lines.append(f"  - 净收益: {backtest.profit:.2f} 元")
-    report_lines.append(f"  - 回报率: {backtest.roi:.2%}")
+    report_lines.append(f"  - 固定参考奖金: {backtest.winnings:.2f} 元")
+    report_lines.append(f"  - 参考净收益: {backtest.profit:.2f} 元")
+    report_lines.append(f"  - 参考回报率: {backtest.roi:.2%}")
     if len(backtests) > 1:
         report_lines.append("  - 候选池对照:")
         for name, result in backtests.items():
             report_lines.append(
-                f"    {name:<6} 投入 {result.cost:>6.0f} 元，奖金 {result.winnings:>6.0f} 元，"
-                f"净收益 {result.profit:>7.0f} 元，回报率 {result.roi:>7.2%}，"
+                f"    {name:<6} 投入 {result.cost:>6.0f} 元，参考奖金 {result.winnings:>6.0f} 元，"
+                f"参考净收益 {result.profit:>7.0f} 元，参考回报率 {result.roi:>7.2%}，"
                 f"池覆盖 {result.average_pool_red_hits:.2f}/6，"
                 f"单注红球 {result.average_ticket_red_hits:.3f}/6 "
                 f"({result.ranking_red_hit_delta:+.3f})，"
