@@ -33,13 +33,13 @@ from ssq_rank_bands import (
 from ssq_rank_bands import (
     build_rank_bands as _build_rank_bands,
 )
-from ssq_rule_models import RecommendationRequest, RuleContext
-from ssq_rule_registry import passes_red_filters
-from ssq_rules import (
+from ssq_ranking import (
     build_combination_score_context,
     score_combination,
     select_recommendation_portfolio,
 )
+from ssq_rule_models import RecommendationRequest, RuleContext
+from ssq_rule_registry import passes_red_filters
 from tqdm import tqdm
 
 
