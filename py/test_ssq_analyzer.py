@@ -109,6 +109,40 @@ class AnalyzerTests(unittest.TestCase):
     second = analyzer.score_red_combination(combo, scores)
     self.assertEqual(first, second)
 
+  def test_positive_probability_handles_single_class_models(self):
+    features = pd.DataFrame({'value': range(10)})
+    prediction_rows = features.iloc[:2]
+    for target, expected in (([0] * 10, 0.0), ([1] * 10, 1.0)):
+      model = analyzer.lgb.LGBMClassifier(random_state=42, verbose=-1)
+      model.fit(features, target)
+      probabilities = analyzer.predict_positive_probability(model, prediction_rows)
+      self.assertEqual(probabilities.tolist(), [expected, expected])
+
+  def test_positive_probability_uses_the_positive_class_column(self):
+    model = analyzer.lgb.LGBMClassifier(random_state=42, verbose=-1)
+    features = pd.DataFrame({'value': range(20)})
+    model.fit(features, [0, 1] * 10)
+    expected = model.predict_proba(features.iloc[:2])[:, 1]
+    actual = analyzer.predict_positive_probability(model, features.iloc[:2])
+    self.assertTrue(analyzer.np.array_equal(actual, expected))
+
+  def test_strategy_scores_with_single_class_training_history(self):
+    history = analyzer.feature_engineer(pd.DataFrame({
+        '红球': [[1, 2, 3, 4, 5, 6] for _ in range(12)],
+        '蓝球': [1 for _ in range(12)],
+    }))
+    feature_columns = [
+        column for column in history.columns if column not in ('红球', '蓝球')
+    ]
+    red_models, blue_models = analyzer.train_prediction_models(
+        history.iloc[5:], feature_columns
+    )
+    red_scores, blue_scores = analyzer.run_strategy_and_get_scores(
+        history, analyzer.DEFAULT_PARAMS, red_models, blue_models, feature_columns
+    )
+    self.assertGreater(red_scores[1], red_scores[7])
+    self.assertGreater(blue_scores[1], blue_scores[2])
+
   def test_rule_registry_preserves_combination_score(self):
     scores = {n: n / 33 for n in range(1, 34)}
     combo = (3, 8, 14, 21, 27, 32)
