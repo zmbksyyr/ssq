@@ -10,6 +10,10 @@ from ssq_rule_definitions import (
     RED_RULES,
     SOFT_FILTER_NAMES,
 )
+from ssq_rule_diagnostics import (
+    explain_filter_failures as _explain_filter_failures,
+)
+from ssq_rule_diagnostics import filter_pipeline_stats as _filter_pipeline_stats
 from ssq_rule_scoring import (
     score_big_small_balance,
     score_odd_even_balance,
@@ -71,7 +75,7 @@ def passes_red_filters(combo, context, rejection_set=None):
 
 
 def explain_filter_failures(combo, context, rejection_set=None):
-    return _rule_execution.explain_filter_failures(
+    return _explain_filter_failures(
         combo,
         context,
         RED_RULES,
@@ -80,7 +84,7 @@ def explain_filter_failures(combo, context, rejection_set=None):
 
 
 def filter_pipeline_stats(combos, context, rejection_set=None):
-    return _rule_execution.filter_pipeline_stats(
+    return _filter_pipeline_stats(
         combos,
         context,
         RED_RULES,
