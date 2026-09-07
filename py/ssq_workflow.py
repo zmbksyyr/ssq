@@ -130,14 +130,6 @@ def run_analysis(options):
         raise SystemExit('错误: 历史数据加载失败或数据量过少（至少需要50期），程序终止。')
     full_df = feature_engineer(full_df)
     feature_columns = FEATURE_COLUMNS
-    rule_coverage = audit_historical_rule_coverage(
-        full_df,
-        options.rule_audit_periods,
-    )
-    hard_pipeline_coverage = audit_historical_hard_pipeline(
-        full_df,
-        options.rule_audit_periods,
-    )
     latest_issue = str(full_df.iloc[-1]['期号'])
     try:
         target_issue = infer_next_issue(latest_issue, full_df.iloc[-1]['日期'])
@@ -152,6 +144,16 @@ def run_analysis(options):
     params = loaded_params.values
     if not loaded_params.loaded_from_file:
         print(f'警告: 未找到参数文件 {PARAMS_JSON_PATH}，将使用内置的默认参数。')
+
+    print('\n[阶段 2/8] 正在执行历史规则审计与滚动回测...')
+    rule_coverage = audit_historical_rule_coverage(
+        full_df,
+        options.rule_audit_periods,
+    )
+    hard_pipeline_coverage = audit_historical_hard_pipeline(
+        full_df,
+        options.rule_audit_periods,
+    )
     backtests = run_full_backtest(
         full_df,
         params,
@@ -223,6 +225,7 @@ def run_analysis(options):
         rejection_set,
     )
 
+    print('\n[阶段 6/8] 正在整理通过硬规则的候选组合...')
     if 0 < len(selection.passed_combos) < INTERACTIVE_THRESHOLD:
         print(
             f'\n通过检验的组合数量为 {len(selection.passed_combos)} '
@@ -247,7 +250,7 @@ def run_analysis(options):
         context=context,
     )
 
-    print('\n--- 正在生成最终推荐报告 ---')
+    print('\n[阶段 8/8] 正在生成最终推荐报告...')
     generated_at = local_now()
     report_data = AnalysisReportData(
         latest_issue=latest_issue,
