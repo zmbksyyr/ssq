@@ -2,8 +2,10 @@
 
 import argparse
 from dataclasses import dataclass
+from math import comb
 
 import numpy as np
+from ssq_core import BLUE_BALLS, RED_BALLS, RED_COUNT
 
 POOL_SIZE_RED = 17
 RED_HIGH_COUNT = 4
@@ -20,7 +22,7 @@ COUNTDOWN_SECONDS = 10
 NUM_RECOMMENDATIONS = 10
 MAX_SHARED_RED_BALLS = 4
 RULE_AUDIT_PERIODS = 200
-TOTAL_RED_COMBINATIONS = 1_107_568
+TOTAL_RED_COMBINATIONS = comb(len(RED_BALLS), RED_COUNT)
 RED_POOL_MODES = ('mixed', 'high', 'middle', 'low')
 
 DEFAULT_PARAMS = {
@@ -112,13 +114,23 @@ class StrategyConfig:
     random_seed: int = RANDOM_SEED
 
     def __post_init__(self):
-        if not 6 <= self.pool_size_red <= 33:
+        integer_fields = (
+            'pool_size_red', 'high_count', 'low_count', 'blue_count',
+            'recommendation_count', 'rejection_lib_size', 'random_seed',
+        )
+        for name in integer_fields:
+            object.__setattr__(
+                self,
+                name,
+                normalize_integer_param(name, getattr(self, name)),
+            )
+        if not RED_COUNT <= self.pool_size_red <= len(RED_BALLS):
             raise ValueError('pool_size_red must be between 6 and 33')
         if min(self.high_count, self.low_count) < 0:
             raise ValueError('high_count and low_count cannot be negative')
         if self.high_count + self.low_count > self.pool_size_red:
             raise ValueError('high_count and low_count exceed pool_size_red')
-        if not 1 <= self.blue_count <= 16:
+        if not 1 <= self.blue_count <= len(BLUE_BALLS):
             raise ValueError('blue_count must be between 1 and 16')
         if self.recommendation_count < 1:
             raise ValueError('recommendation_count must be positive')
@@ -142,6 +154,18 @@ class AnalyzerOptions:
     rule_audit_periods: int = RULE_AUDIT_PERIODS
 
     def __post_init__(self):
+        integer_fields = (
+            'backtest_periods', 'rejection_size', 'seed', 'rule_audit_periods',
+        )
+        for name in integer_fields:
+            object.__setattr__(
+                self,
+                name,
+                normalize_integer_param(name, getattr(self, name)),
+            )
+        for name in ('compare_pools', 'non_interactive'):
+            if not isinstance(getattr(self, name), bool):
+                raise TypeError(f'{name} 必须为布尔值')
         if self.backtest_periods < 0 or self.rule_audit_periods < 0:
             raise ValueError('backtest-periods 和 rule-audit-periods 不能为负数')
         if not 0 <= self.rejection_size <= TOTAL_RED_COMBINATIONS:
@@ -207,5 +231,5 @@ def parse_cli_options(argv=None):
     namespace = parser.parse_args(argv)
     try:
         return AnalyzerOptions(**vars(namespace))
-    except ValueError as exc:
+    except (TypeError, ValueError) as exc:
         parser.error(str(exc))

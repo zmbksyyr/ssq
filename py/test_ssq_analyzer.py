@@ -407,6 +407,41 @@ class AnalyzerTests(unittest.TestCase):
     with self.assertRaises(ValueError):
       analyzer.StrategyConfig(rejection_lib_size=-1)
 
+  def test_runtime_configs_reject_non_integer_and_non_boolean_values(self):
+    integer_fields = {
+        'pool_size_red': 17.5,
+        'high_count': True,
+        'low_count': 4.5,
+        'blue_count': 7.5,
+        'recommendation_count': False,
+        'rejection_lib_size': 1.5,
+        'random_seed': 42.5,
+    }
+    for name, value in integer_fields.items():
+      with self.subTest(name=name), self.assertRaises(TypeError):
+        analyzer.StrategyConfig(**{name: value})
+
+    for kwargs in (
+        {'backtest_periods': 1.5},
+        {'rejection_size': True},
+        {'seed': 2.5},
+        {'rule_audit_periods': False},
+        {'compare_pools': 1},
+        {'non_interactive': 0},
+    ):
+      with self.subTest(kwargs=kwargs), self.assertRaises(TypeError):
+        config.AnalyzerOptions(**kwargs)
+
+  def test_runtime_configs_normalize_numpy_integers(self):
+    strategy = analyzer.StrategyConfig(
+        pool_size_red=np.int64(17), random_seed=np.int64(42)
+    )
+    options = config.AnalyzerOptions(backtest_periods=np.int64(3))
+
+    self.assertIs(type(strategy.pool_size_red), int)
+    self.assertIs(type(strategy.random_seed), int)
+    self.assertIs(type(options.backtest_periods), int)
+
 
   def test_rejection_set_is_reproducible(self):
     first = selection.make_rejection_set(100, random.Random(7))
