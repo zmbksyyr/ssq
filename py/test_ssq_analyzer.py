@@ -8,6 +8,7 @@ from collections import Counter
 from datetime import datetime, timezone
 from itertools import combinations
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import lightgbm as lgb
@@ -19,9 +20,11 @@ import ssq_analyzer as analyzer
 import ssq_backtesting as backtesting
 import ssq_config as config
 import ssq_modeling as modeling
+import ssq_reporting as reporting
 import ssq_rules as rules
 import ssq_selection as selection
 import ssq_workflow as workflow
+from ssq_prizes import parse_report_bets
 
 
 class AnalyzerTests(unittest.TestCase):
@@ -154,6 +157,48 @@ class AnalyzerTests(unittest.TestCase):
     self.assertIn('[软] prime_composite_ratio', report)
     self.assertIn('未能生成足够的单式组合', report)
     self.assertIn('未能生成足够的复式组合', report)
+
+  def test_report_declares_the_actual_parseable_recommendation_count(self):
+    candidate_selection = selection.RedCandidateSelection(
+        (),
+        (),
+        ((1, 2, 3, 4, 5, 6), (7, 8, 9, 10, 11, 12)),
+        ((1, 2, 3, 4, 5, 6), (7, 8, 9, 10, 11, 12)),
+    )
+    data = SimpleNamespace(
+        selection=candidate_selection,
+        recommended_blues=[16],
+        best_7_reds=[((1, 2, 3, 4, 5, 6, 7), 7)],
+    )
+    report = '\n'.join(reporting.format_recommendations_report(data))
+
+    with tempfile.NamedTemporaryFile(
+        'w', encoding='utf-8', delete=False
+    ) as handle:
+      handle.write(report)
+      path = handle.name
+    try:
+      single_bets, _ = parse_report_bets(path)
+    finally:
+      Path(path).unlink()
+
+    self.assertIn('【单式推荐 (2组)】', report)
+    self.assertEqual(len(single_bets), 2)
+
+  def test_report_emits_no_invalid_single_bets_without_a_blue(self):
+    candidate_selection = selection.RedCandidateSelection(
+        (), (), ((1, 2, 3, 4, 5, 6),), ((1, 2, 3, 4, 5, 6),)
+    )
+    data = SimpleNamespace(
+        selection=candidate_selection,
+        recommended_blues=[],
+        best_7_reds=[],
+    )
+
+    report = '\n'.join(reporting.format_recommendations_report(data))
+
+    self.assertIn('【单式推荐 (0组)】', report)
+    self.assertNotIn('组合  1:', report)
 
   def test_confirmation_input_requires_explicit_y(self):
     for value in ('y', ' Y\n', b'y'):

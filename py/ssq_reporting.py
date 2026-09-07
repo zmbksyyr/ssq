@@ -167,10 +167,11 @@ def format_rule_audit_report(data):
 
 def format_recommendations_report(data):
     lines = ["\n--- 2. 推荐组合 ---"]
-    top_blue = data.recommended_blues[0] if data.recommended_blues else "N/A"
-    lines.append(f"\n【单式推荐 ({data.config.recommendation_count}组)】")
-    if data.selection.passed_combos:
-        for index, combo in enumerate(data.selection.recommendations, 1):
+    top_blue = data.recommended_blues[0] if data.recommended_blues else None
+    single_combos = data.selection.recommendations if top_blue is not None else ()
+    lines.append(f"\n【单式推荐 ({len(single_combos)}组)】")
+    if single_combos:
+        for index, combo in enumerate(single_combos, 1):
             lines.append(
                 f"  组合 {index:>2}: 红球 {list(combo)!s:<24} 蓝球 [{top_blue:02d}]"
             )
