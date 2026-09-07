@@ -106,6 +106,44 @@ class BonusCalculationTests(unittest.TestCase):
         finally:
             Path(path).unlink()
 
+    def test_report_target_issue_metadata_must_be_unique_and_valid(self):
+        self.assertEqual(
+            bonus.parse_report_target_issue(
+                'Data_Basis_Issue: 2026001\n'
+                'Prediction_Target_Issue: 2026002\n'
+            ),
+            2026002,
+        )
+        for content in (
+            'Data_Basis_Issue: 2026001\n',
+            'Prediction_Target_Issue: 999\n',
+            (
+                'Prediction_Target_Issue: 2026001\n'
+                'Prediction_Target_Issue: 2026002\n'
+            ),
+        ):
+            with self.subTest(content=content), self.assertRaises(ValueError):
+                bonus.parse_report_target_issue(content)
+
+    def test_matching_report_skips_newer_invalid_metadata(self):
+        with tempfile.TemporaryDirectory() as directory:
+            report_dir = Path(directory)
+            valid = report_dir / 'ssq_analysis_output_20260101_000000.txt'
+            invalid = report_dir / 'ssq_analysis_output_20260102_000000.txt'
+            valid.write_text(
+                'Prediction_Target_Issue: 2026001\n', encoding='utf-8'
+            )
+            invalid.write_text(
+                'Prediction_Target_Issue: 2026001\n'
+                'Prediction_Target_Issue: 2026002\n',
+                encoding='utf-8',
+            )
+
+            result, error = bonus.find_matching_report(2026001, report_dir)
+
+            self.assertIsNone(error)
+            self.assertEqual(Path(result), valid)
+
     def test_duplex_counts_hit_and_missed_blue_subtickets(self):
         total, breakdown, _ = bonus.calculate_duplex_prize(
             [1, 2, 3, 4, 5, 6, 7], [1, 2, 3, 4, 5, 6, 8],

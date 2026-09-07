@@ -8,6 +8,7 @@ from ssq_bonus_workflow import (  # noqa: F401
     find_matching_report,
     load_latest_draw,
     main,
+    parse_report_target_issue,
     run_bonus_check,
 )
 from ssq_prizes import (  # noqa: F401
