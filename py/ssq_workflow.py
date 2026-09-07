@@ -14,6 +14,7 @@ from ssq_backtesting import (
     BacktestRequest,
     run_backtest,
 )
+from ssq_candidates import generate_candidates
 from ssq_config import (
     LoadedStrategyParams,
     parse_cli_options,
@@ -52,11 +53,9 @@ from ssq_scoring import (
     run_strategy_and_get_scores,
 )
 from ssq_selection import (
-    CandidateGenerationRequest,
-    DuplexSelectionRequest,
-    generate_candidates,
     rank_duplex_candidates,
 )
+from ssq_selection_models import CandidateGenerationRequest, DuplexSelectionRequest
 from ssq_training import (
     MODEL_TRAINING_PARAMS,
     train_prediction_models,

@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 import ssq_analyzer as analyzer
 import ssq_backtest_metrics as backtest_metrics
 import ssq_backtesting as backtesting
+import ssq_candidates as candidates
 import ssq_config as config
 import ssq_console as console
 import ssq_modeling as modeling
@@ -111,7 +112,7 @@ class AnalyzerTests(unittest.TestCase):
   def test_legacy_candidate_api_builds_request_without_losing_options(self):
     strategy = analyzer.StrategyConfig(rejection_lib_size=0)
     context = rules.RuleContext(last_draw={1})
-    with patch.object(selection, 'generate_candidates', return_value='result') as generate:
+    with patch.object(candidates, 'generate_candidates', return_value='result') as generate:
       result = selection.generate_red_candidates(
           {1: 0.5},
           context,
@@ -615,10 +616,10 @@ class AnalyzerTests(unittest.TestCase):
       return list(request.passed_combos)[:2]
 
     with (
-        patch.object(selection, 'build_red_pool', return_value=list(range(1, 8))),
-        patch.object(selection, 'passes_red_filters', side_effect=fake_filter) as check,
+        patch.object(candidates, 'build_red_pool', return_value=list(range(1, 8))),
+        patch.object(candidates, 'passes_red_filters', side_effect=fake_filter) as check,
         patch.object(
-            selection,
+            candidates,
             'select_recommendation_portfolio',
             side_effect=fake_select,
         ) as select,
@@ -1272,9 +1273,9 @@ class AnalyzerTests(unittest.TestCase):
         patch.object(auditing, 'get_omission', return_value={}),
         patch.object(backtesting, 'make_rejection_set', return_value=set()),
         patch.object(
-            selection, 'build_red_pool', return_value=[1, 2, 3, 4, 5, 6]
+            candidates, 'build_red_pool', return_value=[1, 2, 3, 4, 5, 6]
         ),
-        patch.object(selection, 'passes_red_filters', return_value=True),
+        patch.object(candidates, 'passes_red_filters', return_value=True),
     ):
       total = backtesting.run_full_backtest(
           frame,
@@ -1386,11 +1387,11 @@ class AnalyzerTests(unittest.TestCase):
         patch.object(backtesting, "make_rejection_set", return_value=set()) as rejection_mock,
         patch.object(auditing, "get_omission", return_value={}),
         patch.object(
-            selection, "build_red_pool", return_value=[1, 2, 3, 4, 13, 14]
+            candidates, "build_red_pool", return_value=[1, 2, 3, 4, 13, 14]
         ) as pool_mock,
-        patch.object(selection, "passes_red_filters", return_value=True),
+        patch.object(candidates, "passes_red_filters", return_value=True),
         patch.object(
-            selection,
+            candidates,
             "select_recommendation_portfolio",
             return_value=[(1, 2, 3, 4, 13, 14)],
         ) as selection_mock,

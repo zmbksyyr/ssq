@@ -7,6 +7,10 @@ from dataclasses import dataclass
 
 from ssq_anti_crowding import make_rejection_set, rejection_seed_for_issue
 from ssq_backtest_metrics import BacktestAccumulator, BacktestResult
+from ssq_candidates import (
+    count_actual_reds_by_rank_band,
+    generate_candidates,
+)
 from ssq_config import (
     DEFAULT_STRATEGY_CONFIG,
     RED_POOL_MODES,
@@ -27,11 +31,7 @@ from ssq_rule_auditing import (
 from ssq_rule_auditing import historical_rule_context as _historical_rule_context
 from ssq_rule_models import RuleContext
 from ssq_scoring import run_strategy_and_get_scores
-from ssq_selection import (
-    CandidateGenerationRequest,
-    count_actual_reds_by_rank_band,
-    generate_candidates,
-)
+from ssq_selection_models import CandidateGenerationRequest
 from ssq_training import train_prediction_models, validate_model_sets
 from tqdm import tqdm
 

@@ -20,6 +20,13 @@ from ssq_backtesting import (  # noqa: F401 - compatibility exports
     run_full_backtest,
     validate_backtest_request,
 )
+from ssq_candidates import (  # noqa: F401 - compatibility exports
+    build_red_pool,
+    count_actual_reds_by_rank_band,
+    generate_candidates,
+    generate_red_candidates,
+    validate_candidate_generation_request,
+)
 from ssq_config import (  # noqa: F401 - compatibility exports
     BACKTEST_PERIODS,
     COUNTDOWN_SECONDS,
@@ -80,14 +87,9 @@ from ssq_scoring import (  # noqa: F401 - compatibility exports
     run_strategy_and_get_scores,
 )
 from ssq_selection import (  # noqa: F401 - compatibility exports
-    build_red_pool,
-    count_actual_reds_by_rank_band,
     find_best_7_red_combinations,
-    generate_candidates,
-    generate_red_candidates,
     passes_red_filters,
     rank_duplex_candidates,
-    validate_candidate_generation_request,
     validate_duplex_selection_request,
 )
 from ssq_selection_models import (  # noqa: F401 - compatibility exports
