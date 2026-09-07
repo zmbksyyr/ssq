@@ -519,6 +519,35 @@ class AnalyzerTests(unittest.TestCase):
         1.0,
     )
 
+  def test_rule_registry_has_one_normalized_score_budget(self):
+    self.assertEqual(rules.validate_rule_registry(rules.RED_RULES), rules.RED_RULES)
+    self.assertAlmostEqual(
+        rules.COMBINATION_SIGNAL_WEIGHT
+        + sum(rule.score_weight for rule in rules.RED_RULES),
+        1.0,
+    )
+
+    duplicate = rules.RuleDefinition(
+        rules.RED_RULES[0].name,
+        True,
+        lambda _combo, _context: True,
+    )
+    with self.assertRaisesRegex(ValueError, '名称不能重复'):
+      rules.validate_rule_registry((*rules.RED_RULES, duplicate))
+
+    ineffective_soft_rule = rules.RuleDefinition(
+        'ineffective',
+        False,
+        lambda _combo, _context: True,
+    )
+    with self.assertRaisesRegex(ValueError, '软规则'):
+      rules.validate_rule_registry((ineffective_soft_rule,), signal_weight=1.0)
+
+    self.assertEqual(
+        rules.validate_rule_registry(rule for rule in rules.RED_RULES),
+        rules.RED_RULES,
+    )
+
   def test_soft_rule_failure_does_not_reject_combination(self):
     combo = (1, 4, 8, 16, 25, 30)
     self.assertFalse(rules.filter_prime_composite_ratio(combo))
