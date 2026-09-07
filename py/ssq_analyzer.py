@@ -46,12 +46,6 @@ from ssq_features import (  # noqa: F401 - compatibility exports
     feature_engineer,
     validate_feature_columns,
 )
-from ssq_modeling import (  # noqa: F401 - compatibility exports
-    apply_red_score_adjustments,
-    get_omission,
-    get_weighted_frequency,
-    run_strategy_and_get_scores,
-)
 from ssq_rank_bands import (  # noqa: F401 - compatibility exports
     RANK_BAND_WIDTHS,
     RANK_BANDS,
@@ -74,6 +68,12 @@ from ssq_rules import (  # noqa: F401 - compatibility exports
     select_recommendation_portfolio,
     select_recommendations,
     validate_recommendation_request,
+)
+from ssq_scoring import (  # noqa: F401 - compatibility exports
+    apply_red_score_adjustments,
+    get_omission,
+    get_weighted_frequency,
+    run_strategy_and_get_scores,
 )
 from ssq_selection import (  # noqa: F401 - compatibility exports
     CandidateGenerationRequest,
