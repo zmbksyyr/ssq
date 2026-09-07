@@ -8,13 +8,13 @@ import ssq_backtest_runner as _backtest_runner
 import ssq_backtest_validation as _backtest_validation
 from ssq_anti_crowding import make_rejection_set, rejection_seed_for_issue
 from ssq_ball_scoring import run_strategy_and_get_scores
-from ssq_candidates import count_actual_reds_by_rank_band
 from ssq_config import (
     DEFAULT_STRATEGY_CONFIG,
     RULE_AUDIT_PERIODS,
     validate_strategy_params,
 )
 from ssq_rank_bands import build_rank_band_widths
+from ssq_red_pool import count_actual_reds_by_rank_band
 from ssq_rule_auditing import FILTER_NAMES as _FILTER_NAMES
 from ssq_rule_auditing import (
     audit_historical_hard_pipeline as _audit_historical_hard_pipeline,

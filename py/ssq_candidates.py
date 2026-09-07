@@ -1,70 +1,25 @@
 """Red-ball pool construction, hard-rule filtering, and recommendations."""
 
-from collections import Counter
 from itertools import combinations
 
 from ssq_candidate_validation import validate_candidate_generation_request
 from ssq_config import DEFAULT_STRATEGY_CONFIG
-from ssq_domain import RED_BALLS
-from ssq_parsing import validate_ball_scores
-from ssq_rank_bands import RANK_BAND_NAMES, build_rank_bands
 from ssq_ranking import select_recommendation_portfolio
+from ssq_red_pool import build_red_pool, count_actual_reds_by_rank_band
 from ssq_rule_models import RecommendationRequest
 from ssq_rule_registry import passes_red_filters
 from ssq_selection_models import CandidateGenerationRequest, RedCandidateSelection
 from tqdm import tqdm
 
-
-def count_actual_reds_by_rank_band(
-    red_scores,
-    actual_reds,
-    config=DEFAULT_STRATEGY_CONFIG,
-):
-    """Count actual red balls by their model-score rank band."""
-    red_scores = validate_ball_scores(red_scores, RED_BALLS, '红球')
-    rank_bands = build_rank_bands(config)
-    ranked = [
-        ball for ball, _ in sorted(
-            red_scores.items(), key=lambda item: (-item[1], item[0])
-        )
-    ]
-    rank_by_ball = {ball: rank for rank, ball in enumerate(ranked, 1)}
-    counts = Counter({name: 0 for name in RANK_BAND_NAMES})
-    for ball in actual_reds:
-        rank = rank_by_ball[ball]
-        band = next(
-            (name for name, ranks in rank_bands.items() if rank in ranks),
-            'other',
-        )
-        counts[band] += 1
-    return counts
-
-
-def build_red_pool(red_scores, config=DEFAULT_STRATEGY_CONFIG, mode='mixed'):
-    """Build a red pool from one score band or a high/middle/low mixture."""
-    red_scores = validate_ball_scores(red_scores, RED_BALLS, '红球')
-    ranked = [
-        ball for ball, _ in sorted(
-            red_scores.items(), key=lambda item: (-item[1], item[0])
-        )
-    ]
-    if mode == 'high':
-        return sorted(ranked[:config.pool_size_red])
-    if mode == 'low':
-        return sorted(ranked[-config.pool_size_red:])
-    if mode == 'middle':
-        start = max(0, (len(ranked) - config.pool_size_red) // 2)
-        return sorted(ranked[start:start + config.pool_size_red])
-    if mode != 'mixed':
-        raise ValueError(f'unknown pool mode: {mode}')
-
-    rank_bands = build_rank_bands(config)
-    selected_ranks = (
-        *rank_bands['high'],
-        *rank_bands['middle'],
-        *rank_bands['low'],
-    )
-    return sorted(ranked[rank - 1] for rank in selected_ranks)
+__all__ = [
+    'build_red_pool',
+    'count_actual_reds_by_rank_band',
+    'generate_candidates',
+    'generate_red_candidates',
+    'passes_red_filters',
+    'select_recommendation_portfolio',
+    'validate_candidate_generation_request',
+]
 
 
 def generate_candidates(request):
