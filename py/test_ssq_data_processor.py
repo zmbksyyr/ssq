@@ -3,6 +3,7 @@ import tempfile
 import unittest
 from datetime import date, timedelta
 from pathlib import Path
+from unittest.mock import patch
 
 import pandas as pd
 
@@ -120,6 +121,43 @@ class DataProcessorTests(unittest.TestCase):
         processor.validate_authoritative_snapshot(
             normalized, normalized.iloc[:-1], today=date(2026, 12, 31)
         )
+
+    def test_workflow_uses_txt_as_authority_and_reuses_session(self):
+        records = [
+            f'{2026001 + index} 2026-01-01 1 2 3 4 5 6 7'
+            for index in range(processor.MIN_FULL_SNAPSHOT_RECORDS)
+        ]
+        session = object()
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'draws.csv'
+            with (
+                patch(
+                    'ssq_data_workflow.fetch_full_data_from_txt',
+                    return_value=records,
+                ) as fetch_txt,
+                patch(
+                    'ssq_data_workflow.fetch_latest_data_from_html',
+                    return_value=[],
+                ) as fetch_html,
+            ):
+                result = processor.run_data_update(path, session=session)
+
+            self.assertEqual(result, str(path))
+            self.assertTrue(path.exists())
+            self.assertIs(fetch_txt.call_args.kwargs['session'], session)
+            self.assertIs(fetch_html.call_args.kwargs['session'], session)
+
+    def test_workflow_never_uses_html_without_authoritative_txt(self):
+        with tempfile.TemporaryDirectory() as directory, patch(
+            'ssq_data_workflow.fetch_full_data_from_txt', return_value=[]
+        ), patch(
+            'ssq_data_workflow.fetch_latest_data_from_html'
+        ) as fetch_html:
+            with self.assertRaisesRegex(SystemExit, 'TXT 权威数据源'):
+                processor.run_data_update(
+                    Path(directory) / 'draws.csv', session=object()
+                )
+            fetch_html.assert_not_called()
 
 
 if __name__ == '__main__':
