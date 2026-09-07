@@ -1,10 +1,10 @@
 """Historical rule audits and leakage-free rolling strategy backtests."""
 
-import random
 from collections import Counter
 
 import ssq_backtest_evaluation as _backtest_evaluation
 import ssq_backtest_models as _backtest_models
+import ssq_backtest_preparation as _backtest_preparation
 from ssq_anti_crowding import make_rejection_set, rejection_seed_for_issue
 from ssq_backtest_metrics import BacktestAccumulator, BacktestResult
 from ssq_candidates import count_actual_reds_by_rank_band
@@ -78,57 +78,21 @@ def validate_backtest_request(num_periods, pool_modes, config):
 
 
 def prepare_backtest_issue(full_df, index, run_context):
-    """Build leakage-free model and selection inputs for one historical issue."""
-    history = full_df.iloc[:index]
-    training_data = history.iloc[5:].copy()
-    if len(training_data) < 20:
-        return None
-
-    red_models, blue_models = train_prediction_models(
-        training_data,
-        run_context.feature_columns,
+    """Compatibility wrapper for leakage-free issue preparation."""
+    dependencies = _backtest_preparation.BacktestPreparationDependencies(
+        train_models=train_prediction_models,
+        validate_models=validate_model_sets,
+        score_balls=run_strategy_and_get_scores,
+        count_rank_bands=count_actual_reds_by_rank_band,
+        build_rule_context=historical_rule_context,
+        derive_rejection_seed=rejection_seed_for_issue,
+        build_rejection_set=make_rejection_set,
     )
-    try:
-        validate_model_sets(red_models, blue_models)
-    except ValueError:
-        return None
-
-    red_scores, blue_scores = run_strategy_and_get_scores(
-        history,
-        run_context.params,
-        red_models,
-        blue_models,
-        run_context.feature_columns,
-    )
-    actual_draw = full_df.iloc[index]
-    actual_reds = frozenset(actual_draw['红球'])
-    recommended_blue = max(blue_scores, key=blue_scores.get)
-    rank_band_hits = count_actual_reds_by_rank_band(
-        red_scores,
-        actual_reds,
-        run_context.config,
-    )
-    rejection_seed = rejection_seed_for_issue(
-        run_context.config.random_seed,
-        actual_draw['期号'],
-    )
-    rejection_set = make_rejection_set(
-        run_context.config.rejection_lib_size,
-        random.Random(rejection_seed),
-    )
-    return PreparedBacktestIssue(
-        issue=BacktestIssue(
-            actual_reds=actual_reds,
-            actual_blue=actual_draw['蓝球'],
-            recommended_blue=recommended_blue,
-            rank_band_hits=rank_band_hits,
-        ),
-        selection_inputs=BacktestSelectionInputs(
-            red_scores=red_scores,
-            context=historical_rule_context(full_df, index),
-            rejection_set=rejection_set,
-            config=run_context.config,
-        ),
+    return _backtest_preparation.prepare_backtest_issue(
+        full_df,
+        index,
+        run_context,
+        dependencies,
     )
 
 
