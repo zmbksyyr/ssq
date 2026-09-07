@@ -35,7 +35,8 @@ from ssq_modeling import (
 from ssq_reporting import AnalysisReportData, build_analysis_report
 from ssq_rules import RuleContext, filter_pipeline_stats
 from ssq_selection import (
-    RANK_BAND_WIDTHS,
+    build_rank_band_labels,
+    build_rank_band_widths,
     find_best_7_red_combinations,
     generate_red_candidates,
     make_rejection_set,
@@ -262,7 +263,8 @@ def run_analysis(options):
         backtest=backtest,
         backtests=backtests,
         pool_mode=options.pool_mode,
-        rank_band_widths=RANK_BAND_WIDTHS,
+        rank_band_widths=build_rank_band_widths(config),
+        rank_band_labels=build_rank_band_labels(config),
         pipeline_stats=pipeline_stats,
         rule_coverage=rule_coverage,
         hard_pipeline_coverage=hard_pipeline_coverage,

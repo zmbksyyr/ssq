@@ -7,12 +7,7 @@ from typing import Any
 from ssq_core import PRIZE_NAMES
 from ssq_rules import FILTER_NAMES, HARD_FILTER_NAMES
 
-RANK_BAND_LABELS = (
-    ('high', '高端(1-4)'),
-    ('middle', '中段(13-21)'),
-    ('low', '低端(30-33)'),
-    ('other', '其他'),
-)
+RANK_BAND_NAMES = ('high', 'middle', 'low', 'other')
 PRIZE_DISPLAY_ORDER = (
     '一等奖', '二等奖', '三等奖', '四等奖', '五等奖', '六等奖',
 )
@@ -31,6 +26,7 @@ class AnalysisReportData:
     backtests: dict[str, Any]
     pool_mode: str
     rank_band_widths: dict[str, int]
+    rank_band_labels: dict[str, str]
     pipeline_stats: list[dict]
     rule_coverage: dict
     hard_pipeline_coverage: dict
@@ -97,12 +93,15 @@ def format_backtest_report(data):
                 f"({result.ranking_three_plus_delta:+.2%})"
             )
     lines.append("  - 实际红球在模型评分排名中的分布:")
-    for band, label in RANK_BAND_LABELS:
+    total_rank_width = sum(data.rank_band_widths.values())
+    for band in RANK_BAND_NAMES:
+        label = data.rank_band_labels[band]
         band_width = data.rank_band_widths[band]
         lines.append(
             f"    {label:<13}: {backtest.rank_band_hits[band]:>3} 个 "
             f"(占比 {backtest.rank_band_rate(band):.2%}，"
-            f"随机基线 {band_width / 33:.2%}，相对 {backtest.rank_band_lift(band):.2f}x)"
+            f"随机基线 {band_width / total_rank_width:.2%}，"
+            f"相对 {backtest.rank_band_lift(band):.2f}x)"
         )
     lines.append("中奖详情如下：")
     aggregated_counts = {name: 0 for name in set(PRIZE_NAMES.values())}

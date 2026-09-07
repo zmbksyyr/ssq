@@ -14,6 +14,7 @@ from ssq_modeling import (
 from ssq_rules import FILTER_NAMES, RED_RULES, RuleContext, explain_filter_failures
 from ssq_selection import (
     RANK_BAND_WIDTHS,
+    build_rank_band_widths,
     count_actual_reds_by_rank_band,
     generate_red_candidates,
     make_rejection_set,
@@ -37,6 +38,9 @@ class BacktestResult:
     candidate_red_hit_counts: Counter = field(default_factory=Counter)
     blue_hit_periods: int = 0
     rank_band_hits: Counter = field(default_factory=Counter)
+    rank_band_widths: dict[str, int] = field(
+        default_factory=lambda: RANK_BAND_WIDTHS.copy()
+    )
 
     @property
     def profit(self):
@@ -112,7 +116,9 @@ class BacktestResult:
         return self.rank_band_hits[band] / total_actual_reds
 
     def rank_band_lift(self, band):
-        expected_rate = RANK_BAND_WIDTHS[band] / 33
+        expected_rate = (
+            self.rank_band_widths[band] / sum(self.rank_band_widths.values())
+        )
         return self.rank_band_rate(band) / expected_rate if expected_rate else 0.0
 
 
@@ -130,6 +136,9 @@ class BacktestAccumulator:
     candidate_red_hit_counts: Counter = field(default_factory=Counter)
     blue_hit_periods: int = 0
     rank_band_hits: Counter = field(default_factory=Counter)
+    rank_band_widths: dict[str, int] = field(
+        default_factory=lambda: RANK_BAND_WIDTHS.copy()
+    )
 
     def to_result(self, periods):
         return BacktestResult(
@@ -146,6 +155,7 @@ class BacktestAccumulator:
             candidate_red_hit_counts=self.candidate_red_hit_counts,
             blue_hit_periods=self.blue_hit_periods,
             rank_band_hits=self.rank_band_hits,
+            rank_band_widths=self.rank_band_widths,
         )
 
 
@@ -301,11 +311,18 @@ def run_full_backtest(
     if len(full_df) < minimum_history:
         print(f'历史数据不足 {minimum_history} 期，无法执行回测。跳过此步骤。')
         return {
-            mode: BacktestResult(0, 0, 0, 0, 0, Counter())
+            mode: BacktestResult(
+                0, 0, 0, 0, 0, Counter(),
+                rank_band_widths=build_rank_band_widths(config),
+            )
             for mode in pool_modes
         }
 
-    metrics = {mode: BacktestAccumulator() for mode in pool_modes}
+    rank_band_widths = build_rank_band_widths(config)
+    metrics = {
+        mode: BacktestAccumulator(rank_band_widths=rank_band_widths.copy())
+        for mode in pool_modes
+    }
     backtest_range = range(len(full_df) - num_periods, len(full_df))
 
     with tqdm(total=len(backtest_range), desc='执行严谨回测', ncols=80) as progress:
@@ -339,6 +356,7 @@ def run_full_backtest(
             rank_band_hits = count_actual_reds_by_rank_band(
                 red_scores,
                 actual_red_set,
+                config,
             )
             rejection_seed = rejection_seed_for_issue(
                 config.random_seed,

@@ -134,6 +134,7 @@ class AnalyzerTests(unittest.TestCase):
         backtests={'mixed': backtest},
         pool_mode='mixed',
         rank_band_widths=analyzer.RANK_BAND_WIDTHS,
+        rank_band_labels=selection.build_rank_band_labels(),
         pipeline_stats=[],
         rule_coverage=coverage,
         hard_pipeline_coverage={
@@ -288,6 +289,29 @@ class AnalyzerTests(unittest.TestCase):
     self.assertEqual(selection.build_red_pool(scores, mode="low"), list(range(17, 34)))
     with self.assertRaises(ValueError):
       selection.build_red_pool(scores, mode="invalid")
+
+  def test_custom_pool_uses_the_same_dynamic_rank_bands_everywhere(self):
+    scores = {ball: float(34 - ball) for ball in range(1, 34)}
+    custom = analyzer.StrategyConfig(
+        pool_size_red=10, high_count=2, low_count=3
+    )
+    bands = selection.build_rank_bands(custom)
+
+    self.assertEqual(list(bands['high']), [1, 2])
+    self.assertEqual(list(bands['middle']), [14, 15, 16, 17, 18])
+    self.assertEqual(list(bands['low']), [31, 32, 33])
+    self.assertEqual(
+        selection.build_red_pool(scores, config=custom),
+        [1, 2, 14, 15, 16, 17, 18, 31, 32, 33],
+    )
+    self.assertEqual(
+        selection.build_rank_band_widths(custom),
+        {'high': 2, 'middle': 5, 'low': 3, 'other': 23},
+    )
+    self.assertEqual(
+        selection.build_rank_band_labels(custom)['middle'],
+        '中段(14-18)',
+    )
 
   def test_candidate_generation_uses_one_selection_pipeline(self):
     scores = {ball: float(ball) for ball in range(1, 34)}
@@ -606,7 +630,11 @@ class AnalyzerTests(unittest.TestCase):
     self.assertEqual(result.blue_hit_periods, 1)
     self.assertEqual(
         result.rank_band_hits,
-        {"high": 1, "middle": 1, "low": 3, "other": 1},
+        {"high": 1, "middle": 0, "low": 2, "other": 3},
+    )
+    self.assertEqual(
+        result.rank_band_widths,
+        {'high': 2, 'middle': 2, 'low': 2, 'other': 27},
     )
 
   def test_red_score_adjustments_restore_original_bonuses(self):

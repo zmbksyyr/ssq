@@ -9,8 +9,6 @@ from math import comb
 from ssq_config import (
     DEFAULT_STRATEGY_CONFIG,
     RANDOM_SEED,
-    RED_HIGH_COUNT,
-    RED_LOW_COUNT,
     REJECTION_SEED_MULTIPLIER,
     TOTAL_RED_COMBINATIONS,
 )
@@ -23,15 +21,47 @@ from ssq_rules import (
 )
 from tqdm import tqdm
 
-RANK_BANDS = {
-    'high': range(1, RED_HIGH_COUNT + 1),
-    'middle': range(13, 22),
-    'low': range(34 - RED_LOW_COUNT, 34),
-}
-RANK_BAND_WIDTHS = {
-    **{name: len(ranks) for name, ranks in RANK_BANDS.items()},
-    'other': 33 - sum(len(ranks) for ranks in RANK_BANDS.values()),
-}
+RANK_BAND_NAMES = ('high', 'middle', 'low', 'other')
+
+
+def build_rank_bands(config=DEFAULT_STRATEGY_CONFIG):
+    """Return score-rank bands matching the configured mixed pool."""
+    total = len(RED_BALLS)
+    middle_count = config.pool_size_red - config.high_count - config.low_count
+    available_count = total - config.high_count - config.low_count
+    middle_offset = max(0, (available_count - middle_count) // 2)
+    middle_start = config.high_count + middle_offset + 1
+    return {
+        'high': range(1, config.high_count + 1),
+        'middle': range(middle_start, middle_start + middle_count),
+        'low': range(total - config.low_count + 1, total + 1),
+    }
+
+
+def build_rank_band_widths(config=DEFAULT_STRATEGY_CONFIG):
+    bands = build_rank_bands(config)
+    return {
+        **{name: len(ranks) for name, ranks in bands.items()},
+        'other': len(RED_BALLS) - sum(len(ranks) for ranks in bands.values()),
+    }
+
+
+def build_rank_band_labels(config=DEFAULT_STRATEGY_CONFIG):
+    bands = build_rank_bands(config)
+
+    def describe(title, ranks):
+        return title if not ranks else f'{title}({ranks.start}-{ranks.stop - 1})'
+
+    return {
+        'high': describe('高端', bands['high']),
+        'middle': describe('中段', bands['middle']),
+        'low': describe('低端', bands['low']),
+        'other': '其他',
+    }
+
+
+RANK_BANDS = build_rank_bands()
+RANK_BAND_WIDTHS = build_rank_band_widths()
 
 
 @dataclass(frozen=True)
@@ -42,19 +72,24 @@ class RedCandidateSelection:
     recommendations: tuple[tuple[int, ...], ...]
 
 
-def count_actual_reds_by_rank_band(red_scores, actual_reds):
+def count_actual_reds_by_rank_band(
+    red_scores,
+    actual_reds,
+    config=DEFAULT_STRATEGY_CONFIG,
+):
     """Count actual red balls by their model-score rank band."""
+    rank_bands = build_rank_bands(config)
     ranked = [
         ball for ball, _ in sorted(
             red_scores.items(), key=lambda item: (-item[1], item[0])
         )
     ]
     rank_by_ball = {ball: rank for rank, ball in enumerate(ranked, 1)}
-    counts = Counter({'high': 0, 'middle': 0, 'low': 0, 'other': 0})
+    counts = Counter({name: 0 for name in RANK_BAND_NAMES})
     for ball in actual_reds:
         rank = rank_by_ball[ball]
         band = next(
-            (name for name, ranks in RANK_BANDS.items() if rank in ranks),
+            (name for name, ranks in rank_bands.items() if rank in ranks),
             'other',
         )
         counts[band] += 1
@@ -78,19 +113,13 @@ def build_red_pool(red_scores, config=DEFAULT_STRATEGY_CONFIG, mode='mixed'):
     if mode != 'mixed':
         raise ValueError(f'unknown pool mode: {mode}')
 
-    high = ranked[:config.high_count]
-    low = ranked[-config.low_count:] if config.low_count else []
-    middle_count = max(0, config.pool_size_red - len(high) - len(low))
-    available_start = config.high_count
-    available_end = (
-        len(ranked) - config.low_count if config.low_count else len(ranked)
+    rank_bands = build_rank_bands(config)
+    selected_ranks = (
+        *rank_bands['high'],
+        *rank_bands['middle'],
+        *rank_bands['low'],
     )
-    middle_start = available_start + max(
-        0,
-        (available_end - available_start - middle_count) // 2,
-    )
-    middle = ranked[middle_start:middle_start + middle_count]
-    return sorted(dict.fromkeys(high + middle + low))
+    return sorted(ranked[rank - 1] for rank in selected_ranks)
 
 
 def generate_red_candidates(
