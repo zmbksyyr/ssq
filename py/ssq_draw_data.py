@@ -1,5 +1,7 @@
 """Shared validation and normalization for lottery draw tables."""
 
+from itertools import pairwise
+
 import pandas as pd
 from ssq_core import (
     DRAW_COLUMNS,
@@ -37,10 +39,26 @@ def normalize_draw_frame(frame):
 
     if ((normalized['期号'] // 1000) != normalized['日期'].dt.year).any():
         raise ValueError('期号年份与开奖日期不一致')
+    if normalized['日期'].duplicated().any():
+        raise ValueError('同一开奖日期不能对应多个期号')
     if not normalized['日期'].is_monotonic_increasing:
         raise ValueError('期号与开奖日期顺序不一致')
     if not normalized['日期'].dt.weekday.isin(DRAW_WEEKDAYS).all():
         raise ValueError('开奖日期必须为周二、周四或周日')
+
+    issues = normalized['期号'].tolist()
+    for previous, current in pairwise(issues):
+        previous_year, previous_sequence = divmod(previous, 1000)
+        current_year, current_sequence = divmod(current, 1000)
+        continuous = (
+            current_year == previous_year
+            and current_sequence == previous_sequence + 1
+        ) or (
+            current_year == previous_year + 1
+            and current_sequence == 1
+        )
+        if not continuous:
+            raise ValueError(f'开奖期号不连续: {previous} -> {current}')
 
     normalized['日期'] = normalized['日期'].dt.strftime('%Y-%m-%d')
     return normalized

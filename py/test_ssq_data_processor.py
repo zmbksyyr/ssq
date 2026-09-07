@@ -143,9 +143,15 @@ class DataProcessorTests(unittest.TestCase):
         )
 
     def test_workflow_uses_txt_as_authority_and_reuses_session(self):
+        current = date(2026, 1, 1)
+        draw_dates = []
+        while len(draw_dates) < processor.MIN_FULL_SNAPSHOT_RECORDS:
+            if current.weekday() in DRAW_WEEKDAYS:
+                draw_dates.append(current)
+            current += timedelta(days=1)
         records = [
-            f'{2026001 + index} 2026-01-01 1 2 3 4 5 6 7'
-            for index in range(processor.MIN_FULL_SNAPSHOT_RECORDS)
+            f'{2026001 + index} {draw_date.isoformat()} 1 2 3 4 5 6 7'
+            for index, draw_date in enumerate(draw_dates)
         ]
         session = object()
         with tempfile.TemporaryDirectory() as directory:

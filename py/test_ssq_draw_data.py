@@ -58,6 +58,51 @@ class DrawDataTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '周二、周四或周日'):
             normalize_draw_frame(frame)
 
+    def test_rejects_multiple_issues_on_the_same_draw_date(self):
+        frame = pd.DataFrame([
+            {
+                '期号': 2026001,
+                '日期': '2026-01-01',
+                '红球': '01,02,03,04,05,06',
+                '蓝球': '07',
+            },
+            {
+                '期号': 2026002,
+                '日期': '2026-01-01',
+                '红球': '02,03,04,05,06,07',
+                '蓝球': '08',
+            },
+        ])
+
+        with self.assertRaisesRegex(ValueError, '同一开奖日期'):
+            normalize_draw_frame(frame)
+
+    def test_rejects_issue_gaps_and_invalid_year_resets(self):
+        cases = (
+            (2026001, '2026-01-01', 2026003, '2026-01-06'),
+            (2026153, '2026-12-31', 2027002, '2027-01-05'),
+            (2026153, '2026-12-31', 2028001, '2028-01-02'),
+        )
+        for first_issue, first_date, second_issue, second_date in cases:
+            frame = pd.DataFrame([
+                {
+                    '期号': first_issue,
+                    '日期': first_date,
+                    '红球': '01,02,03,04,05,06',
+                    '蓝球': '07',
+                },
+                {
+                    '期号': second_issue,
+                    '日期': second_date,
+                    '红球': '02,03,04,05,06,07',
+                    '蓝球': '08',
+                },
+            ])
+            with self.subTest(issues=(first_issue, second_issue)), (
+                self.assertRaisesRegex(ValueError, '期号不连续')
+            ):
+                normalize_draw_frame(frame)
+
 
 if __name__ == '__main__':
     unittest.main()
