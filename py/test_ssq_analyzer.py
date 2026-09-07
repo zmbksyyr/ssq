@@ -92,6 +92,7 @@ class AnalyzerTests(unittest.TestCase):
         backtest=backtest,
         backtests={'mixed': backtest},
         pool_mode='mixed',
+        rank_band_widths=analyzer.RANK_BAND_WIDTHS,
         pipeline_stats=[],
         rule_coverage=coverage,
         hard_pipeline_coverage={
