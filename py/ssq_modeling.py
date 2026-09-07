@@ -190,7 +190,12 @@ def train_ball_models(
         valid_rows = target.notna() & features.notna().all(axis=1)
         if not valid_rows.any():
             continue
-        model = lgb.LGBMClassifier(random_state=42, verbose=-1)
+        model = lgb.LGBMClassifier(
+            random_state=42,
+            deterministic=True,
+            force_col_wise=True,
+            verbose=-1,
+        )
         model.fit(features.loc[valid_rows], target.loc[valid_rows])
         models[candidate] = model
     return models

@@ -621,6 +621,28 @@ class AnalyzerTests(unittest.TestCase):
       probabilities = modeling.predict_positive_probability(model, prediction_rows)
       self.assertEqual(probabilities.tolist(), [expected, expected])
 
+  def test_ball_models_enable_lightgbm_deterministic_mode(self):
+    training = pd.DataFrame({
+        'feature': range(10),
+        'outcome': [[1] if index % 2 else [2] for index in range(10)],
+    })
+    with patch.object(
+        modeling.lgb,
+        'LGBMClassifier',
+        wraps=lgb.LGBMClassifier,
+    ) as classifier:
+      modeling.train_ball_models(
+          training,
+          ('feature',),
+          (1,),
+          'outcome',
+          lambda draw, ball: ball in draw,
+      )
+
+    self.assertTrue(classifier.call_args.kwargs['deterministic'])
+    self.assertTrue(classifier.call_args.kwargs['force_col_wise'])
+    self.assertEqual(classifier.call_args.kwargs['random_state'], 42)
+
   def test_positive_probability_uses_the_positive_class_column(self):
     model = lgb.LGBMClassifier(random_state=42, verbose=-1)
     features = pd.DataFrame({'value': range(20)})
