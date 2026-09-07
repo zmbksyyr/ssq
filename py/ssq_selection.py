@@ -3,7 +3,6 @@
 import random
 from collections import Counter
 from collections.abc import Collection, Mapping
-from dataclasses import dataclass, field
 from itertools import combinations
 from math import comb
 
@@ -40,6 +39,11 @@ from ssq_ranking import (
 )
 from ssq_rule_models import RecommendationRequest, RuleContext
 from ssq_rule_registry import passes_red_filters
+from ssq_selection_models import (
+    CandidateGenerationRequest,
+    DuplexSelectionRequest,
+    RedCandidateSelection,
+)
 from tqdm import tqdm
 
 
@@ -60,32 +64,6 @@ def build_rank_band_labels(config=DEFAULT_STRATEGY_CONFIG):
 
 RANK_BANDS = build_rank_bands()
 RANK_BAND_WIDTHS = build_rank_band_widths()
-
-
-@dataclass(frozen=True)
-class RedCandidateSelection:
-    red_pool: tuple[int, ...]
-    potential_combos: tuple[tuple[int, ...], ...]
-    passed_combos: tuple[tuple[int, ...], ...]
-    recommendations: tuple[tuple[int, ...], ...]
-
-
-@dataclass(frozen=True)
-class CandidateGenerationRequest:
-    red_scores: Mapping[int, float]
-    context: RuleContext
-    rejection_set: Collection[tuple[int, ...]] | None
-    config: StrategyConfig = DEFAULT_STRATEGY_CONFIG
-    mode: str = 'mixed'
-    show_progress: bool = False
-
-
-@dataclass(frozen=True)
-class DuplexSelectionRequest:
-    passed_combos: Collection[tuple[int, ...]]
-    red_pool: Collection[int]
-    red_scores: Mapping[int, float] | None = None
-    context: RuleContext = field(default_factory=RuleContext)
 
 
 def validate_candidate_generation_request(request):

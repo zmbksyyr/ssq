@@ -76,9 +76,6 @@ from ssq_scoring import (  # noqa: F401 - compatibility exports
     run_strategy_and_get_scores,
 )
 from ssq_selection import (  # noqa: F401 - compatibility exports
-    CandidateGenerationRequest,
-    DuplexSelectionRequest,
-    RedCandidateSelection,
     build_red_pool,
     count_actual_reds_by_rank_band,
     find_best_7_red_combinations,
@@ -90,6 +87,11 @@ from ssq_selection import (  # noqa: F401 - compatibility exports
     rejection_seed_for_issue,
     validate_candidate_generation_request,
     validate_duplex_selection_request,
+)
+from ssq_selection_models import (  # noqa: F401 - compatibility exports
+    CandidateGenerationRequest,
+    DuplexSelectionRequest,
+    RedCandidateSelection,
 )
 from ssq_training import (  # noqa: F401 - compatibility exports
     MODEL_TRAINING_PARAMS,
