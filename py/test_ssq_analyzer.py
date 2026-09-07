@@ -102,6 +102,15 @@ class AnalyzerTests(unittest.TestCase):
     self.assertEqual(options.backtest_periods, 3)
     self.assertTrue(options.non_interactive)
 
+  def test_runtime_versions_cover_model_dependencies(self):
+    versions = workflow.collect_runtime_versions()
+
+    self.assertEqual(
+        set(versions),
+        {'python', 'numpy', 'pandas', 'lightgbm', 'scikit-learn'},
+    )
+    self.assertTrue(all(isinstance(value, str) and value for value in versions.values()))
+
   def test_strategy_param_loader_distinguishes_file_states(self):
     with tempfile.TemporaryDirectory() as directory:
       path = Path(directory) / 'params.json'
@@ -148,12 +157,18 @@ class AnalyzerTests(unittest.TestCase):
         selection=candidate_selection,
         recommended_blues=[],
         best_7_reds=[],
+        runtime_versions={
+            'python': '3.11.0',
+            'lightgbm': '4.7.0',
+        },
     )
 
     report = analyzer.build_analysis_report(data)
 
     self.assertIn('Data_Basis_Issue: 2026103', report)
     self.assertIn('报告生成时间: 2026-09-07 12:34:56', report)
+    self.assertIn('Runtime_python: 3.11.0', report)
+    self.assertIn('Runtime_lightgbm: 4.7.0', report)
     self.assertIn('模式: 使用内置的默认参数', report)
     self.assertIn('mixed_pool_bands    : 4 high + 9 middle + 4 low', report)
     self.assertIn('max_shared_red_balls: 4', report)

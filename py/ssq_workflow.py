@@ -2,9 +2,11 @@
 
 import json
 import os
+import platform
 import random
 import sys
 import time
+from importlib.metadata import version
 
 import pandas as pd
 from ssq_backtesting import (
@@ -54,6 +56,14 @@ PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
 CSV_PATH = os.path.join(PROJECT_ROOT, 'shuangseqiu.csv')
 PARAMS_JSON_PATH = os.path.join(PROJECT_ROOT, 'best_params.json')
 REPORT_DIR = os.path.join(PROJECT_ROOT, 'report')
+RUNTIME_PACKAGES = ('numpy', 'pandas', 'lightgbm', 'scikit-learn')
+
+
+def collect_runtime_versions():
+    return {
+        'python': platform.python_version(),
+        **{package: version(package) for package in RUNTIME_PACKAGES},
+    }
 
 
 def load_strategy_params(filepath=PARAMS_JSON_PATH):
@@ -274,6 +284,7 @@ def run_analysis(options):
         selection=selection,
         recommended_blues=recommended_blues,
         best_7_reds=best_7_reds,
+        runtime_versions=collect_runtime_versions(),
     )
     report = build_analysis_report(report_data)
     print('\n\n' + report)

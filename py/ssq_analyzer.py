@@ -79,6 +79,7 @@ from ssq_workflow import (  # noqa: F401 - compatibility exports
     PARAMS_JSON_PATH,
     PROJECT_ROOT,
     REPORT_DIR,
+    collect_runtime_versions,
     get_user_input_with_timeout,
     is_confirmation_input,
     load_and_preprocess_data,

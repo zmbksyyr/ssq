@@ -1,6 +1,6 @@
 """Pure text formatting for analysis reports."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from itertools import combinations
 from typing import Any
@@ -41,6 +41,7 @@ class AnalysisReportData:
     selection: Any
     recommended_blues: list[int]
     best_7_reds: list
+    runtime_versions: dict[str, str] = field(default_factory=dict)
 
 
 def format_backtest_report(data):
@@ -252,6 +253,8 @@ def build_analysis_report(data):
         f"Prediction_Target_Issue: {data.target_issue}",
         f"报告生成时间: {data.generated_at.strftime('%Y-%m-%d %H:%M:%S')}",
     ]
+    for name, version in data.runtime_versions.items():
+        lines.append(f'Runtime_{name}: {version}')
     lines.extend(format_backtest_report(data))
     lines.extend(format_rule_audit_report(data))
     lines.extend(format_recommendations_report(data))
