@@ -2,9 +2,9 @@
 
 import os
 import tempfile
-from datetime import date, datetime, timedelta
 
 import ssq_domain as _domain
+import ssq_draw_schedule as _draw_schedule
 import ssq_parsing as _parsing
 
 RED_MIN = _domain.RED_MIN
@@ -25,41 +25,14 @@ PRIZE_NAMES = _domain.PRIZE_NAMES
 parse_integer = _parsing.parse_integer
 
 
-def local_now():
-    return datetime.now(LOCAL_TIMEZONE)
-
-
-def local_today():
-    return local_now().date()
-
-
+local_now = _draw_schedule.local_now
+local_today = _draw_schedule.local_today
 parse_issue = _parsing.parse_issue
 parse_red_balls = _parsing.parse_red_balls
 parse_blue_ball = _parsing.parse_blue_ball
 parse_blue_balls = _parsing.parse_blue_balls
 validate_ball_scores = _parsing.validate_ball_scores
-
-
-def infer_next_issue(current_issue, current_draw_date):
-    """Infer the next regular draw issue, including the year boundary."""
-    issue = parse_issue(current_issue)
-    issue_year, _ = divmod(issue, 1000)
-
-    if isinstance(current_draw_date, datetime):
-        draw_date = current_draw_date.date()
-    elif isinstance(current_draw_date, date):
-        draw_date = current_draw_date
-    else:
-        draw_date = date.fromisoformat(str(current_draw_date))
-    if draw_date.year != issue_year:
-        raise ValueError(f"期号年份 {issue_year} 与开奖日期 {draw_date} 不一致")
-
-    next_draw_date = draw_date + timedelta(days=1)
-    while next_draw_date.weekday() not in DRAW_WEEKDAYS:
-        next_draw_date += timedelta(days=1)
-    if next_draw_date.year != issue_year:
-        return next_draw_date.year * 1000 + 1
-    return issue + 1
+infer_next_issue = _draw_schedule.infer_next_issue
 
 
 def atomic_write_text(path, content, encoding='utf-8'):
