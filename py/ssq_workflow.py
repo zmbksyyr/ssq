@@ -4,11 +4,10 @@ import json
 import os
 import platform
 import random
-from dataclasses import dataclass
 from importlib.metadata import version
-from typing import Any
 
 import pandas as pd
+import ssq_workflow_models as _workflow_models
 from ssq_anti_crowding import make_rejection_set, rejection_seed_for_issue
 from ssq_backtesting import (
     BacktestRequest,
@@ -67,34 +66,9 @@ CSV_PATH = os.path.join(PROJECT_ROOT, 'shuangseqiu.csv')
 PARAMS_JSON_PATH = os.path.join(PROJECT_ROOT, 'best_params.json')
 REPORT_DIR = os.path.join(PROJECT_ROOT, 'report')
 RUNTIME_PACKAGES = ('numpy', 'pandas', 'lightgbm', 'scikit-learn')
-
-
-@dataclass(frozen=True)
-class PreparedHistory:
-    frame: pd.DataFrame
-    feature_columns: tuple[str, ...]
-    latest_issue: str
-    target_issue: int
-    sha256: str
-
-
-@dataclass(frozen=True)
-class HistoricalEvaluation:
-    loaded_params: LoadedStrategyParams
-    rule_coverage: dict
-    hard_pipeline_coverage: dict
-    backtests: dict[str, Any]
-    selected_backtest: Any
-
-
-@dataclass(frozen=True)
-class CurrentSelection:
-    red_scores: dict[int, float]
-    recommended_blues: list[int]
-    rejection_seed: int
-    rule_context: RuleContext
-    candidate_selection: Any
-    pipeline_stats: list[dict]
+PreparedHistory = _workflow_models.PreparedHistory
+HistoricalEvaluation = _workflow_models.HistoricalEvaluation
+CurrentSelection = _workflow_models.CurrentSelection
 
 
 def collect_runtime_versions():
