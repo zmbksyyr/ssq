@@ -97,6 +97,11 @@ class AnalyzerTests(unittest.TestCase):
     self.assertIs(analyzer.build_red_pool, selection.build_red_pool)
     self.assertIs(analyzer.generate_candidates, selection.generate_candidates)
     self.assertIs(analyzer.generate_red_candidates, selection.generate_red_candidates)
+    self.assertIs(analyzer.RecommendationRequest, rules.RecommendationRequest)
+    self.assertIs(
+        analyzer.select_recommendation_portfolio,
+        rules.select_recommendation_portfolio,
+    )
 
   def test_legacy_candidate_api_builds_request_without_losing_options(self):
     strategy = analyzer.StrategyConfig(rejection_lib_size=0)
@@ -577,13 +582,17 @@ class AnalyzerTests(unittest.TestCase):
       self.assertIs(actual_rejection, rejected)
       return combo not in actual_rejection
 
-    def fake_select(combos, *_args, **_kwargs):
-      return list(combos)[:2]
+    def fake_select(request):
+      return list(request.passed_combos)[:2]
 
     with (
         patch.object(selection, 'build_red_pool', return_value=list(range(1, 8))),
         patch.object(selection, 'passes_red_filters', side_effect=fake_filter) as check,
-        patch.object(selection, 'select_recommendations', side_effect=fake_select) as select,
+        patch.object(
+            selection,
+            'select_recommendation_portfolio',
+            side_effect=fake_select,
+        ) as select,
     ):
       result = selection.generate_red_candidates(
           scores, context, rejected, config=config
@@ -595,9 +604,10 @@ class AnalyzerTests(unittest.TestCase):
     self.assertNotIn(next(iter(rejected)), result.passed_combos)
     self.assertEqual(result.recommendations, result.passed_combos[:2])
     self.assertEqual(check.call_count, 7)
-    self.assertEqual(select.call_args.kwargs['limit'], 2)
-    self.assertEqual(select.call_args.kwargs['max_shared'], 3)
-    self.assertIs(select.call_args.kwargs['context'], context)
+    request = select.call_args.args[0]
+    self.assertEqual(request.limit, 2)
+    self.assertEqual(request.max_shared, 3)
+    self.assertIs(request.context, context)
 
   def test_strategy_config_rejects_incoherent_selection_limits(self):
     with self.assertRaises(ValueError):
@@ -1016,6 +1026,31 @@ class AnalyzerTests(unittest.TestCase):
       for other in selected[index + 1:]:
         self.assertLessEqual(len(set(combo) & set(other)), 4)
 
+  def test_legacy_recommendation_api_builds_complete_request(self):
+    combos = ((1, 2, 3, 4, 5, 6),)
+    scores = {ball: float(ball) for ball in range(1, 34)}
+    context = rules.RuleContext(last_draw={7}, previous_draw={8})
+    with patch.object(
+        rules,
+        'select_recommendation_portfolio',
+        return_value=['result'],
+    ) as select:
+      result = rules.select_recommendations(
+          combos,
+          scores,
+          limit=3,
+          max_shared=2,
+          context=context,
+      )
+
+    self.assertEqual(result, ['result'])
+    request = select.call_args.args[0]
+    self.assertEqual(request.passed_combos, combos)
+    self.assertIs(request.red_scores, scores)
+    self.assertIs(request.context, context)
+    self.assertEqual(request.limit, 3)
+    self.assertEqual(request.max_shared, 2)
+
   def test_duplex_selection_uses_score_to_break_coverage_ties(self):
     pool = list(range(1, 9))
     passed = list(combinations(pool, 6))
@@ -1325,7 +1360,7 @@ class AnalyzerTests(unittest.TestCase):
         patch.object(selection, "passes_red_filters", return_value=True),
         patch.object(
             selection,
-            "select_recommendations",
+            "select_recommendation_portfolio",
             return_value=[(1, 2, 3, 4, 13, 14)],
         ) as selection_mock,
     ):
@@ -1339,7 +1374,7 @@ class AnalyzerTests(unittest.TestCase):
     self.assertNotIn(2025051, training_frame['期号'].tolist())
     self.assertEqual(rejection_mock.call_args.args[0], 1234)
     pool_mock.assert_called_once_with(red_scores, config=config, mode="mixed")
-    self.assertEqual(selection_mock.call_args.kwargs['limit'], 3)
+    self.assertEqual(selection_mock.call_args.args[0].limit, 3)
     self.assertEqual(result.periods, 1)
     self.assertEqual(result.evaluated_periods, 1)
     self.assertEqual(result.active_periods, 1)

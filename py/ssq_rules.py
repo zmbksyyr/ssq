@@ -1,5 +1,5 @@
 from collections import Counter
-from collections.abc import Callable, Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from itertools import combinations
 from math import isclose, isfinite
@@ -33,6 +33,15 @@ class CombinationScoreContext:
     red_scores: Mapping[int, float]
     rank_center_scores: Mapping[int, float]
     rule_context: RuleContext
+
+
+@dataclass(frozen=True)
+class RecommendationRequest:
+    passed_combos: Iterable[tuple[int, ...]]
+    red_scores: Mapping[int, float]
+    context: RuleContext
+    limit: int = NUM_RECOMMENDATIONS
+    max_shared: int = MAX_SHARED_RED_BALLS
 
 
 def is_prime(number):
@@ -400,6 +409,41 @@ def score_red_combination(combo, red_scores, last_draw=None, previous_draw=None,
     )
 
 
+def select_recommendation_portfolio(request):
+    """Select a diverse portfolio from ranked valid combinations."""
+    if not isinstance(request, RecommendationRequest):
+        raise TypeError('request 必须为 RecommendationRequest')
+    if request.limit <= 0:
+        return []
+    if not 0 <= request.max_shared <= 6:
+        raise ValueError('max_shared must be between 0 and 6')
+    scoring_context = build_combination_score_context(
+        request.red_scores,
+        request.context,
+    )
+    ranked = sorted(
+        request.passed_combos,
+        key=lambda combo: (
+            -score_combination(combo, scoring_context),
+            combo,
+        ),
+    )
+    selected = []
+    selected_sets = []
+    for overlap_limit in range(request.max_shared, 7):
+        for combo in ranked:
+            if combo in selected:
+                continue
+            candidate = set(combo)
+            if all(len(candidate & previous) <= overlap_limit
+                   for previous in selected_sets):
+                selected.append(combo)
+                selected_sets.append(candidate)
+                if len(selected) == request.limit:
+                    return selected
+    return selected
+
+
 def select_recommendations(
     passed_combos,
     red_scores,
@@ -409,33 +453,14 @@ def select_recommendations(
     max_shared=MAX_SHARED_RED_BALLS,
     context=None,
 ):
-    if limit <= 0:
-        return []
-    if not 0 <= max_shared <= 6:
-        raise ValueError('max_shared must be between 0 and 6')
-    context = context or RuleContext(
-        last_draw=last_draw,
-        previous_draw=previous_draw,
-    )
-    scoring_context = build_combination_score_context(red_scores, context)
-    ranked = sorted(
-        passed_combos,
-        key=lambda combo: (
-            -score_combination(combo, scoring_context),
-            combo,
+    """Compatibility wrapper for request-based portfolio selection."""
+    return select_recommendation_portfolio(RecommendationRequest(
+        passed_combos=passed_combos,
+        red_scores=red_scores,
+        context=context or RuleContext(
+            last_draw=last_draw,
+            previous_draw=previous_draw,
         ),
-    )
-    selected = []
-    selected_sets = []
-    for overlap_limit in range(max_shared, 7):
-        for combo in ranked:
-            if combo in selected:
-                continue
-            candidate = set(combo)
-            if all(len(candidate & previous) <= overlap_limit
-                   for previous in selected_sets):
-                selected.append(combo)
-                selected_sets.append(candidate)
-                if len(selected) == limit:
-                    return selected
-    return selected
+        limit=limit,
+        max_shared=max_shared,
+    ))

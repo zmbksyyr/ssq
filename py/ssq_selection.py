@@ -16,11 +16,12 @@ from ssq_config import (
 )
 from ssq_core import RED_BALLS, parse_issue, validate_ball_scores
 from ssq_rules import (
+    RecommendationRequest,
     RuleContext,
     build_combination_score_context,
     passes_red_filters,
     score_combination,
-    select_recommendations,
+    select_recommendation_portfolio,
 )
 from tqdm import tqdm
 
@@ -155,13 +156,13 @@ def generate_candidates(request):
         combo for combo in iterator
         if passes_red_filters(combo, request.context, request.rejection_set)
     )
-    recommendations = tuple(select_recommendations(
-        passed_combos,
-        request.red_scores,
+    recommendations = tuple(select_recommendation_portfolio(RecommendationRequest(
+        passed_combos=passed_combos,
+        red_scores=request.red_scores,
+        context=request.context,
         limit=request.config.recommendation_count,
         max_shared=request.config.max_shared_red_balls,
-        context=request.context,
-    ))
+    )))
     return RedCandidateSelection(
         red_pool=red_pool,
         potential_combos=potential_combos,

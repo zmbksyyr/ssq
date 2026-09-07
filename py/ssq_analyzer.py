@@ -61,8 +61,11 @@ from ssq_reporting import (  # noqa: F401 - compatibility exports
     build_analysis_report,
 )
 from ssq_rules import (  # noqa: F401 - compatibility exports
+    RecommendationRequest,
     RuleContext,
     filter_pipeline_stats,
+    select_recommendation_portfolio,
+    select_recommendations,
 )
 from ssq_selection import (  # noqa: F401 - compatibility exports
     RANK_BAND_WIDTHS,
@@ -80,7 +83,6 @@ from ssq_selection import (  # noqa: F401 - compatibility exports
     make_rejection_set,
     passes_red_filters,
     rejection_seed_for_issue,
-    select_recommendations,
 )
 from ssq_workflow import (  # noqa: F401 - compatibility exports
     CSV_PATH,
