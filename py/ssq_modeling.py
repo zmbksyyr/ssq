@@ -2,12 +2,16 @@
 
 from collections import Counter
 from itertools import combinations, pairwise
-from numbers import Real
 
 import lightgbm as lgb
 import numpy as np
 import pandas as pd
-from ssq_core import BLUE_BALLS, PRIME_RED_BALLS, RED_BALLS
+from ssq_core import (
+    BLUE_BALLS,
+    PRIME_RED_BALLS,
+    RED_BALLS,
+    validate_ball_scores,
+)
 from tqdm import tqdm
 
 FEATURE_COLUMNS = (
@@ -224,26 +228,6 @@ def validate_model_sets(red_models, blue_models):
             f'红球缺失 {missing_red}, 红球多余 {extra_red}, '
             f'蓝球缺失 {missing_blue}, 蓝球多余 {extra_blue}'
         )
-
-
-def validate_ball_scores(scores, candidates, label):
-    """Return numeric scores after enforcing the complete ball-domain contract."""
-    expected = set(candidates)
-    missing = sorted(expected - set(scores))
-    extra = sorted(set(scores) - expected)
-    if missing or extra:
-        raise ValueError(f'{label}评分键不完整: 缺失 {missing}, 多余 {extra}')
-
-    normalized = {}
-    for ball in candidates:
-        value = scores[ball]
-        if isinstance(value, bool) or not isinstance(value, Real):
-            raise TypeError(f'{label} {ball} 的评分必须为数值')
-        value = float(value)
-        if not np.isfinite(value):
-            raise ValueError(f'{label} {ball} 的评分必须为有限数值')
-        normalized[ball] = value
-    return normalized
 
 
 def predict_positive_probability(model, features):

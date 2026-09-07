@@ -358,6 +358,20 @@ class AnalyzerTests(unittest.TestCase):
     with self.assertRaises(ValueError):
       selection.build_red_pool(scores, mode="invalid")
 
+  def test_selection_rejects_incomplete_or_non_finite_score_domains(self):
+    complete = {ball: float(ball) for ball in range(1, 34)}
+    invalid_scores = (
+        {ball: score for ball, score in complete.items() if ball != 33},
+        {**complete, 34: 1.0},
+        {**complete, 1: np.nan},
+    )
+
+    for scores in invalid_scores:
+      with self.subTest(scores=scores), self.assertRaises(ValueError):
+        selection.build_red_pool(scores)
+      with self.subTest(scores=scores), self.assertRaises(ValueError):
+        selection.count_actual_reds_by_rank_band(scores, {1, 2, 3, 4, 5, 6})
+
   def test_custom_pool_uses_the_same_dynamic_rank_bands_everywhere(self):
     scores = {ball: float(34 - ball) for ball in range(1, 34)}
     custom = analyzer.StrategyConfig(

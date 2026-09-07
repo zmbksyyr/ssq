@@ -110,6 +110,26 @@ def parse_blue_balls(value):
     return numbers
 
 
+def validate_ball_scores(scores, candidates, label):
+    """Return numeric scores after enforcing a complete ball domain."""
+    expected = set(candidates)
+    missing = sorted(expected - set(scores))
+    extra = sorted(set(scores) - expected)
+    if missing or extra:
+        raise ValueError(f'{label}评分键不完整: 缺失 {missing}, 多余 {extra}')
+
+    normalized = {}
+    for ball in candidates:
+        value = scores[ball]
+        if isinstance(value, bool) or not isinstance(value, Real):
+            raise TypeError(f'{label} {ball} 的评分必须为数值')
+        value = float(value)
+        if not isfinite(value):
+            raise ValueError(f'{label} {ball} 的评分必须为有限数值')
+        normalized[ball] = value
+    return normalized
+
+
 def infer_next_issue(current_issue, current_draw_date):
     """Infer the next regular draw issue, including the year boundary."""
     issue = parse_issue(current_issue)

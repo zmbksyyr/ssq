@@ -12,7 +12,7 @@ from ssq_config import (
     REJECTION_SEED_MULTIPLIER,
     TOTAL_RED_COMBINATIONS,
 )
-from ssq_core import RED_BALLS, parse_issue
+from ssq_core import RED_BALLS, parse_issue, validate_ball_scores
 from ssq_rules import (
     build_rank_center_scores,
     passes_red_filters,
@@ -78,6 +78,7 @@ def count_actual_reds_by_rank_band(
     config=DEFAULT_STRATEGY_CONFIG,
 ):
     """Count actual red balls by their model-score rank band."""
+    red_scores = validate_ball_scores(red_scores, RED_BALLS, '红球')
     rank_bands = build_rank_bands(config)
     ranked = [
         ball for ball, _ in sorted(
@@ -98,6 +99,7 @@ def count_actual_reds_by_rank_band(
 
 def build_red_pool(red_scores, config=DEFAULT_STRATEGY_CONFIG, mode='mixed'):
     """Build a red pool from one score band or a high/middle/low mixture."""
+    red_scores = validate_ball_scores(red_scores, RED_BALLS, '红球')
     ranked = [
         ball for ball, _ in sorted(
             red_scores.items(), key=lambda item: (-item[1], item[0])
