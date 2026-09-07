@@ -1,39 +1,18 @@
 """Red-ball pool construction, hard-rule filtering, and recommendations."""
 
 from collections import Counter
-from collections.abc import Collection, Mapping
 from itertools import combinations
 
-from ssq_config import DEFAULT_STRATEGY_CONFIG, RED_POOL_MODES, StrategyConfig
+from ssq_candidate_validation import validate_candidate_generation_request
+from ssq_config import DEFAULT_STRATEGY_CONFIG
 from ssq_domain import RED_BALLS
 from ssq_parsing import validate_ball_scores
 from ssq_rank_bands import RANK_BAND_NAMES, build_rank_bands
 from ssq_ranking import select_recommendation_portfolio
-from ssq_rule_models import RecommendationRequest, RuleContext
+from ssq_rule_models import RecommendationRequest
 from ssq_rule_registry import passes_red_filters
 from ssq_selection_models import CandidateGenerationRequest, RedCandidateSelection
 from tqdm import tqdm
-
-
-def validate_candidate_generation_request(request):
-    """Validate candidate-generation controls before enumerating combinations."""
-    if not isinstance(request, CandidateGenerationRequest):
-        raise TypeError('request must be a CandidateGenerationRequest')
-    if not isinstance(request.context, RuleContext):
-        raise TypeError('context must be a RuleContext')
-    if not isinstance(request.config, StrategyConfig):
-        raise TypeError('config must be a StrategyConfig')
-    if not isinstance(request.red_scores, Mapping):
-        raise TypeError('red_scores must be a mapping')
-    if request.mode not in RED_POOL_MODES:
-        raise ValueError(f'unknown pool mode: {request.mode}')
-    if not isinstance(request.show_progress, bool):
-        raise TypeError('show_progress must be a bool')
-    if request.rejection_set is not None and (
-        not isinstance(request.rejection_set, Collection)
-        or isinstance(request.rejection_set, (str, bytes))
-    ):
-        raise TypeError('rejection_set must be a collection or None')
 
 
 def count_actual_reds_by_rank_band(
