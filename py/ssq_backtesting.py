@@ -2,9 +2,8 @@
 
 import random
 from collections import Counter
-from collections.abc import Sequence
-from dataclasses import dataclass
 
+import ssq_backtest_models as _backtest_models
 from ssq_anti_crowding import make_rejection_set, rejection_seed_for_issue
 from ssq_backtest_metrics import BacktestAccumulator, BacktestResult
 from ssq_candidates import (
@@ -29,13 +28,17 @@ from ssq_rule_auditing import (
     audit_historical_rule_coverage as _audit_historical_rule_coverage,
 )
 from ssq_rule_auditing import historical_rule_context as _historical_rule_context
-from ssq_rule_models import RuleContext
 from ssq_scoring import run_strategy_and_get_scores
 from ssq_selection_models import CandidateGenerationRequest
 from ssq_training import train_prediction_models, validate_model_sets
 from tqdm import tqdm
 
 FILTER_NAMES = _FILTER_NAMES
+BacktestIssue = _backtest_models.BacktestIssue
+BacktestSelectionInputs = _backtest_models.BacktestSelectionInputs
+BacktestRunContext = _backtest_models.BacktestRunContext
+BacktestRequest = _backtest_models.BacktestRequest
+PreparedBacktestIssue = _backtest_models.PreparedBacktestIssue
 
 
 def historical_rule_context(full_df, index):
@@ -51,44 +54,6 @@ def audit_historical_rule_coverage(full_df, periods=RULE_AUDIT_PERIODS):
 def audit_historical_hard_pipeline(full_df, periods=RULE_AUDIT_PERIODS):
     """Compatibility wrapper for cumulative hard-rule coverage."""
     return _audit_historical_hard_pipeline(full_df, periods)
-
-
-@dataclass(frozen=True)
-class BacktestIssue:
-    actual_reds: frozenset[int]
-    actual_blue: int
-    recommended_blue: int
-    rank_band_hits: Counter
-
-
-@dataclass(frozen=True)
-class BacktestSelectionInputs:
-    red_scores: dict[int, float]
-    context: RuleContext
-    rejection_set: set[tuple[int, ...]]
-    config: StrategyConfig
-
-
-@dataclass(frozen=True)
-class BacktestRunContext:
-    params: dict
-    feature_columns: Sequence[str]
-    config: StrategyConfig
-
-
-@dataclass(frozen=True)
-class BacktestRequest:
-    params: dict
-    feature_columns: Sequence[str]
-    num_periods: int
-    pool_modes: Sequence[str] = ('mixed',)
-    config: StrategyConfig = DEFAULT_STRATEGY_CONFIG
-
-
-@dataclass(frozen=True)
-class PreparedBacktestIssue:
-    issue: BacktestIssue
-    selection_inputs: BacktestSelectionInputs
 
 
 def evaluate_backtest_mode(
