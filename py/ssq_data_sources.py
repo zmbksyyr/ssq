@@ -156,3 +156,13 @@ def cross_check_sources(primary_records, secondary_records):
     else:
         logger.warning('两个数据源没有可交叉核验的重叠期号。')
     return mismatches
+
+
+def find_secondary_only_issues(primary_records, secondary_records):
+    """Return issues visible to the cross-check source but absent from TXT."""
+    primary_issues = {str(item['期号']) for item in primary_records}
+    secondary_issues = {str(item['期号']) for item in secondary_records}
+    return sorted(
+        secondary_issues - primary_issues,
+        key=parse_issue,
+    )

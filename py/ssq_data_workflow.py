@@ -12,6 +12,7 @@ from ssq_data_sources import (
     cross_check_sources,
     fetch_full_data_from_txt,
     fetch_latest_data_from_html,
+    find_secondary_only_issues,
     parse_txt_data,
 )
 from ssq_data_store import update_csv_file
@@ -55,6 +56,15 @@ def run_data_update(
     )
     if comparison_records:
         cross_check_sources(authoritative_records, comparison_records)
+        missing_authoritative_issues = find_secondary_only_issues(
+            authoritative_records,
+            comparison_records,
+        )
+        if missing_authoritative_issues:
+            raise SystemExit(
+                'HTML 交叉源包含 TXT 权威源缺失的期号: '
+                f"{', '.join(missing_authoritative_issues)}；拒绝更新 CSV。"
+            )
 
     if not update_csv_file(
         csv_path,

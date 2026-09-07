@@ -9,6 +9,7 @@ from ssq_data_sources import (  # noqa: F401
     cross_check_sources,
     fetch_full_data_from_txt,
     fetch_latest_data_from_html,
+    find_secondary_only_issues,
     parse_txt_data,
 )
 from ssq_data_store import (  # noqa: F401

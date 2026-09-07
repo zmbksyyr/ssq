@@ -64,6 +64,20 @@ class DataProcessorTests(unittest.TestCase):
         secondary = [{'期号': '2026001', '红球': '01,02,03,04,05,08', '蓝球': '07'}]
         self.assertEqual(processor.cross_check_sources(primary, secondary), ['2026001'])
 
+    def test_cross_check_reports_issues_missing_from_authoritative_source(self):
+        primary = [
+            {'期号': '2026001', '红球': '01,02,03,04,05,06', '蓝球': '07'},
+        ]
+        secondary = [
+            {'期号': '2026001', '红球': '01,02,03,04,05,06', '蓝球': '07'},
+            {'期号': '2026002', '红球': '02,03,04,05,06,07', '蓝球': '08'},
+        ]
+
+        self.assertEqual(
+            processor.find_secondary_only_issues(primary, secondary),
+            ['2026002'],
+        )
+
     def test_normalize_frame_rejects_issue_date_year_mismatch(self):
         frame = pd.DataFrame([{
             '期号': '2026001', '日期': '2025-12-31',
@@ -164,6 +178,34 @@ class DataProcessorTests(unittest.TestCase):
                     Path(directory) / 'draws.csv', session=object()
                 )
             fetch_html.assert_not_called()
+
+    def test_workflow_rejects_txt_snapshot_missing_an_html_issue(self):
+        records = [
+            f'{2026001 + index} 2026-01-01 1 2 3 4 5 6 7'
+            for index in range(processor.MIN_FULL_SNAPSHOT_RECORDS)
+        ]
+        html_records = [{
+            '期号': '2026101',
+            '红球': '01,02,03,04,05,06',
+            '蓝球': '07',
+        }]
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch(
+                'ssq_data_workflow.fetch_full_data_from_txt',
+                return_value=records,
+            ),
+            patch(
+                'ssq_data_workflow.fetch_latest_data_from_html',
+                return_value=html_records,
+            ),
+            patch('ssq_data_workflow.update_csv_file') as update,
+        ):
+            with self.assertRaisesRegex(SystemExit, 'TXT 权威源缺失'):
+                processor.run_data_update(
+                    Path(directory) / 'draws.csv', session=object()
+                )
+            update.assert_not_called()
 
 
 if __name__ == '__main__':
