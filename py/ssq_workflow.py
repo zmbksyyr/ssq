@@ -53,7 +53,7 @@ from ssq_rule_auditing import (
     audit_historical_rule_coverage,
 )
 from ssq_rule_models import RuleContext
-from ssq_rules import filter_pipeline_stats
+from ssq_rule_registry import filter_pipeline_stats
 from ssq_selection import (
     CandidateGenerationRequest,
     DuplexSelectionRequest,

@@ -34,9 +34,9 @@ from ssq_rank_bands import (
     build_rank_bands as _build_rank_bands,
 )
 from ssq_rule_models import RecommendationRequest, RuleContext
+from ssq_rule_registry import passes_red_filters
 from ssq_rules import (
     build_combination_score_context,
-    passes_red_filters,
     score_combination,
     select_recommendation_portfolio,
 )

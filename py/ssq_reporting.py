@@ -8,7 +8,7 @@ from typing import Any
 
 from ssq_core import PRIZE_NAMES
 from ssq_rank_bands import RANK_BAND_NAMES
-from ssq_rules import FILTER_NAMES, HARD_FILTER_NAMES
+from ssq_rule_registry import FILTER_NAMES, HARD_FILTER_NAMES
 
 PRIZE_DISPLAY_ORDER = (
     '一等奖', '二等奖', '三等奖', '四等奖', '五等奖', '六等奖',

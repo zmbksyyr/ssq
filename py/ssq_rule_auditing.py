@@ -5,7 +5,7 @@ from collections import Counter
 from ssq_config import RULE_AUDIT_PERIODS
 from ssq_modeling import get_omission
 from ssq_rule_models import RuleContext
-from ssq_rules import FILTER_NAMES, RED_RULES, explain_filter_failures
+from ssq_rule_registry import FILTER_NAMES, RED_RULES, explain_filter_failures
 
 
 def historical_rule_context(full_df, index):
