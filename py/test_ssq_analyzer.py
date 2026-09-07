@@ -33,6 +33,25 @@ class AnalyzerTests(unittest.TestCase):
     self.assertTrue(analyzer.is_prime(2))
     self.assertTrue(analyzer.is_prime(31))
 
+  def test_feature_engineering_does_not_mutate_source_frame(self):
+    source = pd.DataFrame({
+        '红球': [[1, 2, 3, 4, 5, 6]],
+        '蓝球': [7],
+    })
+    result = analyzer.feature_engineer(source)
+    self.assertEqual(list(source.columns), ['红球', '蓝球'])
+    self.assertIn('red_sum', result.columns)
+
+  def test_omission_uses_row_position_instead_of_index_labels(self):
+    history = pd.DataFrame(
+        {'红球': [[1, 2, 3, 4, 5, 6], [2, 7, 8, 9, 10, 11]]},
+        index=[100, 500],
+    )
+    omission = analyzer.get_omission(history)
+    self.assertEqual(omission[2], 0)
+    self.assertEqual(omission[1], 1)
+    self.assertEqual(omission[33], 2)
+
 
   def test_build_red_pool_mixes_score_bands(self):
     scores = {ball: float(34 - ball) for ball in range(1, 34)}
@@ -325,6 +344,12 @@ class AnalyzerTests(unittest.TestCase):
       analyzer.validate_strategy_params({'decay_factor': 1.1})
     with self.assertRaises(ValueError):
       analyzer.validate_strategy_params({'repeat_bonus': 0})
+    with self.assertRaises(ValueError):
+      analyzer.validate_strategy_params({'weight_frequency': 1.0})
+    with self.assertRaises(TypeError):
+      analyzer.validate_strategy_params({'weight_freq': '0.4'})
+    with self.assertRaises(TypeError):
+      analyzer.validate_strategy_params({'hot_lookback': 10.5})
 
   def test_bundled_params_match_defaults_and_weights_are_normalized(self):
     with open(analyzer.PARAMS_JSON_PATH, encoding='utf-8') as handle:

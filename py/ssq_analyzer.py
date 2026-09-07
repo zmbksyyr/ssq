@@ -81,25 +81,65 @@ DEFAULT_PARAMS = {
     'weight_blue_freq': 0.6,
     'weight_blue_ml': 0.4,
 }
+INTEGER_PARAM_NAMES = ('hot_lookback', 'hot_threshold', 'cold_lookback')
+FLOAT_PARAM_NAMES = (
+    'decay_factor', 'weight_freq', 'weight_omission', 'weight_ml',
+    'hot_bonus', 'cold_bonus', 'repeat_bonus',
+    'weight_blue_freq', 'weight_blue_ml',
+)
+
+
+def normalize_integer_param(name, value):
+    if isinstance(value, bool) or not isinstance(value, (int, np.integer)):
+        raise TypeError(f'{name} 必须为整数')
+    return int(value)
+
+
+def normalize_float_param(name, value):
+    if isinstance(value, bool) or not isinstance(
+        value, (int, float, np.integer, np.floating)
+    ):
+        raise TypeError(f'{name} 必须为数字')
+    normalized = float(value)
+    if not np.isfinite(normalized):
+        raise ValueError(f'{name} 必须为有限数值')
+    return normalized
+
+
+def validate_weight_group(params, names):
+    values = [params[name] for name in names]
+    if any(value < 0 for value in values) or not np.isclose(sum(values), 1.0):
+        raise ValueError(f"权重 {', '.join(names)} 必须非负且总和为 1")
+
+
+def validate_param_ranges(params):
+    if not 0 < params['decay_factor'] <= 1:
+        raise ValueError('decay_factor 必须在 (0, 1] 范围内')
+    for name in INTEGER_PARAM_NAMES:
+        if params[name] < 0:
+            raise ValueError(f'{name} 不能为负数')
+    for name in ('hot_bonus', 'cold_bonus', 'repeat_bonus'):
+        if params[name] <= 0:
+            raise ValueError(f'{name} 必须大于 0')
 
 
 def validate_strategy_params(params):
+    if not isinstance(params, dict):
+        raise TypeError('strategy params must be a JSON object')
+    unknown = sorted(set(params) - set(DEFAULT_PARAMS))
+    if unknown:
+        raise ValueError(f"未知策略参数: {', '.join(unknown)}")
     merged = {**DEFAULT_PARAMS, **params}
-    if not 0 < merged['decay_factor'] <= 1:
-        raise ValueError('decay_factor 必须在 (0, 1] 范围内')
+    for name in INTEGER_PARAM_NAMES:
+        merged[name] = normalize_integer_param(name, merged[name])
+    for name in FLOAT_PARAM_NAMES:
+        merged[name] = normalize_float_param(name, merged[name])
     for group in (
         ('weight_freq', 'weight_omission', 'weight_ml'),
         ('weight_blue_freq', 'weight_blue_ml'),
     ):
-        values = [float(merged[name]) for name in group]
-        if any(value < 0 for value in values) or not np.isclose(sum(values), 1.0):
-            raise ValueError(f"权重 {', '.join(group)} 必须非负且总和为 1")
-    for name in ('hot_lookback', 'hot_threshold', 'cold_lookback'):
-        if int(merged[name]) < 0:
-            raise ValueError(f'{name} 不能为负数')
-    for name in ('hot_bonus', 'cold_bonus', 'repeat_bonus'):
-        if float(merged[name]) <= 0:
-            raise ValueError(f'{name} 必须大于 0')
+        validate_weight_group(merged, group)
+    validate_param_ranges(merged)
     return merged
 
 
@@ -322,6 +362,7 @@ def feature_engineer(df):
     Returns:
         DataFrame: 增加了18个新特征列的数据。
     """
+    df = df.copy()
     # 特征1: 和值 - 6个红球号码之和
     df['red_sum'] = df['红球'].apply(sum)
     # 特征2: 跨度 - 6个红球中最大号码与最小号码的差
@@ -390,20 +431,16 @@ def get_omission(df):
     Returns:
         dict: 一个字典，键为红球号码(1-33)，值为其对应的遗漏值。
     """
-    red_omission = {}
     total_draws = len(df)
-    # 遍历1到33号红球
-    for i in range(1, 34):
-        # 查找号码 i 最后一次出现的行的索引位置
-        last_occurrence = df[df['红球'].apply(lambda x: i in x)].index.max()
-        # 如果号码从未出现过(last_occurrence为NaN)，则其遗漏值为总期数
-        if pd.isna(last_occurrence):
-            omission = total_draws
-        else:
-            # 否则，遗漏值为 (总期数 - 最后出现位置的索引 - 1)
-            omission = total_draws - last_occurrence - 1
-        red_omission[i] = omission
-    return red_omission
+    last_positions = {}
+    for position, draw in enumerate(df['红球']):
+        for ball in draw:
+            last_positions[ball] = position
+    return {
+        ball: total_draws - last_positions[ball] - 1
+        if ball in last_positions else total_draws
+        for ball in range(1, 34)
+    }
 
 def get_weighted_frequency(series, decay_factor):
     """
