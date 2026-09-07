@@ -48,6 +48,16 @@ def format_backtest_report(data):
     lines = ["\n--- 1. 策略参数与回测 ---"]
     mode_desc = "加载已固化的参数" if data.params_loaded else "使用内置的默认参数"
     lines.append(f"模式: {mode_desc}")
+    middle_count = config.pool_size_red - config.high_count - config.low_count
+    lines.append(f"  - red_pool_size       : {config.pool_size_red}")
+    lines.append(
+        '  - mixed_pool_bands    : '
+        f'{config.high_count} high + {middle_count} middle + '
+        f'{config.low_count} low'
+    )
+    lines.append(f"  - blue_count          : {config.blue_count}")
+    lines.append(f"  - recommendation_count: {config.recommendation_count}")
+    lines.append(f"  - max_shared_red_balls: {config.max_shared_red_balls}")
     lines.append(f"  - anti_crowding_size  : {config.rejection_lib_size}")
     lines.append(
         f"  - anti_crowding_seed  : {config.random_seed} -> "

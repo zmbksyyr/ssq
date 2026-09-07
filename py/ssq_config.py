@@ -110,13 +110,15 @@ class StrategyConfig:
     low_count: int = RED_LOW_COUNT
     blue_count: int = NUM_BLUE_BALLS
     recommendation_count: int = NUM_RECOMMENDATIONS
+    max_shared_red_balls: int = MAX_SHARED_RED_BALLS
     rejection_lib_size: int = REJECTION_LIB_SIZE
     random_seed: int = RANDOM_SEED
 
     def __post_init__(self):
         integer_fields = (
             'pool_size_red', 'high_count', 'low_count', 'blue_count',
-            'recommendation_count', 'rejection_lib_size', 'random_seed',
+            'recommendation_count', 'max_shared_red_balls',
+            'rejection_lib_size', 'random_seed',
         )
         for name in integer_fields:
             object.__setattr__(
@@ -134,6 +136,8 @@ class StrategyConfig:
             raise ValueError('blue_count must be between 1 and 16')
         if self.recommendation_count < 1:
             raise ValueError('recommendation_count must be positive')
+        if not 0 <= self.max_shared_red_balls <= RED_COUNT:
+            raise ValueError('max_shared_red_balls must be between 0 and 6')
         if not 0 <= self.rejection_lib_size <= TOTAL_RED_COMBINATIONS:
             raise ValueError(
                 f'rejection_lib_size must be between 0 and {TOTAL_RED_COMBINATIONS}'

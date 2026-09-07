@@ -5,11 +5,11 @@ from itertools import combinations
 from math import isclose, isfinite
 from numbers import Real
 
+from ssq_config import MAX_SHARED_RED_BALLS
 from ssq_core import PRIME_RED_BALLS
 
 COMBINATION_SIGNAL_WEIGHT = 0.50
 DEFAULT_NUM_RECOMMENDATIONS = 10
-DEFAULT_MAX_SHARED_RED_BALLS = 4
 
 
 @dataclass(frozen=True)
@@ -360,7 +360,7 @@ def select_recommendations(
     last_draw=None,
     previous_draw=None,
     limit=DEFAULT_NUM_RECOMMENDATIONS,
-    max_shared=DEFAULT_MAX_SHARED_RED_BALLS,
+    max_shared=MAX_SHARED_RED_BALLS,
     context=None,
 ):
     if limit <= 0:

@@ -147,6 +147,7 @@ def generate_red_candidates(
         passed_combos,
         red_scores,
         limit=config.recommendation_count,
+        max_shared=config.max_shared_red_balls,
         context=context,
     ))
     return RedCandidateSelection(

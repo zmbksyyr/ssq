@@ -33,6 +33,7 @@ class AnalyzerTests(unittest.TestCase):
     self.assertEqual(defaults.rejection_size, 500_000)
     self.assertEqual(defaults.backtest_pool_modes, ('mixed',))
     self.assertEqual(defaults.strategy_config.rejection_lib_size, 500_000)
+    self.assertEqual(defaults.strategy_config.max_shared_red_balls, 4)
 
     options = config.parse_cli_options([
         '--backtest-periods', '12',
@@ -154,6 +155,8 @@ class AnalyzerTests(unittest.TestCase):
     self.assertIn('Data_Basis_Issue: 2026103', report)
     self.assertIn('报告生成时间: 2026-09-07 12:34:56', report)
     self.assertIn('模式: 使用内置的默认参数', report)
+    self.assertIn('mixed_pool_bands    : 4 high + 9 middle + 4 low', report)
+    self.assertIn('max_shared_red_balls: 4', report)
     self.assertIn('[软] prime_composite_ratio', report)
     self.assertIn('未能生成足够的单式组合', report)
     self.assertIn('未能生成足够的复式组合', report)
@@ -426,6 +429,7 @@ class AnalyzerTests(unittest.TestCase):
         high_count=2,
         low_count=2,
         recommendation_count=2,
+        max_shared_red_balls=3,
         rejection_lib_size=1,
     )
 
@@ -453,6 +457,7 @@ class AnalyzerTests(unittest.TestCase):
     self.assertEqual(result.recommendations, result.passed_combos[:2])
     self.assertEqual(check.call_count, 7)
     self.assertEqual(select.call_args.kwargs['limit'], 2)
+    self.assertEqual(select.call_args.kwargs['max_shared'], 3)
     self.assertIs(select.call_args.kwargs['context'], context)
 
   def test_strategy_config_rejects_incoherent_selection_limits(self):
@@ -465,6 +470,8 @@ class AnalyzerTests(unittest.TestCase):
     with self.assertRaises(ValueError):
       analyzer.StrategyConfig(recommendation_count=0)
     with self.assertRaises(ValueError):
+      analyzer.StrategyConfig(max_shared_red_balls=7)
+    with self.assertRaises(ValueError):
       analyzer.StrategyConfig(rejection_lib_size=-1)
 
   def test_runtime_configs_reject_non_integer_and_non_boolean_values(self):
@@ -474,6 +481,7 @@ class AnalyzerTests(unittest.TestCase):
         'low_count': 4.5,
         'blue_count': 7.5,
         'recommendation_count': False,
+        'max_shared_red_balls': 4.5,
         'rejection_lib_size': 1.5,
         'random_seed': 42.5,
     }
