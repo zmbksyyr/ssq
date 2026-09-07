@@ -68,18 +68,18 @@ RULE_AUDIT_PERIODS = 200
 TOTAL_RED_COMBINATIONS = 1_107_568
 
 DEFAULT_PARAMS = {
-    'decay_factor': 0.995,
-    'weight_freq': 0.3,
-    'weight_omission': 0.4,
-    'weight_ml': 0.3,
+    'decay_factor': 0.999,
+    'weight_freq': 0.4,
+    'weight_omission': 0.5,
+    'weight_ml': 0.1,
     'hot_lookback': 10,
     'hot_threshold': 2,
-    'hot_bonus': 1.0,
+    'hot_bonus': 1.2,
     'cold_lookback': 30,
-    'cold_bonus': 1.0,
-    'repeat_bonus': 1.0,
-    'weight_blue_freq': 0.5,
-    'weight_blue_ml': 0.5,
+    'cold_bonus': 1.05,
+    'repeat_bonus': 1.15,
+    'weight_blue_freq': 0.6,
+    'weight_blue_ml': 0.4,
 }
 
 

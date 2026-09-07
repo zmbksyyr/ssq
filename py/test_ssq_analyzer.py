@@ -1,3 +1,4 @@
+import json
 import random
 import sys
 import unittest
@@ -289,13 +290,27 @@ class AnalyzerTests(unittest.TestCase):
 
   def test_strategy_params_are_validated_and_completed(self):
     params = analyzer.validate_strategy_params({})
-    self.assertEqual(params['weight_freq'], 0.3)
+    self.assertEqual(params['weight_freq'], 0.4)
     with self.assertRaises(ValueError):
       analyzer.validate_strategy_params({'weight_freq': 0.9})
     with self.assertRaises(ValueError):
       analyzer.validate_strategy_params({'decay_factor': 1.1})
     with self.assertRaises(ValueError):
       analyzer.validate_strategy_params({'repeat_bonus': 0})
+
+  def test_bundled_params_match_defaults_and_weights_are_normalized(self):
+    with open(analyzer.PARAMS_JSON_PATH, encoding='utf-8') as handle:
+      bundled = json.load(handle)
+
+    self.assertEqual(bundled, analyzer.DEFAULT_PARAMS)
+    self.assertAlmostEqual(sum(
+      bundled[name]
+      for name in ('weight_freq', 'weight_omission', 'weight_ml')
+    ), 1.0)
+    self.assertAlmostEqual(sum(
+      bundled[name]
+      for name in ('weight_blue_freq', 'weight_blue_ml')
+    ), 1.0)
 
   def test_historical_rule_audit_reports_requested_window(self):
     frame = pd.DataFrame({
