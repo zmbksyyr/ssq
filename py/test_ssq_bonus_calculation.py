@@ -3,6 +3,7 @@ import tempfile
 import unittest
 from datetime import datetime
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parent))
 import ssq_bonus_calculation as bonus
@@ -37,6 +38,23 @@ class BonusCalculationTests(unittest.TestCase):
             path = handle.name
         try:
             with self.assertRaisesRegex(ValueError, '期号年份'):
+                bonus.load_latest_draw(path)
+        finally:
+            Path(path).unlink()
+
+    def test_latest_draw_rejects_future_records(self):
+        content = (
+            '期号,日期,红球,蓝球\n'
+            '2026001,2026-01-01,"01,02,03,04,05,06",07\n'
+        )
+        with tempfile.NamedTemporaryFile('w', encoding='utf-8', delete=False) as handle:
+            handle.write(content)
+            path = handle.name
+        try:
+            with patch(
+                'ssq_bonus_workflow.validate_draw_dates_not_future',
+                side_effect=ValueError('开奖记录包含未来开奖日期'),
+            ), self.assertRaisesRegex(ValueError, '未来开奖日期'):
                 bonus.load_latest_draw(path)
         finally:
             Path(path).unlink()

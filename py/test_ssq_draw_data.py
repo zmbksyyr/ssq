@@ -5,7 +5,11 @@ from pathlib import Path
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent))
-from ssq_draw_data import normalize_draw_frame, serialize_draw_frame
+from ssq_draw_data import (
+    normalize_draw_frame,
+    serialize_draw_frame,
+    validate_draw_dates_not_future,
+)
 
 
 class DrawDataTests(unittest.TestCase):
@@ -102,6 +106,16 @@ class DrawDataTests(unittest.TestCase):
                 self.assertRaisesRegex(ValueError, '期号不连续')
             ):
                 normalize_draw_frame(frame)
+
+    def test_current_workflows_reject_future_draw_dates(self):
+        frame = pd.DataFrame({'日期': ['2026-01-01', '2026-01-04']})
+        validate_draw_dates_not_future(frame, today=pd.Timestamp('2026-01-04').date())
+
+        with self.assertRaisesRegex(ValueError, '未来开奖日期'):
+            validate_draw_dates_not_future(
+                frame,
+                today=pd.Timestamp('2026-01-03').date(),
+            )
 
 
 if __name__ == '__main__':

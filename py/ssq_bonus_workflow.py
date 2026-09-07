@@ -7,7 +7,7 @@ import re
 import pandas as pd
 from ssq_bonus_reporting import build_bonus_report
 from ssq_core import atomic_write_text, local_now, parse_issue
-from ssq_draw_data import normalize_draw_frame
+from ssq_draw_data import normalize_draw_frame, validate_draw_dates_not_future
 from ssq_prizes import parse_report_bets
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -49,6 +49,7 @@ def find_matching_report(target_issue, report_dir=REPORT_DIR):
 
 def load_latest_draw(filepath=CSV_PATH):
     frame = normalize_draw_frame(pd.read_csv(filepath, header=0))
+    validate_draw_dates_not_future(frame)
     if frame.empty:
         raise ValueError('开奖数据为空')
     latest = frame.iloc[-1]

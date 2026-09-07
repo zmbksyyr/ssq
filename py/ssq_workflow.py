@@ -24,7 +24,7 @@ from ssq_core import (
     infer_next_issue,
     local_now,
 )
-from ssq_draw_data import normalize_draw_frame
+from ssq_draw_data import normalize_draw_frame, validate_draw_dates_not_future
 from ssq_modeling import (
     FEATURE_COLUMNS,
     feature_engineer,
@@ -76,7 +76,9 @@ def load_and_preprocess_data(filepath=CSV_PATH):
         return None
 
     try:
-        return normalize_draw_frame(frame)
+        normalized = normalize_draw_frame(frame)
+        validate_draw_dates_not_future(normalized)
+        return normalized
     except (TypeError, ValueError) as exc:
         print(f"错误: 数据文件 '{filepath}' 校验失败: {exc}")
         return None

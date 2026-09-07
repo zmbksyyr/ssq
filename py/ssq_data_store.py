@@ -6,8 +6,7 @@ import os
 import tempfile
 
 import pandas as pd
-from ssq_core import local_today
-from ssq_draw_data import serialize_draw_frame
+from ssq_draw_data import serialize_draw_frame, validate_draw_dates_not_future
 
 MIN_FULL_SNAPSHOT_RECORDS = 100
 logger = logging.getLogger('ssq_data_processor')
@@ -25,12 +24,7 @@ def validate_authoritative_snapshot(new_data, existing_data, today=None):
             f'权威全量快照仅有 {len(new_data)} 条，少于最低要求 '
             f'{MIN_FULL_SNAPSHOT_RECORDS} 条'
         )
-    today = today or local_today()
-    latest_date = pd.to_datetime(
-        new_data['日期'], format='%Y-%m-%d'
-    ).max().date()
-    if latest_date > today:
-        raise ValueError(f'权威全量快照包含未来开奖日期: {latest_date}')
+    validate_draw_dates_not_future(new_data, today=today)
     if existing_data.empty:
         return
     missing_issues = sorted(set(existing_data['期号']) - set(new_data['期号']))

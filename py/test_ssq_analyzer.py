@@ -320,6 +320,24 @@ class AnalyzerTests(unittest.TestCase):
     self.assertEqual(frame.iloc[0]['红球'], [1, 2, 3, 4, 5, 6])
     self.assertEqual(frame.iloc[1]['蓝球'], 8)
 
+  def test_analysis_loader_rejects_future_draws(self):
+    content = (
+        '期号,日期,红球,蓝球\n'
+        '2026001,2026-01-01,"01,02,03,04,05,06",07\n'
+    )
+    with tempfile.NamedTemporaryFile('w', encoding='utf-8', delete=False) as handle:
+      handle.write(content)
+      path = handle.name
+    try:
+      with patch.object(
+          workflow,
+          'validate_draw_dates_not_future',
+          side_effect=ValueError('开奖记录包含未来开奖日期'),
+      ):
+        self.assertIsNone(workflow.load_and_preprocess_data(path))
+    finally:
+      Path(path).unlink()
+
   def test_prime_definition(self):
     self.assertFalse(rules.is_prime(1))
     self.assertTrue(rules.is_prime(2))

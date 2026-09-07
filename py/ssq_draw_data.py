@@ -6,10 +6,25 @@ import pandas as pd
 from ssq_core import (
     DRAW_COLUMNS,
     DRAW_WEEKDAYS,
+    local_today,
     parse_blue_ball,
     parse_issue,
     parse_red_balls,
 )
+
+
+def validate_draw_dates_not_future(frame, today=None):
+    """Reject draw records dated after the current local calendar date."""
+    if frame.empty:
+        return
+    today = today or local_today()
+    latest_date = pd.to_datetime(
+        frame['日期'],
+        format='%Y-%m-%d',
+        errors='raise',
+    ).max().date()
+    if latest_date > today:
+        raise ValueError(f'开奖记录包含未来开奖日期: {latest_date}')
 
 
 def normalize_draw_frame(frame):
