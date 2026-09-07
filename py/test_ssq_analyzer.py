@@ -21,6 +21,7 @@ import ssq_config as config
 import ssq_modeling as modeling
 import ssq_rules as rules
 import ssq_selection as selection
+import ssq_workflow as workflow
 
 
 class AnalyzerTests(unittest.TestCase):
@@ -85,20 +86,32 @@ class AnalyzerTests(unittest.TestCase):
     self.assertIs(analyzer.BacktestResult, backtesting.BacktestResult)
     self.assertIs(analyzer.run_full_backtest, backtesting.run_full_backtest)
 
+  def test_analyzer_reexports_workflow_entrypoint(self):
+    self.assertIs(analyzer.run_analysis, workflow.run_analysis)
+    self.assertIs(analyzer.main, workflow.main)
+
+  def test_workflow_main_passes_parsed_options(self):
+    with patch.object(workflow, 'run_analysis', return_value='report.txt') as run:
+      result = workflow.main(['--backtest-periods', '3', '--non-interactive'])
+    self.assertEqual(result, 'report.txt')
+    options = run.call_args.args[0]
+    self.assertEqual(options.backtest_periods, 3)
+    self.assertTrue(options.non_interactive)
+
   def test_strategy_param_loader_distinguishes_file_states(self):
     with tempfile.TemporaryDirectory() as directory:
       path = Path(directory) / 'params.json'
 
-      missing = analyzer.load_strategy_params(path)
+      missing = workflow.load_strategy_params(path)
       self.assertFalse(missing.loaded_from_file)
       self.assertEqual(missing.values, analyzer.DEFAULT_PARAMS)
 
       path.write_text('{invalid', encoding='utf-8')
       with self.assertRaisesRegex(ValueError, '参数文件'):
-        analyzer.load_strategy_params(path)
+        workflow.load_strategy_params(path)
 
       path.write_text(json.dumps(analyzer.DEFAULT_PARAMS), encoding='utf-8')
-      loaded = analyzer.load_strategy_params(path)
+      loaded = workflow.load_strategy_params(path)
       self.assertTrue(loaded.loaded_from_file)
       self.assertEqual(loaded.values, analyzer.DEFAULT_PARAMS)
 
@@ -144,34 +157,34 @@ class AnalyzerTests(unittest.TestCase):
   def test_confirmation_input_requires_explicit_y(self):
     for value in ('y', ' Y\n', b'y'):
       with self.subTest(value=value):
-        self.assertTrue(analyzer.is_confirmation_input(value))
+        self.assertTrue(workflow.is_confirmation_input(value))
     for value in ('', '\n', 'n', b'\r'):
       with self.subTest(value=value):
-        self.assertFalse(analyzer.is_confirmation_input(value))
+        self.assertFalse(workflow.is_confirmation_input(value))
 
   def test_confirmation_wait_does_not_leak_previous_result(self):
     output = io.StringIO()
-    if hasattr(analyzer, 'msvcrt'):
+    if hasattr(workflow, 'msvcrt'):
       with (
-          patch.object(analyzer.sys, 'stdout', output),
-          patch.object(analyzer.msvcrt, 'kbhit', return_value=True),
-          patch.object(analyzer.msvcrt, 'getch', return_value=b'y'),
+          patch.object(workflow.sys, 'stdout', output),
+          patch.object(workflow.msvcrt, 'kbhit', return_value=True),
+          patch.object(workflow.msvcrt, 'getch', return_value=b'y'),
       ):
-        self.assertTrue(analyzer.get_user_input_with_timeout(1))
-      with patch.object(analyzer.sys, 'stdout', output):
-        self.assertFalse(analyzer.get_user_input_with_timeout(0))
+        self.assertTrue(workflow.get_user_input_with_timeout(1))
+      with patch.object(workflow.sys, 'stdout', output):
+        self.assertFalse(workflow.get_user_input_with_timeout(0))
     else:
       with (
-          patch.object(analyzer.sys, 'stdout', output),
-          patch.object(analyzer.sys, 'stdin', io.StringIO('y\n')),
-          patch.object(analyzer.select, 'select', return_value=([object()], [], [])),
+          patch.object(workflow.sys, 'stdout', output),
+          patch.object(workflow.sys, 'stdin', io.StringIO('y\n')),
+          patch.object(workflow.select, 'select', return_value=([object()], [], [])),
       ):
-        self.assertTrue(analyzer.get_user_input_with_timeout(1))
+        self.assertTrue(workflow.get_user_input_with_timeout(1))
       with (
-          patch.object(analyzer.sys, 'stdout', output),
-          patch.object(analyzer.select, 'select', return_value=([], [], [])),
+          patch.object(workflow.sys, 'stdout', output),
+          patch.object(workflow.select, 'select', return_value=([], [], [])),
       ):
-        self.assertFalse(analyzer.get_user_input_with_timeout(0))
+        self.assertFalse(workflow.get_user_input_with_timeout(0))
 
   def test_default_backtest_uses_stable_window(self):
     self.assertEqual(analyzer.BACKTEST_PERIODS, 200)
@@ -185,7 +198,7 @@ class AnalyzerTests(unittest.TestCase):
       handle.write(content)
       path = handle.name
     try:
-      self.assertIsNone(analyzer.load_and_preprocess_data(path))
+      self.assertIsNone(workflow.load_and_preprocess_data(path))
     finally:
       Path(path).unlink()
 
