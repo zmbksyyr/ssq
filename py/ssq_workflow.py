@@ -5,14 +5,12 @@ import platform
 import random
 from importlib.metadata import version
 
+import ssq_history_evaluation as _history_evaluation
 import ssq_history_preparation as _history_preparation
 import ssq_strategy_params as _strategy_params
 import ssq_workflow_models as _workflow_models
 from ssq_anti_crowding import make_rejection_set, rejection_seed_for_issue
-from ssq_backtesting import (
-    BacktestRequest,
-    run_backtest,
-)
+from ssq_backtesting import run_backtest
 from ssq_candidates import generate_candidates
 from ssq_config import (
     parse_cli_options,
@@ -115,38 +113,18 @@ def prepare_history():
 
 
 def evaluate_history(history, options):
-    """Load strategy parameters, audit rules, and run rolling backtests."""
-    try:
-        loaded_params = load_strategy_params()
-    except ValueError as exc:
-        raise SystemExit(f'错误: {exc}') from exc
-    if not loaded_params.loaded_from_file:
-        print(f'警告: 未找到参数文件 {PARAMS_JSON_PATH}，将使用内置的默认参数。')
-
-    rule_coverage = audit_historical_rule_coverage(
-        history.frame,
-        options.rule_audit_periods,
+    """Compatibility wrapper for historical evaluation."""
+    dependencies = _history_evaluation.HistoryEvaluationDependencies(
+        load_params=load_strategy_params,
+        audit_rules=audit_historical_rule_coverage,
+        audit_hard_pipeline=audit_historical_hard_pipeline,
+        run_backtest=run_backtest,
     )
-    hard_pipeline_coverage = audit_historical_hard_pipeline(
-        history.frame,
-        options.rule_audit_periods,
-    )
-    backtests = run_backtest(
-        history.frame,
-        BacktestRequest(
-            params=loaded_params.values,
-            feature_columns=history.feature_columns,
-            num_periods=options.backtest_periods,
-            pool_modes=options.backtest_pool_modes,
-            config=options.strategy_config,
-        ),
-    )
-    return HistoricalEvaluation(
-        loaded_params=loaded_params,
-        rule_coverage=rule_coverage,
-        hard_pipeline_coverage=hard_pipeline_coverage,
-        backtests=backtests,
-        selected_backtest=backtests[options.pool_mode],
+    return _history_evaluation.evaluate_history(
+        history,
+        options,
+        PARAMS_JSON_PATH,
+        dependencies,
     )
 
 
