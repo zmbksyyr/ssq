@@ -41,12 +41,15 @@ from ssq_config import (  # noqa: F401 - compatibility exports
     parse_cli_options,
     validate_strategy_params,
 )
-from ssq_modeling import (  # noqa: F401 - compatibility exports
+from ssq_features import (  # noqa: F401 - compatibility exports
     FEATURE_COLUMNS,
+    feature_engineer,
+    validate_feature_columns,
+)
+from ssq_modeling import (  # noqa: F401 - compatibility exports
     MODEL_TRAINING_PARAMS,
     BallModelSpec,
     apply_red_score_adjustments,
-    feature_engineer,
     get_omission,
     get_weighted_frequency,
     predict_positive_probability,
@@ -54,7 +57,6 @@ from ssq_modeling import (  # noqa: F401 - compatibility exports
     train_ball_models,
     train_models_for_spec,
     train_prediction_models,
-    validate_feature_columns,
     validate_model_sets,
 )
 from ssq_rank_bands import (  # noqa: F401 - compatibility exports

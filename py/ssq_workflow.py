@@ -37,10 +37,9 @@ from ssq_draw_data import (
     normalize_draw_frame,
     validate_draw_dates_not_future,
 )
+from ssq_features import FEATURE_COLUMNS, feature_engineer
 from ssq_modeling import (
-    FEATURE_COLUMNS,
     MODEL_TRAINING_PARAMS,
-    feature_engineer,
     get_omission,
     run_strategy_and_get_scores,
     train_prediction_models,
