@@ -6,6 +6,7 @@ import ssq_backtest_models as _backtest_models
 import ssq_backtest_preparation as _backtest_preparation
 import ssq_backtest_runner as _backtest_runner
 import ssq_backtest_validation as _backtest_validation
+import ssq_candidates as _candidates
 from ssq_anti_crowding import make_rejection_set, rejection_seed_for_issue
 from ssq_ball_scoring import run_strategy_and_get_scores
 from ssq_config import (
@@ -34,7 +35,6 @@ BacktestSelectionInputs = _backtest_models.BacktestSelectionInputs
 BacktestRunContext = _backtest_models.BacktestRunContext
 BacktestRequest = _backtest_models.BacktestRequest
 PreparedBacktestIssue = _backtest_models.PreparedBacktestIssue
-evaluate_backtest_mode = _backtest_evaluation.evaluate_backtest_mode
 record_backtest_selection = _backtest_evaluation.record_backtest_selection
 validate_backtest_request = _backtest_validation.validate_backtest_request
 
@@ -52,6 +52,27 @@ def audit_historical_rule_coverage(full_df, periods=RULE_AUDIT_PERIODS):
 def audit_historical_hard_pipeline(full_df, periods=RULE_AUDIT_PERIODS):
     """Compatibility wrapper for cumulative hard-rule coverage."""
     return _audit_historical_hard_pipeline(full_df, periods)
+
+
+def evaluate_backtest_mode(
+    mode,
+    current,
+    issue,
+    selection_inputs,
+    additional_accumulators=(),
+):
+    """Compatibility wrapper binding patchable candidate generation."""
+    dependencies = _backtest_evaluation.BacktestEvaluationDependencies(
+        generate_candidates=_candidates.generate_candidates,
+    )
+    return _backtest_evaluation.evaluate_backtest_mode(
+        mode,
+        current,
+        issue,
+        selection_inputs,
+        additional_accumulators,
+        dependencies,
+    )
 
 
 def prepare_backtest_issue(full_df, index, run_context):

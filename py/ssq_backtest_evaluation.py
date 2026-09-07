@@ -1,8 +1,16 @@
 """Evaluation of generated candidates against historical draw results."""
 
-from ssq_candidates import generate_candidates
+from collections.abc import Callable
+from dataclasses import dataclass
+
+from ssq_candidate_generation import generate_candidates
 from ssq_domain import PRIZE_RULES
 from ssq_selection_models import CandidateGenerationRequest
+
+
+@dataclass(frozen=True)
+class BacktestEvaluationDependencies:
+    generate_candidates: Callable = generate_candidates
 
 
 def evaluate_backtest_mode(
@@ -11,9 +19,11 @@ def evaluate_backtest_mode(
     issue,
     selection_inputs,
     additional_accumulators=(),
+    dependencies=None,
 ):
     """Evaluate one pool mode for one historical issue."""
-    selection = generate_candidates(CandidateGenerationRequest(
+    dependencies = dependencies or BacktestEvaluationDependencies()
+    selection = dependencies.generate_candidates(CandidateGenerationRequest(
         red_scores=selection_inputs.red_scores,
         context=selection_inputs.context,
         rejection_set=selection_inputs.rejection_set,

@@ -15,7 +15,7 @@ from ssq_analysis_result import build_analysis_report_data
 from ssq_anti_crowding import make_rejection_set, rejection_seed_for_issue
 from ssq_backtest_runner import run_backtest
 from ssq_ball_scoring import run_strategy_and_get_scores
-from ssq_candidates import generate_candidates
+from ssq_candidate_generation import generate_candidates
 from ssq_config import (
     parse_cli_options,
 )

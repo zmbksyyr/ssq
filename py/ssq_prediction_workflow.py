@@ -7,7 +7,7 @@ from typing import Any
 
 from ssq_anti_crowding import make_rejection_set, rejection_seed_for_issue
 from ssq_ball_scoring import run_strategy_and_get_scores
-from ssq_candidates import generate_candidates
+from ssq_candidate_generation import generate_candidates
 from ssq_rule_models import RuleContext
 from ssq_rule_registry import filter_pipeline_stats
 from ssq_score_signals import get_omission

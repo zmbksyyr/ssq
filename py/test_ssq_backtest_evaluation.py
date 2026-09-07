@@ -4,16 +4,25 @@ from types import SimpleNamespace
 
 import ssq_backtest_evaluation as evaluation
 import ssq_backtesting as backtesting
+import ssq_candidates as candidates
 from ssq_backtest_metrics import BacktestAccumulator
 from ssq_backtest_models import BacktestIssue
 
 
 class BacktestEvaluationTests(unittest.TestCase):
-    def test_backtesting_preserves_evaluation_compatibility_exports(self):
-        self.assertIs(
-            backtesting.evaluate_backtest_mode,
-            evaluation.evaluate_backtest_mode,
-        )
+    def test_backtesting_binds_patchable_candidate_generation(self):
+        with unittest.mock.patch.object(
+            evaluation,
+            'evaluate_backtest_mode',
+            return_value='result',
+        ) as evaluate:
+            result = backtesting.evaluate_backtest_mode(
+                'mixed', 'current', 'issue', 'inputs'
+            )
+
+        self.assertEqual(result, 'result')
+        dependencies = evaluate.call_args.args[-1]
+        self.assertIs(dependencies.generate_candidates, candidates.generate_candidates)
         self.assertIs(
             backtesting.record_backtest_selection,
             evaluation.record_backtest_selection,
