@@ -18,6 +18,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent))
 import ssq_analyzer as analyzer
+import ssq_backtest_metrics as backtest_metrics
 import ssq_backtesting as backtesting
 import ssq_config as config
 import ssq_modeling as modeling
@@ -131,6 +132,11 @@ class AnalyzerTests(unittest.TestCase):
 
   def test_analyzer_reexports_backtesting_functions(self):
     self.assertIs(analyzer.BacktestResult, backtesting.BacktestResult)
+    self.assertIs(backtesting.BacktestResult, backtest_metrics.BacktestResult)
+    self.assertIs(
+        backtesting.BacktestAccumulator,
+        backtest_metrics.BacktestAccumulator,
+    )
     self.assertIs(analyzer.BacktestIssue, backtesting.BacktestIssue)
     self.assertIs(analyzer.BacktestRequest, backtesting.BacktestRequest)
     self.assertIs(
