@@ -1,15 +1,13 @@
 """Pure text formatting for analysis reports."""
 
-from collections.abc import Mapping
-from dataclasses import dataclass, field
-from datetime import datetime
 from itertools import combinations
-from typing import Any
 
+import ssq_report_models as _report_models
 from ssq_core import PRIZE_NAMES
 from ssq_rank_bands import RANK_BAND_NAMES
 from ssq_rule_registry import FILTER_NAMES, HARD_FILTER_NAMES
 
+AnalysisReportData = _report_models.AnalysisReportData
 PRIZE_DISPLAY_ORDER = (
     '一等奖', '二等奖', '三等奖', '四等奖', '五等奖', '六等奖',
 )
@@ -19,33 +17,6 @@ def format_audit_window(actual_periods, requested_periods):
     if actual_periods == requested_periods:
         return f'最近 {actual_periods} 期'
     return f'实际 {actual_periods} 期，请求 {requested_periods} 期'
-
-
-@dataclass(frozen=True)
-class AnalysisReportData:
-    latest_issue: str
-    target_issue: int
-    generated_at: datetime
-    params_loaded: bool
-    params: dict
-    config: Any
-    rejection_seed: int
-    backtest: Any
-    backtests: dict[str, Any]
-    pool_mode: str
-    rank_band_widths: dict[str, int]
-    rank_band_labels: dict[str, str]
-    pipeline_stats: list[dict]
-    rule_coverage: dict
-    hard_pipeline_coverage: dict
-    rule_audit_periods: int
-    selection: Any
-    recommended_blues: list[int]
-    best_7_reds: list
-    runtime_versions: dict[str, str] = field(default_factory=dict)
-    history_sha256: str = ''
-    model_features: tuple[str, ...] = ()
-    model_training_params: Mapping[str, Any] = field(default_factory=dict)
 
 
 def format_strategy_parameters(data):

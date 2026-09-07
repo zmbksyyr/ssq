@@ -69,10 +69,8 @@ from ssq_rank_bands import (  # noqa: F401 - compatibility exports
     build_rank_band_widths,
     build_rank_bands,
 )
-from ssq_reporting import (  # noqa: F401 - compatibility exports
-    AnalysisReportData,
-    build_analysis_report,
-)
+from ssq_report_models import AnalysisReportData  # noqa: F401 - compatibility export
+from ssq_reporting import build_analysis_report  # noqa: F401 - compatibility export
 from ssq_rule_models import (  # noqa: F401 - compatibility exports
     CombinationScoreContext,
     RecommendationRequest,
