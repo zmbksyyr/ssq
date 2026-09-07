@@ -5,15 +5,13 @@ from collections import Counter
 import ssq_backtest_evaluation as _backtest_evaluation
 import ssq_backtest_models as _backtest_models
 import ssq_backtest_preparation as _backtest_preparation
+import ssq_backtest_validation as _backtest_validation
 from ssq_anti_crowding import make_rejection_set, rejection_seed_for_issue
 from ssq_backtest_metrics import BacktestAccumulator, BacktestResult
 from ssq_candidates import count_actual_reds_by_rank_band
 from ssq_config import (
     DEFAULT_STRATEGY_CONFIG,
-    RED_POOL_MODES,
     RULE_AUDIT_PERIODS,
-    StrategyConfig,
-    normalize_integer_param,
     validate_strategy_params,
 )
 from ssq_rank_bands import build_rank_band_widths
@@ -37,6 +35,7 @@ BacktestRequest = _backtest_models.BacktestRequest
 PreparedBacktestIssue = _backtest_models.PreparedBacktestIssue
 evaluate_backtest_mode = _backtest_evaluation.evaluate_backtest_mode
 record_backtest_selection = _backtest_evaluation.record_backtest_selection
+validate_backtest_request = _backtest_validation.validate_backtest_request
 
 
 def historical_rule_context(full_df, index):
@@ -52,29 +51,6 @@ def audit_historical_rule_coverage(full_df, periods=RULE_AUDIT_PERIODS):
 def audit_historical_hard_pipeline(full_df, periods=RULE_AUDIT_PERIODS):
     """Compatibility wrapper for cumulative hard-rule coverage."""
     return _audit_historical_hard_pipeline(full_df, periods)
-
-
-def validate_backtest_request(num_periods, pool_modes, config):
-    """Normalize and validate public backtest controls before expensive work."""
-    num_periods = normalize_integer_param('num_periods', num_periods)
-    if num_periods < 0:
-        raise ValueError('num_periods 不能为负数')
-    if isinstance(pool_modes, str):
-        raise TypeError('pool_modes 必须为候选池模式序列，不能是字符串')
-    try:
-        pool_modes = tuple(pool_modes)
-    except TypeError as exc:
-        raise TypeError('pool_modes 必须为候选池模式序列') from exc
-    if not pool_modes:
-        raise ValueError('pool_modes 不能为空')
-    if len(pool_modes) != len(set(pool_modes)):
-        raise ValueError('pool_modes 不能包含重复模式')
-    invalid_modes = sorted(set(pool_modes) - set(RED_POOL_MODES))
-    if invalid_modes:
-        raise ValueError(f'未知候选池模式: {invalid_modes}')
-    if not isinstance(config, StrategyConfig):
-        raise TypeError('config 必须为 StrategyConfig')
-    return num_periods, pool_modes
 
 
 def prepare_backtest_issue(full_df, index, run_context):
