@@ -9,7 +9,7 @@ import ssq_report_output as _report_output
 import ssq_strategy_params as _strategy_params
 import ssq_workflow_models as _workflow_models
 from ssq_anti_crowding import make_rejection_set, rejection_seed_for_issue
-from ssq_backtesting import run_backtest
+from ssq_backtest_runner import run_backtest
 from ssq_candidates import generate_candidates
 from ssq_config import (
     parse_cli_options,

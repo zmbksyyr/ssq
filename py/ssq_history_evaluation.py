@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ssq_backtest_models import BacktestRequest
-from ssq_backtesting import run_backtest
+from ssq_backtest_runner import run_backtest
 from ssq_rule_auditing import (
     audit_historical_hard_pipeline,
     audit_historical_rule_coverage,

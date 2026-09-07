@@ -7,7 +7,7 @@
 ## 流程
 
 1. `ssq_data_sources.py` 获取并交叉核对 TXT/HTML 数据，`ssq_data_store.py` 校验、合并并原子保存开奖记录，`ssq_data_workflow.py` 编排更新流程；`ssq_draw_data.py` 统一三个入口的数据规范化，`ssq_data_processor.py` 保留为命令入口。
-2. `ssq_config.py` 管理策略默认值与命令行选项，`ssq_modeling.py` 负责特征工程和号码评分，`ssq_selection.py` 构建候选池并执行组合选择，`ssq_rule_auditing.py` 负责历史规则审计，`ssq_backtest_metrics.py` 管理回测指标快照与累计状态，`ssq_backtesting.py` 编排滚动回测，`ssq_workflow.py` 编排完整分析流程，`ssq_rules.py` 管理硬规则与软评分，`ssq_reporting.py` 生成报告；`ssq_analyzer.py` 保留为命令入口。
+2. `ssq_config.py` 管理策略默认值与命令行选项，`ssq_modeling.py` 负责特征工程和号码评分，`ssq_selection.py` 构建候选池并执行组合选择，`ssq_rule_auditing.py` 负责历史规则审计，`ssq_backtest_metrics.py` 管理回测指标快照与累计状态，`ssq_backtest_runner.py` 编排滚动回测，`ssq_workflow.py` 编排完整分析流程，`ssq_rules.py` 管理硬规则与软评分，`ssq_reporting.py` 生成报告；`ssq_backtesting.py` 保留回测兼容接口，`ssq_analyzer.py` 保留为命令入口。
 3. `ssq_prizes.py` 解析投注并计算参考奖金，`ssq_bonus_reporting.py` 格式化核对报告，`ssq_bonus_workflow.py` 编排核对流程；`ssq_bonus_calculation.py` 保留为命令入口。
 4. GitHub Actions 每周一、三、五北京时间 06:00 自动运行并提交结果。
 
