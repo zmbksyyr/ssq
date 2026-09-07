@@ -3,6 +3,7 @@ import tempfile
 import unittest
 from datetime import date, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pandas as pd
@@ -29,6 +30,27 @@ class DataProcessorTests(unittest.TestCase):
         self.assertEqual(rows, [[
             '2026001', '2026-01-01', '01,02,03,06,08,10', '09'
         ]])
+
+    def test_html_parser_uses_shared_issue_and_ball_validation(self):
+        response = SimpleNamespace(
+            text=(
+                '<table><tr><th>期号</th><th>红球</th><th>蓝球</th></tr>'
+                '<tr><td>2026001期</td><td><i>6</i>  <i>1</i>\n<i>10</i> '
+                '<i>3</i> <i>8</i> <i>2</i></td><td>9</td></tr>'
+                '<tr><td>999期</td><td>1 2 3 4 5 6</td><td>7</td></tr>'
+                '</table>'
+            ),
+            raise_for_status=lambda: None,
+        )
+        session = SimpleNamespace(get=lambda *_args, **_kwargs: response)
+
+        records = processor.fetch_latest_data_from_html(session=session)
+
+        self.assertEqual(records, [{
+            '期号': '2026001',
+            '红球': '01,02,03,06,08,10',
+            '蓝球': '09',
+        }])
 
     def test_update_csv_validates_merges_and_sorts(self):
         with tempfile.TemporaryDirectory() as directory:

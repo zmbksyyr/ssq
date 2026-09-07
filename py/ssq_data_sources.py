@@ -65,15 +65,13 @@ def fetch_latest_data_from_html(url=HTML_DATA_URL, session=None):
         if len(cells) < 3:
             continue
         try:
-            issue = cells[0].text.strip().replace('期', '')
-            if not issue.isdigit():
-                continue
+            issue = parse_issue(cells[0].get_text(strip=True).removesuffix('期'))
             red_numbers = parse_red_balls(
-                cells[1].text.strip().replace(' ', ',')
+                cells[1].get_text(' ', strip=True).split()
             )
-            blue_number = parse_blue_ball(cells[2].text.strip())
+            blue_number = parse_blue_ball(cells[2].get_text(strip=True))
             records.append({
-                '期号': issue,
+                '期号': str(issue),
                 '红球': ','.join(f'{number:02d}' for number in red_numbers),
                 '蓝球': f'{blue_number:02d}',
             })
