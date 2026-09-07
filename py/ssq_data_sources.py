@@ -4,56 +4,30 @@ import logging
 from datetime import date
 
 import requests
+import ssq_http as _http
 from bs4 import BeautifulSoup
-from requests.adapters import HTTPAdapter
 from ssq_parsing import parse_blue_ball, parse_issue, parse_red_balls
-from urllib3.util.retry import Retry
 
 TXT_DATA_URL = 'https://data.17500.cn/ssq_asc.txt'
 HTML_DATA_URL = 'https://www.17500.cn/chart/ssq-tjb.html'
-REQUEST_TIMEOUT_SECONDS = 30
-REQUEST_HEADERS = {
-    'User-Agent': (
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
-        'AppleWebKit/537.36 (KHTML, like Gecko) '
-        'Chrome/91.0.4472.124 Safari/537.36'
-    ),
-}
+REQUEST_HEADERS = _http.REQUEST_HEADERS
+REQUEST_TIMEOUT_SECONDS = _http.REQUEST_TIMEOUT_SECONDS
+create_http_session = _http.create_http_session
+fetch_text = _http.fetch_text
 
 logger = logging.getLogger('ssq_data_processor')
-
-
-def create_http_session():
-    retry = Retry(
-        total=3,
-        backoff_factor=1,
-        status_forcelist=(429, 500, 502, 503, 504),
-        allowed_methods=('GET',),
-        respect_retry_after_header=True,
-    )
-    adapter = HTTPAdapter(max_retries=retry)
-    session = requests.Session()
-    session.mount('http://', adapter)
-    session.mount('https://', adapter)
-    return session
 
 
 def fetch_latest_data_from_html(url=HTML_DATA_URL, session=None):
     """Fetch number-only records used to cross-check the TXT source."""
     logger.info('正在从HTML网页抓取最新双色球数据...')
-    session = session or create_http_session()
     try:
-        response = session.get(
-            url,
-            headers=REQUEST_HEADERS,
-            timeout=REQUEST_TIMEOUT_SECONDS,
-        )
-        response.raise_for_status()
+        content = fetch_text(url, session=session)
     except requests.exceptions.RequestException as exc:
         logger.error(f'从HTML网页获取数据失败: {exc}')
         return []
 
-    soup = BeautifulSoup(response.text, 'html.parser')
+    soup = BeautifulSoup(content, 'html.parser')
     table = soup.find('table')
     if not table:
         logger.warning('在网页中未能找到数据表格。')
@@ -86,16 +60,9 @@ def fetch_latest_data_from_html(url=HTML_DATA_URL, session=None):
 def fetch_full_data_from_txt(url=TXT_DATA_URL, session=None):
     """Download the authoritative history source, including draw dates."""
     logger.info(f'正在从TXT文件源 ({url}) 下载全量数据...')
-    session = session or create_http_session()
     try:
-        response = session.get(
-            url,
-            headers=REQUEST_HEADERS,
-            timeout=REQUEST_TIMEOUT_SECONDS,
-        )
-        response.raise_for_status()
-        response.encoding = 'utf-8'
-        lines = response.text.strip().splitlines()
+        content = fetch_text(url, session=session, encoding='utf-8')
+        lines = content.strip().splitlines()
         logger.info(f'成功下载 {len(lines)} 行数据。')
         return lines
     except requests.exceptions.RequestException as exc:
