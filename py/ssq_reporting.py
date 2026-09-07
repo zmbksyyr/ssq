@@ -1,5 +1,6 @@
 """Pure text formatting for analysis reports."""
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from itertools import combinations
@@ -43,6 +44,8 @@ class AnalysisReportData:
     best_7_reds: list
     runtime_versions: dict[str, str] = field(default_factory=dict)
     history_sha256: str = ''
+    model_features: tuple[str, ...] = ()
+    model_training_params: Mapping[str, Any] = field(default_factory=dict)
 
 
 def format_strategy_parameters(data):
@@ -295,6 +298,10 @@ def build_analysis_report(data):
         lines.append(f'Data_History_SHA256: {data.history_sha256}')
     for name, version in data.runtime_versions.items():
         lines.append(f'Runtime_{name}: {version}')
+    if data.model_features:
+        lines.append(f"Model_Features: {','.join(data.model_features)}")
+    for name, value in data.model_training_params.items():
+        lines.append(f'Model_LightGBM_{name}: {value}')
     lines.extend(format_backtest_report(data))
     lines.extend(format_rule_audit_report(data))
     lines.extend(format_recommendations_report(data))

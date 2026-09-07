@@ -4,6 +4,7 @@ from collections import Counter
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from itertools import combinations, pairwise
+from types import MappingProxyType
 
 import lightgbm as lgb
 import numpy as np
@@ -37,6 +38,12 @@ FEATURE_COLUMNS = (
     'odd_count_ma5',
     'blue_ma5',
 )
+MODEL_TRAINING_PARAMS = MappingProxyType({
+    'random_state': 42,
+    'deterministic': True,
+    'force_col_wise': True,
+    'verbose': -1,
+})
 
 
 @dataclass(frozen=True)
@@ -196,12 +203,7 @@ def train_models_for_spec(training_df, feature_columns, spec):
         valid_rows = target.notna() & features.notna().all(axis=1)
         if not valid_rows.any():
             continue
-        model = lgb.LGBMClassifier(
-            random_state=42,
-            deterministic=True,
-            force_col_wise=True,
-            verbose=-1,
-        )
+        model = lgb.LGBMClassifier(**MODEL_TRAINING_PARAMS)
         model.fit(features.loc[valid_rows], target.loc[valid_rows])
         models[candidate] = model
     return models

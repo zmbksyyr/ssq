@@ -43,6 +43,7 @@ from ssq_config import (  # noqa: F401 - compatibility exports
 )
 from ssq_modeling import (  # noqa: F401 - compatibility exports
     FEATURE_COLUMNS,
+    MODEL_TRAINING_PARAMS,
     BallModelSpec,
     apply_red_score_adjustments,
     feature_engineer,

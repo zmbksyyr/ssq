@@ -220,6 +220,8 @@ class AnalyzerTests(unittest.TestCase):
     self.assertEqual(report_data.rejection_seed, 123)
     self.assertEqual(report_data.history_sha256, 'a' * 64)
     self.assertEqual(report_data.runtime_versions, {'python': 'test'})
+    self.assertEqual(report_data.model_features, ('feature',))
+    self.assertIs(report_data.model_training_params, modeling.MODEL_TRAINING_PARAMS)
 
   def test_runtime_versions_cover_model_dependencies(self):
     versions = workflow.collect_runtime_versions()
@@ -281,6 +283,11 @@ class AnalyzerTests(unittest.TestCase):
             'lightgbm': '4.7.0',
         },
         history_sha256='a' * 64,
+        model_features=('red_sum', 'red_span'),
+        model_training_params={
+            'random_state': 42,
+            'deterministic': True,
+        },
     )
 
     report = analyzer.build_analysis_report(data)
@@ -290,6 +297,9 @@ class AnalyzerTests(unittest.TestCase):
     self.assertIn(f"Data_History_SHA256: {'a' * 64}", report)
     self.assertIn('Runtime_python: 3.11.0', report)
     self.assertIn('Runtime_lightgbm: 4.7.0', report)
+    self.assertIn('Model_Features: red_sum,red_span', report)
+    self.assertIn('Model_LightGBM_random_state: 42', report)
+    self.assertIn('Model_LightGBM_deterministic: True', report)
     self.assertIn('模式: 使用内置的默认参数', report)
     self.assertIn('mixed_pool_bands    : 4 high + 9 middle + 4 low', report)
     self.assertIn('max_shared_red_balls: 4', report)
@@ -825,6 +835,8 @@ class AnalyzerTests(unittest.TestCase):
     self.assertTrue(classifier.call_args.kwargs['deterministic'])
     self.assertTrue(classifier.call_args.kwargs['force_col_wise'])
     self.assertEqual(classifier.call_args.kwargs['random_state'], 42)
+    with self.assertRaises(TypeError):
+      modeling.MODEL_TRAINING_PARAMS['random_state'] = 7
 
   def test_repeated_model_training_produces_identical_ball_scores(self):
     draws = [

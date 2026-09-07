@@ -36,6 +36,7 @@ from ssq_draw_data import (
 )
 from ssq_modeling import (
     FEATURE_COLUMNS,
+    MODEL_TRAINING_PARAMS,
     feature_engineer,
     get_omission,
     run_strategy_and_get_scores,
@@ -389,6 +390,8 @@ def run_analysis(options):
         best_7_reds=best_7_reds,
         runtime_versions=collect_runtime_versions(),
         history_sha256=history.sha256,
+        model_features=history.feature_columns,
+        model_training_params=MODEL_TRAINING_PARAMS,
     )
     return save_analysis_report(report_data)
 
