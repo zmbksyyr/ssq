@@ -28,6 +28,13 @@ class RuleDefinition:
     scorer: Callable[[tuple[int, ...], RuleContext], float] | None = None
 
 
+@dataclass(frozen=True)
+class CombinationScoreContext:
+    red_scores: Mapping[int, float]
+    rank_center_scores: Mapping[int, float]
+    rule_context: RuleContext
+
+
 def is_prime(number):
     return number in PRIME_RED_BALLS
 
@@ -350,20 +357,47 @@ def score_rank_center_preference(combo, red_scores, rank_center_scores=None):
     return sum(rank_scores.get(ball, 0.0) for ball in combo) / len(combo)
 
 
-def score_red_combination(combo, red_scores, last_draw=None, previous_draw=None,
-                          rank_center_scores=None, context=None):
-    signal = score_rank_center_preference(
-        combo, red_scores, rank_center_scores
+def build_combination_score_context(red_scores, context=None, rank_center_scores=None):
+    """Build reusable inputs for ranking multiple red-ball combinations."""
+    return CombinationScoreContext(
+        red_scores=red_scores,
+        rank_center_scores=(
+            rank_center_scores or build_rank_center_scores(red_scores)
+        ),
+        rule_context=context or RuleContext(),
     )
-    context = context or RuleContext(
-        last_draw=last_draw,
-        previous_draw=previous_draw,
+
+
+def score_combination(combo, scoring_context):
+    """Score one combination from a precomputed ranking context."""
+    if not isinstance(scoring_context, CombinationScoreContext):
+        raise TypeError('scoring_context 必须为 CombinationScoreContext')
+    signal = score_rank_center_preference(
+        combo,
+        scoring_context.red_scores,
+        scoring_context.rank_center_scores,
     )
     rule_score = sum(
-        rule.score_weight * rule.scorer(combo, context)
+        rule.score_weight * rule.scorer(combo, scoring_context.rule_context)
         for rule in RED_RULES if rule.scorer is not None
     )
     return COMBINATION_SIGNAL_WEIGHT * signal + rule_score
+
+
+def score_red_combination(combo, red_scores, last_draw=None, previous_draw=None,
+                          rank_center_scores=None, context=None):
+    """Compatibility wrapper for scoring with individual arguments."""
+    return score_combination(
+        combo,
+        build_combination_score_context(
+            red_scores,
+            context=context or RuleContext(
+                last_draw=last_draw,
+                previous_draw=previous_draw,
+            ),
+            rank_center_scores=rank_center_scores,
+        ),
+    )
 
 
 def select_recommendations(
@@ -379,18 +413,15 @@ def select_recommendations(
         return []
     if not 0 <= max_shared <= 6:
         raise ValueError('max_shared must be between 0 and 6')
-    rank_center_scores = build_rank_center_scores(red_scores)
     context = context or RuleContext(
         last_draw=last_draw,
         previous_draw=previous_draw,
     )
+    scoring_context = build_combination_score_context(red_scores, context)
     ranked = sorted(
         passed_combos,
         key=lambda combo: (
-            -score_red_combination(
-                combo, red_scores, last_draw, previous_draw,
-                rank_center_scores, context,
-            ),
+            -score_combination(combo, scoring_context),
             combo,
         ),
     )

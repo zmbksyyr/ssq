@@ -14,9 +14,10 @@ from ssq_config import (
 )
 from ssq_core import RED_BALLS, parse_issue, validate_ball_scores
 from ssq_rules import (
-    build_rank_center_scores,
+    RuleContext,
+    build_combination_score_context,
     passes_red_filters,
-    score_red_combination,
+    score_combination,
     select_recommendations,
 )
 from tqdm import tqdm
@@ -189,7 +190,16 @@ def find_best_7_red_combinations(
         return []
 
     passed_combos_set = set(passed_combos_tuples)
-    rank_center_scores = build_rank_center_scores(red_scores) if red_scores else None
+    scoring_context = (
+        build_combination_score_context(
+            red_scores,
+            context or RuleContext(
+                last_draw=last_draw_set,
+                previous_draw=last_2_draw_set,
+            ),
+        )
+        if red_scores else None
+    )
     ranked = []
     seven_ball_combos = combinations(sorted(red_pool), 7)
     for seven_combo in tqdm(
@@ -208,16 +218,9 @@ def find_best_7_red_combinations(
         if not coverage:
             continue
         quality = 0.0
-        if red_scores:
+        if scoring_context:
             quality = sum(
-                score_red_combination(
-                    subticket,
-                    red_scores,
-                    last_draw_set,
-                    last_2_draw_set,
-                    rank_center_scores,
-                    context,
-                )
+                score_combination(subticket, scoring_context)
                 for subticket in valid_subtickets
             ) / coverage
         ranked.append((seven_combo, coverage, quality))
