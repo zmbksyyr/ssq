@@ -5,16 +5,15 @@ from math import comb
 
 import pandas as pd
 from ssq_core import (
-    DRAW_COLUMNS,
     PRIZE_NAMES,
     PRIZE_RULES,
     atomic_write_text,
     local_now,
     parse_blue_ball,
     parse_blue_balls,
-    parse_issue,
     parse_red_balls,
 )
+from ssq_draw_data import normalize_draw_frame
 
 # --- 动态路径设置 ---
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -170,28 +169,14 @@ def calculate_duplex_prize(bet_reds, bet_blues, winning_reds, winning_blue):
 
 
 def load_latest_draw(filepath=CSV_PATH):
-    frame = pd.read_csv(filepath, header=0)
-    required = set(DRAW_COLUMNS)
-    if not required.issubset(frame.columns):
-        raise ValueError(f"开奖数据缺少字段: {sorted(required - set(frame.columns))}")
-    frame['期号'] = frame['期号'].apply(parse_issue)
-    if frame['期号'].duplicated().any():
-        raise ValueError("开奖数据存在重复期号")
+    frame = normalize_draw_frame(pd.read_csv(filepath, header=0))
     if frame.empty:
         raise ValueError("开奖数据为空")
-    frame['_parsed_date'] = pd.to_datetime(
-        frame['日期'], format='%Y-%m-%d', errors='raise'
-    )
-    if ((frame['期号'] // 1000) != frame['_parsed_date'].dt.year).any():
-        raise ValueError("期号年份与开奖日期不一致")
-    ordered = frame.sort_values('期号')
-    if not ordered['_parsed_date'].is_monotonic_increasing:
-        raise ValueError("期号与开奖日期顺序不一致")
-    latest = ordered.iloc[-1]
+    latest = frame.iloc[-1]
     return {
         'issue': int(latest['期号']),
-        'red': set(parse_red_balls(latest['红球'])),
-        'blue': parse_blue_ball(latest['蓝球']),
+        'red': set(latest['红球']),
+        'blue': latest['蓝球'],
     }
 
 # --- 3. 主执行逻辑 ---

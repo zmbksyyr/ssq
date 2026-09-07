@@ -23,12 +23,12 @@ import requests
 from bs4 import BeautifulSoup
 from requests.adapters import HTTPAdapter
 from ssq_core import (
-    DRAW_COLUMNS,
     local_today,
     parse_blue_ball,
     parse_issue,
     parse_red_balls,
 )
+from ssq_draw_data import serialize_draw_frame
 from urllib3.util.retry import Retry
 
 # ==============================================================================
@@ -220,33 +220,7 @@ def parse_txt_data(data_lines: list) -> list:
 
 def normalize_lottery_frame(frame):
     """Validate and normalize a draw DataFrame before it reaches the CSV."""
-    required_columns = list(DRAW_COLUMNS)
-    missing = [column for column in required_columns if column not in frame.columns]
-    if missing:
-        raise ValueError(f"缺少字段: {', '.join(missing)}")
-
-    normalized = frame[required_columns].copy()
-    normalized['期号'] = normalized['期号'].apply(parse_issue)
-    if normalized['期号'].duplicated().any():
-        duplicates = normalized.loc[normalized['期号'].duplicated(), '期号'].tolist()
-        raise ValueError(f"存在重复期号: {duplicates}")
-    parsed_dates = pd.to_datetime(
-        normalized['日期'], format='%Y-%m-%d', errors='raise'
-    )
-    issue_years = normalized['期号'] // 1000
-    if (issue_years != parsed_dates.dt.year).any():
-        raise ValueError("期号年份与开奖日期不一致")
-    issue_order = normalized['期号'].sort_values().index
-    if not parsed_dates.loc[issue_order].is_monotonic_increasing:
-        raise ValueError("期号与开奖日期顺序不一致")
-    normalized['日期'] = parsed_dates.dt.strftime('%Y-%m-%d')
-    normalized['红球'] = normalized['红球'].apply(
-        lambda value: ','.join(f'{number:02d}' for number in parse_red_balls(value))
-    )
-    normalized['蓝球'] = normalized['蓝球'].apply(
-        lambda value: f'{parse_blue_ball(value):02d}'
-    )
-    return normalized
+    return serialize_draw_frame(frame)
 
 
 def validate_authoritative_snapshot(new_data, existing_data, today=None):

@@ -20,14 +20,11 @@ from ssq_config import (
     validate_strategy_params,
 )
 from ssq_core import (
-    DRAW_COLUMNS,
     atomic_write_text,
     infer_next_issue,
     local_now,
-    parse_blue_ball,
-    parse_issue,
-    parse_red_balls,
 )
+from ssq_draw_data import normalize_draw_frame
 from ssq_modeling import (
     feature_engineer,
     get_omission,
@@ -77,35 +74,10 @@ def load_and_preprocess_data(filepath=CSV_PATH):
         return None
 
     try:
-        actual_columns = set(frame.columns)
-        expected_columns = set(DRAW_COLUMNS)
-        if actual_columns != expected_columns:
-            missing = sorted(expected_columns - actual_columns)
-            unexpected = sorted(actual_columns - expected_columns)
-            raise ValueError(f'字段不匹配: 缺少 {missing}, 多余 {unexpected}')
-        frame = frame.loc[:, list(DRAW_COLUMNS)].copy()
-        frame['期号'] = frame['期号'].apply(parse_issue)
-        if frame['期号'].duplicated().any():
-            raise ValueError('存在重复期号')
-        frame['_parsed_date'] = pd.to_datetime(
-            frame['日期'],
-            format='%Y-%m-%d',
-            errors='raise',
-        )
-        frame['红球'] = frame['红球'].apply(parse_red_balls)
-        frame['蓝球'] = frame['蓝球'].apply(parse_blue_ball)
+        return normalize_draw_frame(frame)
     except (TypeError, ValueError) as exc:
         print(f"错误: 数据文件 '{filepath}' 校验失败: {exc}")
         return None
-
-    frame = frame.sort_values('期号').reset_index(drop=True)
-    if ((frame['期号'] // 1000) != frame['_parsed_date'].dt.year).any():
-        print(f"错误: 数据文件 '{filepath}' 校验失败: 期号年份与开奖日期不一致")
-        return None
-    if not frame['_parsed_date'].is_monotonic_increasing:
-        print(f"错误: 数据文件 '{filepath}' 校验失败: 期号与开奖日期顺序不一致")
-        return None
-    return frame.drop(columns=['_parsed_date'])
 
 
 def is_confirmation_input(value):
