@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 import lightgbm as lgb
 from itertools import combinations
+from math import comb
 from collections import Counter
 import datetime
 from tqdm import tqdm
@@ -14,7 +15,11 @@ import threading
 import sys
 import argparse
 from dataclasses import dataclass
-from ssq_core import PRIZE_NAMES, PRIZE_RULES, parse_blue_ball, parse_red_balls
+from typing import Callable
+from ssq_core import (
+    PRIZE_NAMES, PRIZE_RULES, atomic_write_text, infer_next_issue,
+    parse_blue_ball, parse_issue, parse_red_balls,
+)
 
 # --- 平台特定模块导入, 用于实现非阻塞的键盘输入监听 ---
 try:
@@ -57,24 +62,9 @@ COUNTDOWN_SECONDS = 10
 
 # 在最终报告里展示多少注高分单式推荐。
 NUM_RECOMMENDATIONS = 10
+MAX_SHARED_RED_BALLS = 4
 RULE_AUDIT_PERIODS = 200
 TOTAL_RED_COMBINATIONS = 1_107_568
-
-FILTER_NAMES = (
-    'highly_regular', 'sum_value', 'span', 'consecutive_numbers', 'zones',
-    'ac_value', 'prime_composite_ratio', 'big_small_ratio', 'recent_overlap',
-    'all_cold', 'odd_even_ratio', 'modulo3_roads', 'ending_digits',
-    'head_tail_range', 'sum_of_tails', 'related_numbers',
-    'diagonal_consecutive',
-)
-
-HARD_FILTER_NAMES = (
-    'highly_regular', 'sum_value', 'span', 'consecutive_numbers', 'zones',
-    'recent_overlap', 'all_cold', 'ending_digits', 'sum_of_tails',
-    'related_numbers',
-)
-
-SOFT_FILTER_NAMES = tuple(name for name in FILTER_NAMES if name not in HARD_FILTER_NAMES)
 
 DEFAULT_PARAMS = {
     'decay_factor': 0.995,
@@ -140,7 +130,14 @@ class BacktestResult:
     def roi(self):
         return self.winnings / self.cost if self.cost else 0.0
 
-# --- 文件路径设置 (采纳 ssq2 的动态路径方案) ---
+
+@dataclass(frozen=True)
+class RuleDefinition:
+    name: str
+    hard: bool
+    evaluator: Callable[..., bool]
+
+# --- 文件路径设置 ---
 # 获取当前脚本文件所在的目录的绝对路径
 script_dir = os.path.dirname(os.path.abspath(__file__))
 # 假设脚本在 'py' 这样的子目录中, 数据和报告文件都位于其上一级目录
@@ -175,17 +172,26 @@ def load_and_preprocess_data(filepath=CSV_PATH):
         return None
     
     try:
-        df['期号'] = pd.to_numeric(df['期号'], errors='raise').astype(int)
+        df['期号'] = df['期号'].apply(parse_issue)
         if df['期号'].duplicated().any():
             raise ValueError("存在重复期号")
-        pd.to_datetime(df['日期'], format='%Y-%m-%d', errors='raise')
+        df['_parsed_date'] = pd.to_datetime(
+            df['日期'], format='%Y-%m-%d', errors='raise'
+        )
         df['红球'] = df['红球'].apply(parse_red_balls)
         df['蓝球'] = df['蓝球'].apply(parse_blue_ball)
     except (TypeError, ValueError) as exc:
         print(f"错误: 数据文件 '{filepath}' 校验失败: {exc}")
         return None
 
-    return df.sort_values('期号').reset_index(drop=True)
+    df = df.sort_values('期号').reset_index(drop=True)
+    if ((df['期号'] // 1000) != df['_parsed_date'].dt.year).any():
+        print(f"错误: 数据文件 '{filepath}' 校验失败: 期号年份与开奖日期不一致")
+        return None
+    if not df['_parsed_date'].is_monotonic_increasing:
+        print(f"错误: 数据文件 '{filepath}' 校验失败: 期号与开奖日期顺序不一致")
+        return None
+    return df.drop(columns=['_parsed_date'])
 
 def feature_engineer(df):
     """
@@ -330,6 +336,47 @@ def apply_red_score_adjustments(red_scores, df_history, params):
             adjusted[ball] *= params.get('repeat_bonus', 1.0)
     return adjusted
 
+
+def train_ball_models(training_df, feature_columns, candidates, outcome_column,
+                      contains_candidate, description=None):
+    """Train one binary next-draw model per candidate without mutating the frame."""
+    models = {}
+    iterator = tqdm(candidates, desc=description, ncols=80) if description else candidates
+    features = training_df[feature_columns]
+    for candidate in iterator:
+        target = training_df[outcome_column].apply(
+            lambda outcome: int(contains_candidate(outcome, candidate))
+        ).shift(-1)
+        valid_rows = target.notna() & features.notna().all(axis=1)
+        if not valid_rows.any():
+            continue
+        model = lgb.LGBMClassifier(random_state=42, verbose=-1)
+        model.fit(features.loc[valid_rows], target.loc[valid_rows])
+        models[candidate] = model
+    return models
+
+
+def train_prediction_models(training_df, feature_columns, show_progress=False):
+    """Train the complete red and blue model sets used by both run modes."""
+    red_models = train_ball_models(
+        training_df, feature_columns, range(1, 34), '红球',
+        lambda draw, ball: ball in draw,
+        '训练红球模型' if show_progress else None,
+    )
+    blue_models = train_ball_models(
+        training_df, feature_columns, range(1, 17), '蓝球',
+        lambda drawn, ball: drawn == ball,
+        '训练蓝球模型' if show_progress else None,
+    )
+    return red_models, blue_models
+
+
+def validate_model_sets(red_models, blue_models):
+    missing_red = sorted(set(range(1, 34)) - set(red_models))
+    missing_blue = sorted(set(range(1, 17)) - set(blue_models))
+    if missing_red or missing_blue:
+        raise ValueError(f"模型训练不完整: 红球缺失 {missing_red}, 蓝球缺失 {missing_blue}")
+
 def run_strategy_and_get_scores(df_history, params, ml_models_red, ml_models_blue, feature_columns):
     """
     核心评分函数：结合时间加权频率、遗漏值和机器学习预测概率，为所有号码生成综合评分。
@@ -344,6 +391,8 @@ def run_strategy_and_get_scores(df_history, params, ml_models_red, ml_models_blu
     Returns:
         tuple: (red_scores, blue_scores) 两个字典，分别包含红球和蓝球的综合评分。
     """
+    validate_model_sets(ml_models_red, ml_models_blue)
+
     # 1. 准备用于ML预测的最新一行特征数据
     # .iloc[[-1]] 确保返回的是DataFrame而不是Series，以适配模型输入
     last_features = df_history.iloc[[-1]][feature_columns].copy()
@@ -436,16 +485,11 @@ def make_rejection_set(size, rng=None):
 def passes_red_filters(combo, omission_values, last_10_draws_sets, last_draw_set,
                        last_2_draw_set, rejection_set=None):
     """Single source of truth for live selection and historical backtests."""
-    return (
-        filter_highly_regular(combo) and filter_sum_value(combo) and
-        filter_span(combo) and filter_consecutive_numbers(combo) and
-        filter_zones(combo) and
-        filter_recent_overlap(combo, last_10_draws_sets) and
-        filter_all_cold(combo, omission_values) and filter_ending_digits(combo) and
-        filter_sum_of_tails(combo) and
-        filter_related_numbers(combo, last_draw_set) and
-        (rejection_set is None or combo not in rejection_set)
-    )
+    context = (omission_values, last_10_draws_sets, last_draw_set, last_2_draw_set)
+    return all(
+        not rule.hard or rule.evaluator(combo, *context)
+        for rule in RED_RULES
+    ) and (rejection_set is None or combo not in rejection_set)
 
 
 
@@ -615,48 +659,54 @@ def filter_diagonal_consecutive(r, last_draw_set, last_2_draw_set):
     return True
 
 
+RED_RULES = (
+    RuleDefinition('highly_regular', True, lambda c, *_: filter_highly_regular(c)),
+    RuleDefinition('sum_value', True, lambda c, *_: filter_sum_value(c)),
+    RuleDefinition('span', True, lambda c, *_: filter_span(c)),
+    RuleDefinition('consecutive_numbers', True, lambda c, *_: filter_consecutive_numbers(c)),
+    RuleDefinition('zones', True, lambda c, *_: filter_zones(c)),
+    RuleDefinition('ac_value', False, lambda c, *_: filter_ac_value(c)),
+    RuleDefinition('prime_composite_ratio', False, lambda c, *_: filter_prime_composite_ratio(c)),
+    RuleDefinition('big_small_ratio', False, lambda c, *_: filter_big_small_ratio(c)),
+    RuleDefinition('recent_overlap', True, lambda c, _o, recent, *_: filter_recent_overlap(c, recent)),
+    RuleDefinition('all_cold', True, lambda c, omission, *_: filter_all_cold(c, omission)),
+    RuleDefinition('odd_even_ratio', False, lambda c, *_: filter_odd_even_ratio(c)),
+    RuleDefinition('modulo3_roads', False, lambda c, *_: filter_modulo3_roads(c)),
+    RuleDefinition('ending_digits', True, lambda c, *_: filter_ending_digits(c)),
+    RuleDefinition('head_tail_range', False, lambda c, *_: filter_head_tail_range(c)),
+    RuleDefinition('sum_of_tails', True, lambda c, *_: filter_sum_of_tails(c)),
+    RuleDefinition('related_numbers', True, lambda c, _o, _r, last, *_: filter_related_numbers(c, last)),
+    RuleDefinition(
+        'diagonal_consecutive', False,
+        lambda c, _o, _r, last, previous: filter_diagonal_consecutive(c, last, previous),
+    ),
+)
+FILTER_NAMES = tuple(rule.name for rule in RED_RULES)
+HARD_FILTER_NAMES = tuple(rule.name for rule in RED_RULES if rule.hard)
+SOFT_FILTER_NAMES = tuple(rule.name for rule in RED_RULES if not rule.hard)
+
+
 def explain_filter_failures(combo, omission_values, last_10_draws_sets,
                             last_draw_set, last_2_draw_set, rejection_set=None):
     """Return the names of every rule that rejects a combination."""
-    checks = (
-        ("highly_regular", filter_highly_regular(combo)),
-        ("sum_value", filter_sum_value(combo)),
-        ("span", filter_span(combo)),
-        ("consecutive_numbers", filter_consecutive_numbers(combo)),
-        ("zones", filter_zones(combo)),
-        ("ac_value", filter_ac_value(combo)),
-        ("prime_composite_ratio", filter_prime_composite_ratio(combo)),
-        ("big_small_ratio", filter_big_small_ratio(combo)),
-        ("recent_overlap", filter_recent_overlap(combo, last_10_draws_sets)),
-        ("all_cold", filter_all_cold(combo, omission_values)),
-        ("odd_even_ratio", filter_odd_even_ratio(combo)),
-        ("modulo3_roads", filter_modulo3_roads(combo)),
-        ("ending_digits", filter_ending_digits(combo)),
-        ("head_tail_range", filter_head_tail_range(combo)),
-        ("sum_of_tails", filter_sum_of_tails(combo)),
-        ("related_numbers", filter_related_numbers(combo, last_draw_set)),
-        ("diagonal_consecutive", filter_diagonal_consecutive(combo, last_draw_set, last_2_draw_set)),
-        ("anti_crowding", rejection_set is None or combo not in rejection_set),
-    )
-    return [name for name, passed in checks if not passed]
+    context = (omission_values, last_10_draws_sets, last_draw_set, last_2_draw_set)
+    failures = [
+        rule.name for rule in RED_RULES if not rule.evaluator(combo, *context)
+    ]
+    if rejection_set is not None and combo in rejection_set:
+        failures.append('anti_crowding')
+    return failures
 
 
 def filter_pipeline_stats(combos, omission_values, last_10_draws_sets,
                           last_draw_set, last_2_draw_set, rejection_set=None):
     """Measure each rule's incremental impact in the configured pipeline."""
-    checks = (
-        ("highly_regular", lambda c: filter_highly_regular(c)),
-        ("sum_value", lambda c: filter_sum_value(c)),
-        ("span", lambda c: filter_span(c)),
-        ("consecutive_numbers", lambda c: filter_consecutive_numbers(c)),
-        ("zones", lambda c: filter_zones(c)),
-        ("recent_overlap", lambda c: filter_recent_overlap(c, last_10_draws_sets)),
-        ("all_cold", lambda c: filter_all_cold(c, omission_values)),
-        ("ending_digits", lambda c: filter_ending_digits(c)),
-        ("sum_of_tails", lambda c: filter_sum_of_tails(c)),
-        ("related_numbers", lambda c: filter_related_numbers(c, last_draw_set)),
-        ("anti_crowding", lambda c: rejection_set is None or c not in rejection_set),
-    )
+    context = (omission_values, last_10_draws_sets, last_draw_set, last_2_draw_set)
+    checks = [
+        (rule.name, lambda combo, current=rule: current.evaluator(combo, *context))
+        for rule in RED_RULES if rule.hard
+    ]
+    checks.append(('anti_crowding', lambda combo: rejection_set is None or combo not in rejection_set))
     remaining = list(combos)
     stats = []
     for name, check in checks:
@@ -692,11 +742,28 @@ def audit_historical_rule_coverage(full_df, periods=RULE_AUDIT_PERIODS):
     }
 
 
-def score_red_combination(combo, red_scores, last_draw_set=None, last_2_draw_set=None):
+def build_rank_center_scores(red_scores):
+    """Map each ball to a triangular preference centered on its model rank."""
+    ranked = sorted(red_scores, key=lambda ball: (-red_scores[ball], ball))
+    if len(ranked) <= 1:
+        return {ball: 1.0 for ball in ranked}
+    center = (len(ranked) - 1) / 2
+    return {
+        ball: 1.0 - abs(index - center) / center
+        for index, ball in enumerate(ranked)
+    }
+
+
+def score_rank_center_preference(combo, red_scores, rank_center_scores=None):
+    """Score balls highest near the model ranking center and lowest at both ends."""
+    rank_scores = rank_center_scores or build_rank_center_scores(red_scores)
+    return sum(rank_scores.get(ball, 0.0) for ball in combo) / len(combo)
+
+
+def score_red_combination(combo, red_scores, last_draw_set=None, last_2_draw_set=None,
+                          rank_center_scores=None):
     """Rank already-valid combinations using soft, explainable preferences."""
-    values = [red_scores.get(ball, 0.0) for ball in combo]
-    max_score = max(red_scores.values(), default=1.0) or 1.0
-    signal = sum(values) / (len(combo) * max_score)
+    signal = score_rank_center_preference(combo, red_scores, rank_center_scores)
     odd_even_balance = 1.0 - abs(sum(n % 2 for n in combo) - 3) / 3
     zone_counts = (
         sum(n <= 11 for n in combo),
@@ -721,59 +788,70 @@ def score_red_combination(combo, red_scores, last_draw_set=None, last_2_draw_set
         0.04 * modulo_score + 0.03 * head_tail_score + 0.02 * diagonal_score
     )
 
-def find_best_7_red_combinations(passed_combos_tuples, red_pool):
-    """
-    从所有通过规则检验的6红球组合中，提炼出覆盖度最高的7红球“小复式”组合。
-    覆盖度指一个7红球组合能拆分出多少个有效的6红球组合。
 
-    Args:
-        passed_combos_tuples (list): 包含所有通过检验的6红球元组的列表。
-        red_pool (list): 机器学习筛选出的红球大底。
+def select_recommendations(passed_combos, red_scores, last_draw_set=None,
+                           last_2_draw_set=None, limit=NUM_RECOMMENDATIONS,
+                           max_shared=MAX_SHARED_RED_BALLS):
+    """Select a high-scoring portfolio while avoiding near-duplicate tickets."""
+    if limit <= 0:
+        return []
+    if not 0 <= max_shared <= 6:
+        raise ValueError('max_shared must be between 0 and 6')
+    rank_center_scores = build_rank_center_scores(red_scores)
+    ranked = sorted(
+        passed_combos,
+        key=lambda combo: (
+            -score_red_combination(
+                combo, red_scores, last_draw_set, last_2_draw_set,
+                rank_center_scores,
+            ),
+            combo,
+        ),
+    )
+    selected = []
+    selected_sets = []
+    for overlap_limit in range(max_shared, 7):
+        for combo in ranked:
+            if combo in selected:
+                continue
+            combo_set = set(combo)
+            if all(len(combo_set & previous) <= overlap_limit for previous in selected_sets):
+                selected.append(combo)
+                selected_sets.append(combo_set)
+                if len(selected) == limit:
+                    return selected
+    return selected
 
-    Returns:
-        list: 一个排序后的列表，每个元素是 ((7红球元组), 覆盖度)。
-    """
+def find_best_7_red_combinations(passed_combos_tuples, red_pool, red_scores=None,
+                                 last_draw_set=None, last_2_draw_set=None):
+    """Rank every 7-red ticket by valid subticket coverage, then strategy score."""
     if not passed_combos_tuples:
         return []
-    
-    # 将列表转为集合以获得O(1)的查找速度，极大提升效率
+
     passed_combos_set = set(passed_combos_tuples)
-    
-    best_7_red_combos = {} # 用于存储找到的7红球组合及其覆盖度
-    
-    # 遍历每一个通过筛选的6球组合作为“种子”
-    for seed_combo in tqdm(passed_combos_set, desc="生成7红球大底", leave=False, ncols=80):
-        seed_set = set(seed_combo)
-        best_7th_ball = -1
-        max_coverage = 0
-        # 候选的第7个球，是红球大底中除了种子6个球之外的球
-        candidate_balls = set(red_pool) - seed_set
-        
-        # 尝试将每个候选球加入种子，形成一个7球组合，并计算其覆盖度
-        for ball in candidate_balls:
-            temp_7_red_set = seed_set.union({ball})
-            coverage = 0
-            # 从这个7球组合中拆分出所有可能的6球组合
-            for sub_combo in combinations(temp_7_red_set, 6):
-                # 如果拆分出的组合在“通过检验的组合集合”中，则覆盖度+1
-                if sub_combo in passed_combos_set:
-                    coverage = coverage + 1
-            # 找到能使覆盖度最大的第7个球
-            if coverage > max_coverage:
-                max_coverage = coverage
-                best_7th_ball = ball
-        
-        # 如果找到了一个有效的第7球
-        if best_7th_ball != -1:
-            # 形成最终的7球组合
-            final_7_combo = tuple(sorted(list(seed_set) + [best_7th_ball]))
-            # 存入字典，如果已存在则不更新（避免重复计算）
-            if final_7_combo not in best_7_red_combos:
-                best_7_red_combos[final_7_combo] = max_coverage
-                
-    # 按覆盖度从高到低排序
-    sorted_results = sorted(best_7_red_combos.items(), key=lambda item: item[1], reverse=True)
-    return sorted_results
+    rank_center_scores = build_rank_center_scores(red_scores) if red_scores else None
+    ranked = []
+    seven_ball_combos = combinations(sorted(red_pool), 7)
+    for seven_combo in tqdm(
+        seven_ball_combos, total=comb(len(red_pool), 7),
+        desc="生成7红球大底", leave=False, ncols=80,
+    ):
+        subtickets = list(combinations(seven_combo, 6))
+        coverage = sum(subticket in passed_combos_set for subticket in subtickets)
+        if not coverage:
+            continue
+        quality = 0.0
+        if red_scores:
+            quality = sum(
+                score_red_combination(
+                    subticket, red_scores, last_draw_set, last_2_draw_set,
+                    rank_center_scores,
+                )
+                for subticket in subtickets
+            ) / len(subtickets)
+        ranked.append((seven_combo, coverage, quality))
+    ranked.sort(key=lambda item: (-item[1], -item[2], item[0]))
+    return [(combo, coverage) for combo, coverage, _ in ranked]
 
 # --- 3. 交互式输入模块 ---
 user_input_lock = threading.Lock() # 线程锁，确保对全局变量的访问安全
@@ -825,12 +903,12 @@ def get_user_input_with_timeout(timeout):
 
 def run_full_backtest(full_df, params, feature_columns, num_periods, pool_modes=("mixed",)):
     """
-    [逻辑已修正] 对最近N期执行逻辑严谨的策略回测。
-    核心修正: 此函数在回测的每一步，都仅使用当前步之前的数据重新训练模型，避免了“未来数据”的泄露。
+    对最近 N 期执行滚动策略回测。
+    每一步仅使用当前期之前的数据重新训练模型，避免未来数据泄露。
     返回每种候选池模式对应的 BacktestResult。
     """
     print("\n" + "="*70)
-    print(f"        [新功能] 最近 {num_periods} 期完整策略回测 (逻辑严谨版)")
+    print(f"        最近 {num_periods} 期完整策略滚动回测")
     print("="*70)
     
     # 检查是否有足够的数据进行回测 (需要回测期数 + 至少50期用于模型初次训练)
@@ -863,27 +941,9 @@ def run_full_backtest(full_df, params, feature_columns, num_periods, pool_modes=
                 pbar.update(1)
                 continue
             
-            local_ml_models_red, local_ml_models_blue = {}, {} # 使用本次循环的局部模型
-            
-            # 训练红球模型
-            for ball_r in range(1, 34):
-                training_data_for_step[f'red_{ball_r}_next'] = training_data_for_step['红球'].apply(lambda x: 1 if ball_r in x else 0).shift(-1)
-                df_temp_r = training_data_for_step.dropna(subset=feature_columns + [f'red_{ball_r}_next'])
-                X_r, y_r = df_temp_r[feature_columns], df_temp_r[f'red_{ball_r}_next']
-                if not X_r.empty: 
-                    lgb_clf_r = lgb.LGBMClassifier(random_state=42, verbose=-1)
-                    lgb_clf_r.fit(X_r, y_r)
-                    local_ml_models_red[ball_r] = lgb_clf_r
-            
-            # 训练蓝球模型
-            for ball_b in range(1, 17):
-                training_data_for_step[f'blue_{ball_b}_next'] = training_data_for_step['蓝球'].apply(lambda x: 1 if x == ball_b else 0).shift(-1)
-                df_temp_b = training_data_for_step.dropna(subset=feature_columns + [f'blue_{ball_b}_next'])
-                X_b, y_b = df_temp_b[feature_columns], df_temp_b[f'blue_{ball_b}_next']
-                if not X_b.empty: 
-                    lgb_clf_b = lgb.LGBMClassifier(random_state=42, verbose=-1)
-                    lgb_clf_b.fit(X_b, y_b)
-                    local_ml_models_blue[ball_b] = lgb_clf_b
+            local_ml_models_red, local_ml_models_blue = train_prediction_models(
+                training_data_for_step, feature_columns
+            )
             
             if len(local_ml_models_red) != 33 or len(local_ml_models_blue) != 16: # 如果模型训练不完整，跳过
                 pbar.update(1)
@@ -910,12 +970,9 @@ def run_full_backtest(full_df, params, feature_columns, num_periods, pool_modes=
                 ]
                 if not passed_combos:
                     continue
-                selected_combos = sorted(
-                    passed_combos,
-                    key=lambda combo: (
-                        -score_red_combination(combo, red_scores, last_1, last_2), combo
-                    )
-                )[:NUM_RECOMMENDATIONS]
+                selected_combos = select_recommendations(
+                    passed_combos, red_scores, last_1, last_2
+                )
                 current = metrics[mode]
                 current["active_periods"] += 1
                 current["tickets"] += len(selected_combos)
@@ -970,14 +1027,14 @@ if __name__ == '__main__':
     random.seed(RANDOM_SEED)
 
     print("="*70)
-    print("         双色球整合策略分析脚本 (v6.0 - 完全展开注释版)")
+    print("         双色球策略分析器 v7.0")
     print("="*70)
 
     # --- [阶段 1/8] 加载与特征工程 ---
     print("\n[阶段 1/8] 正在加载和处理历史数据...")
     full_df = load_and_preprocess_data()
     if full_df is None or len(full_df) < 50:
-        exit("错误: 历史数据加载失败或数据量过少（至少需要50期），程序终止。")
+        raise SystemExit("错误: 历史数据加载失败或数据量过少（至少需要50期），程序终止。")
     full_df = feature_engineer(full_df)
     FEATURE_COLUMNS = [col for col in full_df.columns if col not in ['期号', '日期', '红球', '蓝球']]
     rule_coverage = audit_historical_rule_coverage(full_df, args.rule_audit_periods)
@@ -1003,43 +1060,26 @@ if __name__ == '__main__':
     
     # --- [阶段 3/8] 训练最终预测模型 ---
     print("\n[阶段 3/8] 正在使用全部历史数据，训练用于最终预测的模型...")
-    final_ml_models_red = {}
-    final_ml_models_blue = {}
     ml_training_df = full_df.iloc[5:].copy()
-    
-    # 训练33个独立的红球模型
-    for i in tqdm(range(1, 34), desc="训练最终红球模型", ncols=80):
-        ml_training_df[f'red_{i}_next'] = ml_training_df['红球'].apply(lambda x: 1 if i in x else 0).shift(-1)
-        df_temp = ml_training_df.dropna(subset=FEATURE_COLUMNS + [f'red_{i}_next'])
-        X = df_temp[FEATURE_COLUMNS]
-        y = df_temp[f'red_{i}_next']
-        if not X.empty: 
-            lgb_clf = lgb.LGBMClassifier(random_state=42, verbose=-1)
-            lgb_clf.fit(X, y)
-            final_ml_models_red[i] = lgb_clf
-            
-    # 训练16个独立的蓝球模型
-    for i in tqdm(range(1, 17), desc="训练最终蓝球模型", ncols=80):
-        ml_training_df[f'blue_{i}_next'] = ml_training_df['蓝球'].apply(lambda x: 1 if x == i else 0).shift(-1)
-        df_temp = ml_training_df.dropna(subset=FEATURE_COLUMNS + [f'blue_{i}_next'])
-        X = df_temp[FEATURE_COLUMNS]
-        y = df_temp[f'blue_{i}_next']
-        if not X.empty: 
-            lgb_clf = lgb.LGBMClassifier(random_state=42, verbose=-1)
-            lgb_clf.fit(X, y)
-            final_ml_models_blue[i] = lgb_clf
+    final_ml_models_red, final_ml_models_blue = train_prediction_models(
+        ml_training_df, FEATURE_COLUMNS, show_progress=True
+    )
+    try:
+        validate_model_sets(final_ml_models_red, final_ml_models_blue)
+    except ValueError as exc:
+        raise SystemExit(f"错误: {exc}")
     
     # --- [阶段 4/8] 执行对下一期的预测 ---
-    print(f"\n[阶段 4/8] 正在为下一期号码进行机器学习评分...")
+    print("\n[阶段 4/8] 正在为下一期号码进行机器学习评分...")
     red_scores, blue_scores = run_strategy_and_get_scores(full_df, params, final_ml_models_red, final_ml_models_blue, FEATURE_COLUMNS)
     red_pool = build_red_pool(red_scores, mode=args.pool_mode)
     recommended_blues = sorted(blue_scores, key=blue_scores.get, reverse=True)[:NUM_BLUE_BALLS]
     print(f"已根据ML评分选出 {POOL_SIZE_RED} 个红球大底: {sorted(red_pool)}")
 
     # --- [阶段 5/8] 规则过滤 ---
-    print(f"\n[阶段 5/8] 正在从大底中生成组合并应用硬规则过滤...")
+    print("\n[阶段 5/8] 正在从大底中生成组合并应用硬规则过滤...")
     
-    # --- 生成反向排他库 (展开形式) ---
+    # 生成反撞号排除库。
     rejection_set = make_rejection_set(REJECTION_LIB_SIZE, random.Random(RANDOM_SEED))
 
     # 提前计算过滤所需的历史数据
@@ -1084,19 +1124,21 @@ if __name__ == '__main__':
                 print(f"  组合 {i:>3}: {' '.join(f'{n:02d}' for n in combo)}")
 
     # --- [阶段 7/8] 高级推荐 ---
-    print(f"\n[阶段 7/8] 正在从最终组合中，生成高重合度的7红球大底...")
-    best_7_reds = find_best_7_red_combinations(passed_combos_tuples, red_pool)
+    print("\n[阶段 7/8] 正在从最终组合中，生成高重合度的7红球大底...")
+    best_7_reds = find_best_7_red_combinations(
+        passed_combos_tuples, red_pool, red_scores, last_draw_set, last_2_draw_set
+    )
 
-    # --- [阶段 8/8] 最终报告 (完全采纳 ssq2 格式) ---
+    # --- [阶段 8/8] 最终报告 ---
     print("\n--- 正在生成最终推荐报告 ---")
     report_lines = []
     report_lines.append("="*60); report_lines.append("          双色球策略分析与推荐报告 (高级过滤版)"); report_lines.append("="*60)
     
     latest_issue = str(full_df.iloc[-1]['期号'])
-    try: 
-        target_issue = int(latest_issue) + 1
-    except ValueError: 
-        target_issue = f"{latest_issue}_Next"
+    try:
+        target_issue = infer_next_issue(latest_issue, full_df.iloc[-1]['日期'])
+    except (TypeError, ValueError) as exc:
+        raise SystemExit(f"错误: 无法推导下一期期号: {exc}")
 
     report_lines.append("\n--- 0. 报告元数据 ---")
     report_lines.append(f"Data_Basis_Issue: {latest_issue}")
@@ -1109,7 +1151,9 @@ if __name__ == '__main__':
     for key, val in params.items(): 
         report_lines.append(f"  - {key:<20}: {val}")
     
-    report_lines.append(f"\n历史滚动回测 ({backtest.periods}期):")
+    report_lines.append(
+        f"\n单式策略滚动回测 ({backtest.periods}期，每期最多{NUM_RECOMMENDATIONS}注，不含复式):"
+    )
     report_lines.append(f"  - 候选池模式: {args.pool_mode}")
     report_lines.append(f"  - 实际投注期数: {backtest.active_periods}")
     report_lines.append(f"  - 投注注数: {backtest.tickets}")
@@ -1168,12 +1212,9 @@ if __name__ == '__main__':
     
     report_lines.append("\n【单式推荐 (10组)】")
     if passed_combos_tuples:
-        final_selection = sorted(
-            passed_combos_tuples,
-            key=lambda combo: (
-                -score_red_combination(combo, red_scores, last_draw_set, last_2_draw_set), combo
-            )
-        )[:NUM_RECOMMENDATIONS]
+        final_selection = select_recommendations(
+            passed_combos_tuples, red_scores, last_draw_set, last_2_draw_set
+        )
         for i, combo in enumerate(final_selection, 1):
             report_lines.append(f"  组合 {i:>2}: 红球 {str(list(combo)):<24} 蓝球 [{top_blue:02d}]")
     else:
@@ -1197,8 +1238,7 @@ if __name__ == '__main__':
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"ssq_analysis_output_{timestamp}.txt"
         filepath = os.path.join(REPORT_DIR, filename)
-        with open(filepath, 'w', encoding='utf-8') as f: 
-            f.write(final_report_string)
+        atomic_write_text(filepath, final_report_string)
         print(f"\n\n报告已成功保存到文件: {filepath}")
     except Exception as e:
-        print(f"\n\n写入报告文件失败: {e}")
+        raise SystemExit(f"\n\n写入报告文件失败: {e}")

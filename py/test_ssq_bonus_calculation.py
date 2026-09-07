@@ -8,6 +8,23 @@ import ssq_bonus_calculation as bonus
 
 
 class BonusCalculationTests(unittest.TestCase):
+    def test_latest_draw_is_selected_by_validated_issue(self):
+        content = (
+            '期号,日期,红球,蓝球\n'
+            '2026002,2026-01-04,"07,08,09,10,11,12",16\n'
+            '2026001,2026-01-01,"01,02,03,04,05,06",07\n'
+        )
+        with tempfile.NamedTemporaryFile('w', encoding='utf-8', delete=False) as handle:
+            handle.write(content)
+            path = handle.name
+        try:
+            latest = bonus.load_latest_draw(path)
+        finally:
+            Path(path).unlink()
+        self.assertEqual(latest['issue'], 2026002)
+        self.assertEqual(latest['red'], {7, 8, 9, 10, 11, 12})
+        self.assertEqual(latest['blue'], 16)
+
     def test_parse_current_report_format(self):
         content = """【单式推荐 (2组)】
 组合 1: 红球 [1,2, 3, 4, 5, 6] 蓝球 [09]

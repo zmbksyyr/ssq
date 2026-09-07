@@ -5,7 +5,8 @@ import glob
 import re
 from math import comb
 from ssq_core import (
-    PRIZE_NAMES, PRIZE_RULES, parse_blue_ball, parse_blue_balls, parse_red_balls,
+    PRIZE_NAMES, PRIZE_RULES, atomic_write_text, parse_blue_ball,
+    parse_blue_balls, parse_issue, parse_red_balls,
 )
 
 # --- 动态路径设置 ---
@@ -20,7 +21,6 @@ def find_matching_report(target_issue):
     """
     在 report/ 目录查找所有报告文件，并返回与目标期号匹配的报告文件路径。
     """
-    # <--- MODIFIED: 在 report/ 文件夹中查找 ---
     report_pattern = os.path.join(REPORT_DIR, "ssq_analysis_output_*.txt")
     report_files = glob.glob(report_pattern)
     
@@ -130,16 +130,31 @@ def calculate_duplex_prize(bet_reds, bet_blues, winning_reds, winning_blue):
     summary = f"总计命中 {red_hits} 个红球, {blue_hit} 个蓝球"
     return total_prize, prize_breakdown, summary
 
+
+def load_latest_draw(filepath=CSV_PATH):
+    frame = pd.read_csv(filepath, header=0)
+    required = {'期号', '日期', '红球', '蓝球'}
+    if not required.issubset(frame.columns):
+        raise ValueError(f"开奖数据缺少字段: {sorted(required - set(frame.columns))}")
+    frame['期号'] = frame['期号'].apply(parse_issue)
+    if frame['期号'].duplicated().any():
+        raise ValueError("开奖数据存在重复期号")
+    latest = frame.sort_values('期号').iloc[-1]
+    return {
+        'issue': int(latest['期号']),
+        'red': set(parse_red_balls(latest['红球'])),
+        'blue': parse_blue_ball(latest['蓝球']),
+    }
+
 # --- 3. 主执行逻辑 ---
 
 if __name__ == '__main__':
     # 1. 获取最新开奖结果
     try:
-        ssq_df = pd.read_csv(CSV_PATH, header=0)
-        latest_draw = ssq_df.iloc[-1]
-        target_issue = latest_draw['期号']
-        winning_reds = set(parse_red_balls(latest_draw['红球']))
-        winning_blue = parse_blue_ball(latest_draw['蓝球'])
+        latest_draw = load_latest_draw()
+        target_issue = latest_draw['issue']
+        winning_reds = latest_draw['red']
+        winning_blue = latest_draw['blue']
     except Exception as e:
         print(f"读取 {CSV_PATH} 文件失败: {e}")
         raise SystemExit(1)
@@ -201,17 +216,14 @@ if __name__ == '__main__':
 
     # 6. 写入文件
     try:
-        # <--- MODIFIED: 确保报告目录存在 ---
         os.makedirs(REPORT_DIR, exist_ok=True)
         
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"ssq_bonus_check_{timestamp}.txt"
         
-        # <--- MODIFIED: 将核奖报告写入 report/ 文件夹 ---
         filepath = os.path.join(REPORT_DIR, filename)
         
-        with open(filepath, 'w', encoding='utf-8') as f:
-            f.write(final_report_string)
+        atomic_write_text(filepath, final_report_string)
         print(f"\n核对报告已成功保存到文件: {filepath}")
     except Exception as e:
-        print(f"\n写入核对报告文件失败: {e}")
+        raise SystemExit(f"\n写入核对报告文件失败: {e}")

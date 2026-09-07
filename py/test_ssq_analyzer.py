@@ -1,6 +1,7 @@
 import random
 import sys
 import unittest
+import tempfile
 from pathlib import Path
 import pandas as pd
 
@@ -9,6 +10,19 @@ import ssq_analyzer as analyzer
 
 
 class AnalyzerTests(unittest.TestCase):
+  def test_loader_rejects_issue_date_year_mismatch(self):
+    content = (
+      '期号,日期,红球,蓝球\n'
+      '2026001,2025-12-31,"01,02,03,04,05,06",07\n'
+    )
+    with tempfile.NamedTemporaryFile('w', encoding='utf-8', delete=False) as handle:
+      handle.write(content)
+      path = handle.name
+    try:
+      self.assertIsNone(analyzer.load_and_preprocess_data(path))
+    finally:
+      Path(path).unlink()
+
   def test_prime_definition(self):
     self.assertFalse(analyzer.is_prime(1))
     self.assertTrue(analyzer.is_prime(2))
@@ -48,6 +62,13 @@ class AnalyzerTests(unittest.TestCase):
     )
     self.assertIn("prime_composite_ratio", failures)
 
+  def test_all_rules_use_one_unique_registry(self):
+    names = [rule.name for rule in analyzer.RED_RULES]
+    self.assertEqual(len(names), len(set(names)))
+    self.assertEqual(tuple(names), analyzer.FILTER_NAMES)
+    prime_rule = next(rule for rule in analyzer.RED_RULES if rule.name == 'prime_composite_ratio')
+    self.assertFalse(prime_rule.hard)
+
   def test_soft_rule_failure_does_not_reject_combination(self):
     combo = (1, 4, 8, 16, 25, 30)
     self.assertFalse(analyzer.filter_prime_composite_ratio(combo))
@@ -70,6 +91,35 @@ class AnalyzerTests(unittest.TestCase):
     first = analyzer.score_red_combination(combo, scores)
     second = analyzer.score_red_combination(combo, scores)
     self.assertEqual(first, second)
+
+  def test_rank_signal_prefers_center_over_both_extremes(self):
+    scores = {n: float(34 - n) for n in range(1, 34)}
+    middle = analyzer.score_rank_center_preference((14, 15, 16, 17, 18, 19), scores)
+    high = analyzer.score_rank_center_preference((1, 2, 3, 4, 5, 6), scores)
+    low = analyzer.score_rank_center_preference((28, 29, 30, 31, 32, 33), scores)
+    self.assertGreater(middle, high)
+    self.assertGreater(middle, low)
+    cached = analyzer.build_rank_center_scores(scores)
+    self.assertEqual(
+      middle,
+      analyzer.score_rank_center_preference((14, 15, 16, 17, 18, 19), scores, cached),
+    )
+
+  def test_recommendation_portfolio_limits_overlap(self):
+    combos = list(analyzer.combinations(range(1, 13), 6))
+    scores = {n: n / 12 for n in range(1, 13)}
+    selected = analyzer.select_recommendations(combos, scores, limit=10, max_shared=4)
+    self.assertEqual(len(selected), 10)
+    for index, combo in enumerate(selected):
+      for other in selected[index + 1:]:
+        self.assertLessEqual(len(set(combo) & set(other)), 4)
+
+  def test_duplex_selection_uses_score_to_break_coverage_ties(self):
+    pool = list(range(1, 9))
+    passed = list(analyzer.combinations(pool, 6))
+    scores = {n: float(34 - n) for n in range(1, 34)}
+    ranked = analyzer.find_best_7_red_combinations(passed, pool, scores)
+    self.assertEqual(ranked[0], ((2, 3, 4, 5, 6, 7, 8), 7))
 
   def test_backtest_result_metrics(self):
     result = analyzer.BacktestResult(50, 50, 500, 1000, 280, {})

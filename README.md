@@ -6,20 +6,22 @@
 
 ## 流程
 
-1. `ssq_data_processor.py` 从两个数据源更新 `shuangseqiu.csv`。
+1. `ssq_data_processor.py` 使用含日期的 TXT 权威源更新 `shuangseqiu.csv`，并用 HTML 源交叉核对号码。
 2. `ssq_analyzer.py` 完成特征工程、滚动回测、号码评分和组合筛选。
 3. `ssq_bonus_calculation.py` 使用最新开奖结果核对对应预测报告。
 4. GitHub Actions 每周一、三、五北京时间 06:00 自动运行并提交结果。
 
 ## 选号策略
 
-红球评分综合时间衰减频率、遗漏值和机器学习概率。默认候选池为 17 个号码：
+红球基础评分综合时间衰减频率、遗漏值和机器学习概率。基础分不直接解释为开奖概率：最终组合排序对排名两端降权、对中间排名加权，以落实“高分和低分都不盲从”的选号逻辑。默认候选池为 17 个号码：
 
 - 高分段 4 个；
 - 中间分段 9 个；
 - 低分段 4 个。
 
-候选组合先通过和值、跨度、连号、三区、近期重合、尾数和关联号等高覆盖硬规则。AC 值、质合比、大小比、奇偶比、余数路、首尾范围和斜连号作为软评分，不再一票否决真实开奖中并不少见的形态。最后按模型信号和结构均衡度选出前 10 注。
+候选组合先通过和值、跨度、连号、三区、近期重合、尾数和关联号等高覆盖硬规则。AC 值、质合比、大小比、奇偶比、余数路、首尾范围和斜连号作为软评分，不再一票否决真实开奖中并不少见的形态。最后按模型信号和结构均衡度排序，并优先保证任意两注最多重合 4 个红球，选出 10 注覆盖更分散的单式组合。
+
+报告中的滚动回测只计算上述 10 注单式，不把 7+N 复式成本和奖金混入结果。
 
 随机排除库作为反撞号扰动保留，使用固定种子以保证结果可复现。它不代表开奖概率提升。
 
@@ -48,6 +50,8 @@ python py\ssq_bonus_calculation.py
 
 ```powershell
 python py\ssq_analyzer.py --backtest-periods 1 --rejection-size 0 --compare-pools
+python -m pip install -r py\requirements-dev.txt
+ruff check py --select F,E9
 python -m unittest py.test_ssq_analyzer -v
 ```
 

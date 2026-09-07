@@ -3,49 +3,39 @@
 双色球数据处理器
 ================
 
-本脚本负责从网络上获取双色球的历史开奖数据，并将其与本地的CSV文件合并，
+本脚本负责从网络上获取双色球的历史开奖数据，并将其与本地 CSV 文件合并，
 最终生成一个全面、更新的数据文件。
 
 主要功能:
-1.  从文本文件 (ssq_asc.txt) 获取包含开奖日期的完整历史数据。
-2.  从HTML网页抓取最新的开奖数据（可能不含日期），作为补充。
-3.  将两种来源的数据智能合并到主CSV文件 ('shuangseqiu.csv') 中。
-    - 优先使用文本文件中的数据（尤其是日期）。
-    - 能够处理新旧数据，自动去重和更新。
-4.  具备良好的错误处理和日志记录能力，能应对网络波动和数据格式问题。
+1. 从文本文件获取包含开奖日期的权威历史数据。
+2. 从 HTML 网页抓取号码，与权威源的重叠期交叉核验。
+3. 校验、去重并原子更新主 CSV 文件。
 """
 
 import pandas as pd
 import sys
 import os
 import requests
+from requests.adapters import HTTPAdapter
 from bs4 import BeautifulSoup
-import io
 import logging
-from contextlib import redirect_stdout, redirect_stderr
 import csv
+import tempfile
 from datetime import datetime
-from ssq_core import parse_blue_ball, parse_red_balls
+from urllib3.util.retry import Retry
+from ssq_core import parse_blue_ball, parse_issue, parse_red_balls
 
 # ==============================================================================
 # --- 配置区 ---
 # ==============================================================================
 
-# 获取当前脚本所在的目录 (e.g., /path/to/your_project/py)
 script_dir = os.path.dirname(os.path.abspath(__file__))
-
-# <--- MODIFIED: 关键修改 ---
-# 获取项目的根目录，即 py/ 文件夹的上一级目录
 root_dir = os.path.dirname(script_dir)
-
-# [核心] 目标CSV文件的完整路径。现在它指向项目的根目录。
-# 您可以根据需要修改文件名，例如改为 'ssq_results.csv'。
 CSV_FILE_PATH = os.path.join(root_dir, 'shuangseqiu.csv')
-# <--- END OF MODIFICATION ---
 
 # 网络数据源URL
 # TXT源：提供包括日期在内的全量历史数据
-TXT_DATA_URL = 'http://data.17500.cn/ssq_asc.txt'
+TXT_DATA_URL = 'https://data.17500.cn/ssq_asc.txt'
 # HTML源：提供最新的开奖数据，通常用于快速更新（但不含日期）
 HTML_DATA_URL = "https://www.17500.cn/chart/ssq-tjb.html"
 
@@ -60,49 +50,19 @@ logging.basicConfig(
 logger = logging.getLogger('ssq_data_processor')
 
 
-# ==============================================================================
-# --- 工具函数 ---
-# ==============================================================================
-
-class SuppressOutput:
-    """
-    一个上下文管理器，用于临时抑制标准输出和/或捕获标准错误。
-    这在调用会产生大量无关输出的库函数时非常有用。
-    捕获的错误信息会通过日志系统记录下来，避免信息丢失。
-    """
-    def __init__(self, suppress_stdout: bool = True, capture_stderr: bool = True):
-        self.suppress_stdout = suppress_stdout
-        self.capture_stderr = capture_stderr
-        self.old_stdout = None
-        self.old_stderr = None
-        self.stderr_io = io.StringIO()
-
-    def __enter__(self):
-        if self.suppress_stdout:
-            self.old_stdout = sys.stdout
-            sys.stdout = open(os.devnull, 'w', encoding='utf-8')
-
-        if self.capture_stderr:
-            self.old_stderr = sys.stderr
-            sys.stderr = self.stderr_io
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        # 恢复标准错误
-        if self.capture_stderr and self.old_stderr:
-            sys.stderr = self.old_stderr
-            captured_stderr = self.stderr_io.getvalue()
-            if captured_stderr.strip():
-                logger.warning(f"在一个被抑制的输出块中捕获到标准错误:\n{captured_stderr.strip()}")
-            self.stderr_io.close()
-
-        # 恢复标准输出
-        if self.suppress_stdout and self.old_stdout:
-            if sys.stdout and not sys.stdout.closed:
-                sys.stdout.close()
-            sys.stdout = self.old_stdout
-
-        return False  # 不抑制任何发生的异常
+def create_http_session():
+    retry = Retry(
+        total=3,
+        backoff_factor=1,
+        status_forcelist=(429, 500, 502, 503, 504),
+        allowed_methods=('GET',),
+        respect_retry_after_header=True,
+    )
+    adapter = HTTPAdapter(max_retries=retry)
+    session = requests.Session()
+    session.mount('http://', adapter)
+    session.mount('https://', adapter)
+    return session
 
 
 # ==============================================================================
@@ -125,8 +85,7 @@ def fetch_latest_data_from_html(url: str = HTML_DATA_URL) -> list:
     logger.info("正在从HTML网页抓取最新双色球数据...")
     data = []
     try:
-        session = requests.Session()
-        session.trust_env = False  # 禁用环境变量中的代理，提高连接成功率
+        session = create_http_session()
 
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
@@ -194,7 +153,7 @@ def fetch_full_data_from_txt(url: str = TXT_DATA_URL) -> list:
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
     }
     try:
-        response = requests.get(url, headers=headers, timeout=30)
+        response = create_http_session().get(url, headers=headers, timeout=30)
         response.raise_for_status()
         response.encoding = 'utf-8'  # 显式设置编码
         data_lines = response.text.strip().split('\n')
@@ -226,18 +185,17 @@ def parse_txt_data(data_lines: list) -> list:
             continue  # 忽略格式不正确的行
         try:
             # 数据格式: [期号, 日期, 红1, 红2, 红3, 红4, 红5, 红6, 蓝]
-            qihao = fields[0]
+            qihao = parse_issue(fields[0])
             date = fields[1]
             red_balls = ",".join(fields[2:8])
             blue_ball = fields[8]
             red_numbers = parse_red_balls(red_balls)
             blue_number = parse_blue_ball(blue_ball)
             datetime.strptime(date, "%Y-%m-%d")
-            if qihao.isdigit():
-                parsed_data.append([
-                    qihao, date, ",".join(f"{number:02d}" for number in red_numbers),
-                    f"{blue_number:02d}"
-                ])
+            parsed_data.append([
+                str(qihao), date, ",".join(f"{number:02d}" for number in red_numbers),
+                f"{blue_number:02d}"
+            ])
         except (IndexError, ValueError) as exc:
             logger.warning(f"解析TXT行失败: {line}. 错误: {exc}")
             continue
@@ -248,6 +206,56 @@ def parse_txt_data(data_lines: list) -> list:
 # ==============================================================================
 # --- 数据合并与存储模块 ---
 # ==============================================================================
+
+
+def normalize_lottery_frame(frame):
+    """Validate and normalize a draw DataFrame before it reaches the CSV."""
+    required_columns = ['期号', '日期', '红球', '蓝球']
+    missing = [column for column in required_columns if column not in frame.columns]
+    if missing:
+        raise ValueError(f"缺少字段: {', '.join(missing)}")
+
+    normalized = frame[required_columns].copy()
+    normalized['期号'] = normalized['期号'].apply(parse_issue)
+    if normalized['期号'].duplicated().any():
+        duplicates = normalized.loc[normalized['期号'].duplicated(), '期号'].tolist()
+        raise ValueError(f"存在重复期号: {duplicates}")
+    parsed_dates = pd.to_datetime(
+        normalized['日期'], format='%Y-%m-%d', errors='raise'
+    )
+    issue_years = normalized['期号'] // 1000
+    if (issue_years != parsed_dates.dt.year).any():
+        raise ValueError("期号年份与开奖日期不一致")
+    normalized['日期'] = parsed_dates.dt.strftime('%Y-%m-%d')
+    normalized['红球'] = normalized['红球'].apply(
+        lambda value: ','.join(f'{number:02d}' for number in parse_red_balls(value))
+    )
+    normalized['蓝球'] = normalized['蓝球'].apply(
+        lambda value: f'{parse_blue_ball(value):02d}'
+    )
+    return normalized
+
+
+def cross_check_sources(primary_records, secondary_records):
+    """Report number disagreements for issues present in both data sources."""
+    secondary_by_issue = {str(item['期号']): item for item in secondary_records}
+    mismatches = []
+    checked = 0
+    for item in primary_records:
+        other = secondary_by_issue.get(str(item['期号']))
+        if other is None:
+            continue
+        checked += 1
+        if item['红球'] != other['红球'] or item['蓝球'] != other['蓝球']:
+            mismatches.append(str(item['期号']))
+    if mismatches:
+        logger.warning(f"数据源号码不一致，期号: {', '.join(mismatches)}；保留 TXT 权威数据。")
+    elif checked:
+        logger.info(f"两个数据源交叉核验通过，共 {checked} 期重叠记录。")
+    else:
+        logger.warning("两个数据源没有可交叉核验的重叠期号。")
+    return mismatches
+
 
 def update_csv_file(csv_path: str, all_new_data: list):
     """
@@ -267,10 +275,10 @@ def update_csv_file(csv_path: str, all_new_data: list):
         logger.info("没有新的数据可供更新，CSV文件保持不变。")
         return False
 
+    temporary_path = None
     try:
         # 将新数据列表转换为DataFrame
-        new_data_df = pd.DataFrame(all_new_data)
-        new_data_df['期号'] = new_data_df['期号'].astype(str)
+        new_data_df = normalize_lottery_frame(pd.DataFrame(all_new_data))
 
         # 读取现有CSV文件
         existing_df = pd.DataFrame()
@@ -285,11 +293,14 @@ def update_csv_file(csv_path: str, all_new_data: list):
                     existing_df = pd.read_csv(csv_path, dtype={'期号': str}, encoding='gbk')
                 except Exception as e:
                     logger.error(f"使用多种编码读取CSV文件均失败: {e}")
-                    existing_df = pd.DataFrame() # 创建空DataFrame以继续
+                    return False
             except pd.errors.EmptyDataError:
                 logger.warning("现有CSV文件为空。")
         else:
             logger.info("CSV文件不存在或为空，将创建新文件。")
+
+        if not existing_df.empty:
+            existing_df = normalize_lottery_frame(existing_df)
 
         # 合并新旧数据
         # 使用 concat 和 drop_duplicates 来实现“保留后者（新数据）”的更新策略
@@ -299,25 +310,32 @@ def update_csv_file(csv_path: str, all_new_data: list):
             combined_df = new_data_df
 
         # 按'期号'去重，并保留最后出现的记录（即新数据）
-        final_df = combined_df.drop_duplicates(subset=['期号'], keep='last')
+        final_df = normalize_lottery_frame(
+            combined_df.drop_duplicates(subset=['期号'], keep='last')
+        ).sort_values(by='期号', ascending=True).reset_index(drop=True)
 
-        # 确保列的顺序正确，并按期号排序
-        final_columns = ['期号', '日期', '红球', '蓝球']
-        # 补全可能缺失的列
-        for col in final_columns:
-            if col not in final_df.columns:
-                final_df[col] = None
-        
-        final_df = final_df[final_columns].sort_values(by='期号', ascending=True).reset_index(drop=True)
-
-        # 保存到CSV
-        final_df.to_csv(csv_path, index=False, encoding='utf-8', quoting=csv.QUOTE_MINIMAL)
+        # 同目录写临时文件，再原子替换，避免中断时留下半个 CSV。
+        target_directory = os.path.dirname(os.path.abspath(csv_path))
+        os.makedirs(target_directory, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            mode='w', encoding='utf-8', newline='', dir=target_directory,
+            prefix='.ssq-', suffix='.tmp', delete=False,
+        ) as temporary_file:
+            temporary_path = temporary_file.name
+            final_df.to_csv(
+                temporary_file, index=False, quoting=csv.QUOTE_MINIMAL
+            )
+        os.replace(temporary_path, csv_path)
+        temporary_path = None
         logger.info(f"CSV文件已成功更新并保存至: {csv_path}。总计 {len(final_df)} 条记录。")
         return True
 
     except Exception as e:
         logger.error(f"更新CSV文件时发生严重错误: {e}")
         return False
+    finally:
+        if temporary_path and os.path.exists(temporary_path):
+            os.unlink(temporary_path)
 
 
 # ==============================================================================
@@ -336,27 +354,13 @@ if __name__ == "__main__":
         logger.error("TXT 权威数据源未返回有效记录，拒绝使用无日期的 HTML 数据更新 CSV。")
         raise SystemExit(1)
 
-    # 步骤 2: 从HTML网页获取最新数据（不含日期），作为补充
+    # 步骤 2: 从 HTML 网页获取号码，对 TXT 中的重叠期做交叉核验。
     html_data_dicts = fetch_latest_data_from_html()
+    if html_data_dicts:
+        cross_check_sources(txt_data_dicts, html_data_dicts)
     
-    # 步骤 3: 准备合并数据
-    # 创建一个以期号为键的字典，用于智能合并
-    # 优先级：TXT数据 > HTML数据，因为TXT数据包含更关键的日期信息
-    merged_data_dict = {}
-
-    # 首先添加HTML数据
-    for item in html_data_dicts:
-        merged_data_dict[item['期号']] = item
-    
-    # 然后用TXT数据覆盖或添加，TXT数据有更高优先级
-    for item in txt_data_dicts:
-        merged_data_dict[item['期号']] = item
-
-    # 将合并后的字典转换回列表
-    final_new_data = [item for item in merged_data_dict.values() if item.get('日期')]
-    
-    # 步骤 4: 更新主CSV文件
-    if not update_csv_file(CSV_FILE_PATH, final_new_data):
+    # 步骤 3: 仅使用含完整日期的 TXT 权威数据更新主 CSV。
+    if not update_csv_file(CSV_FILE_PATH, txt_data_dicts):
         raise SystemExit(1)
 
     logger.info("--- 双色球数据处理任务完成 ---")

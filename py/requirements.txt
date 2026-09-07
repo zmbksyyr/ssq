@@ -1,8 +1,7 @@
-pandas
-numpy 
-lightgbm 
-joblib 
-tqdm 
-scikit-learn
-requests
-beautifulsoup4
+pandas>=2.2,<4
+numpy>=1.26,<3
+lightgbm>=4.5,<5
+tqdm>=4.66,<5
+scikit-learn>=1.5,<2
+requests>=2.32,<3
+beautifulsoup4>=4.12,<5
