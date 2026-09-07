@@ -14,7 +14,7 @@ import time
 import threading
 import sys
 import argparse
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable
 from ssq_core import (
     PRIZE_NAMES, PRIZE_RULES, atomic_write_text, infer_next_issue,
@@ -121,6 +121,11 @@ class BacktestResult:
     cost: int
     winnings: int
     prize_counts: Counter
+    evaluated_periods: int = 0
+    pool_red_hits: int = 0
+    ticket_red_hit_counts: Counter = field(default_factory=Counter)
+    blue_hit_periods: int = 0
+    rank_band_hits: Counter = field(default_factory=Counter)
 
     @property
     def profit(self):
@@ -129,6 +134,38 @@ class BacktestResult:
     @property
     def roi(self):
         return self.winnings / self.cost if self.cost else 0.0
+
+    @property
+    def average_pool_red_hits(self):
+        return self.pool_red_hits / self.evaluated_periods if self.evaluated_periods else 0.0
+
+    @property
+    def average_ticket_red_hits(self):
+        if not self.tickets:
+            return 0.0
+        total_hits = sum(hits * count for hits, count in self.ticket_red_hit_counts.items())
+        return total_hits / self.tickets
+
+    @property
+    def three_plus_red_tickets(self):
+        return sum(count for hits, count in self.ticket_red_hit_counts.items() if hits >= 3)
+
+    @property
+    def three_plus_red_rate(self):
+        return self.three_plus_red_tickets / self.tickets if self.tickets else 0.0
+
+    @property
+    def blue_hit_rate(self):
+        return self.blue_hit_periods / self.evaluated_periods if self.evaluated_periods else 0.0
+
+    def rank_band_rate(self, band):
+        total_actual_reds = self.evaluated_periods * 6
+        return self.rank_band_hits[band] / total_actual_reds if total_actual_reds else 0.0
+
+    def rank_band_lift(self, band):
+        band_width = len(RANK_BANDS[band]) if band in RANK_BANDS else RANK_OTHER_WIDTH
+        expected_rate = band_width / 33
+        return self.rank_band_rate(band) / expected_rate if expected_rate else 0.0
 
 
 @dataclass(frozen=True)
@@ -449,6 +486,30 @@ def run_strategy_and_get_scores(df_history, params, ml_models_red, ml_models_blu
 
 # 预计算1-33中的质数，避免在函数内重复计算
 PRIMES_IN_33 = {2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31}
+RANK_BANDS = {
+    "high": range(1, RED_HIGH_COUNT + 1),
+    "middle": range(13, 22),
+    "low": range(34 - RED_LOW_COUNT, 34),
+}
+RANK_OTHER_WIDTH = 33 - sum(len(ranks) for ranks in RANK_BANDS.values())
+
+
+def count_actual_reds_by_rank_band(red_scores, actual_reds):
+    """Count actual red balls by their model-score rank band."""
+    ranked = [
+        ball for ball, _ in sorted(
+            red_scores.items(), key=lambda item: (-item[1], item[0])
+        )
+    ]
+    rank_by_ball = {ball: rank for rank, ball in enumerate(ranked, 1)}
+    counts = Counter({"high": 0, "middle": 0, "low": 0, "other": 0})
+    for ball in actual_reds:
+        rank = rank_by_ball[ball]
+        band = next((name for name, ranks in RANK_BANDS.items() if rank in ranks), "other")
+        counts[band] += 1
+    return counts
+
+
 def build_red_pool(red_scores, config=StrategyConfig(), mode="mixed"):
     """Build a red pool from one score band or a high/middle/low mixture."""
     ranked = [ball for ball, _ in sorted(red_scores.items(), key=lambda item: (-item[1], item[0]))]
@@ -919,7 +980,9 @@ def run_full_backtest(full_df, params, feature_columns, num_periods, pool_modes=
     # 初始化统计变量
     metrics = {
         mode: {"prize_counts": Counter(), "cost": 0, "winnings": 0,
-               "active_periods": 0, "tickets": 0}
+               "active_periods": 0, "evaluated_periods": 0, "tickets": 0,
+               "pool_red_hits": 0, "ticket_red_hit_counts": Counter(),
+               "blue_hit_periods": 0, "rank_band_hits": Counter()}
         for mode in pool_modes
     }
     
@@ -955,6 +1018,7 @@ def run_full_backtest(full_df, params, feature_columns, num_periods, pool_modes=
             
             # 在回测中，我们假设每期只追评分最高的那个蓝球
             recommended_blue = sorted(blue_scores, key=blue_scores.get, reverse=True)[0]
+            rank_band_hits = count_actual_reds_by_rank_band(red_scores, actual_red_set)
             
             # --- 在回测的每一步都重新应用完整的过滤流程 ---
             rejection_set = make_rejection_set(REJECTION_LIB_SIZE, random.Random(RANDOM_SEED + i))
@@ -964,6 +1028,12 @@ def run_full_backtest(full_df, params, feature_columns, num_periods, pool_modes=
             
             for mode in pool_modes:
                 red_pool = build_red_pool(red_scores, mode=mode)
+                current = metrics[mode]
+                current["evaluated_periods"] += 1
+                current["pool_red_hits"] += len(set(red_pool) & actual_red_set)
+                current["rank_band_hits"].update(rank_band_hits)
+                if recommended_blue == actual_blue:
+                    current["blue_hit_periods"] += 1
                 passed_combos = [
                     combo for combo in combinations(sorted(red_pool), 6)
                     if passes_red_filters(combo, omission, last_10, last_1, last_2, rejection_set)
@@ -973,13 +1043,14 @@ def run_full_backtest(full_df, params, feature_columns, num_periods, pool_modes=
                 selected_combos = select_recommendations(
                     passed_combos, red_scores, last_1, last_2
                 )
-                current = metrics[mode]
                 current["active_periods"] += 1
                 current["tickets"] += len(selected_combos)
                 current["cost"] += len(selected_combos) * 2
                 for combo in selected_combos:
+                    red_hits = len(set(combo) & actual_red_set)
+                    current["ticket_red_hit_counts"][red_hits] += 1
                     hit_key = (
-                        len(set(combo) & actual_red_set),
+                        red_hits,
                         1 if recommended_blue == actual_blue else 0,
                     )
                     prize = PRIZE_RULES.get(hit_key, 0)
@@ -993,7 +1064,12 @@ def run_full_backtest(full_df, params, feature_columns, num_periods, pool_modes=
         mode: BacktestResult(
             periods=len(backtest_range), active_periods=value["active_periods"],
             tickets=value["tickets"], cost=value["cost"], winnings=value["winnings"],
-            prize_counts=value["prize_counts"]
+            prize_counts=value["prize_counts"],
+            evaluated_periods=value["evaluated_periods"],
+            pool_red_hits=value["pool_red_hits"],
+            ticket_red_hit_counts=value["ticket_red_hit_counts"],
+            blue_hit_periods=value["blue_hit_periods"],
+            rank_band_hits=value["rank_band_hits"],
         )
         for mode, value in metrics.items()
     }
@@ -1155,8 +1231,19 @@ if __name__ == '__main__':
         f"\n单式策略滚动回测 ({backtest.periods}期，每期最多{NUM_RECOMMENDATIONS}注，不含复式):"
     )
     report_lines.append(f"  - 候选池模式: {args.pool_mode}")
+    report_lines.append(f"  - 成功建模评估期数: {backtest.evaluated_periods}")
     report_lines.append(f"  - 实际投注期数: {backtest.active_periods}")
     report_lines.append(f"  - 投注注数: {backtest.tickets}")
+    report_lines.append(f"  - 候选池平均覆盖红球: {backtest.average_pool_red_hits:.2f}/6")
+    report_lines.append(f"  - 单注平均命中红球: {backtest.average_ticket_red_hits:.3f}/6")
+    report_lines.append(
+        f"  - 命中至少3个红球: {backtest.three_plus_red_tickets} 注 "
+        f"({backtest.three_plus_red_rate:.2%})"
+    )
+    report_lines.append(
+        f"  - 最高分蓝球命中: {backtest.blue_hit_periods}/"
+        f"{backtest.evaluated_periods} ({backtest.blue_hit_rate:.2%})"
+    )
     report_lines.append(f"  - 总投入: {backtest.cost:.2f} 元")
     report_lines.append(f"  - 总奖金: {backtest.winnings:.2f} 元")
     report_lines.append(f"  - 净收益: {backtest.profit:.2f} 元")
@@ -1166,8 +1253,21 @@ if __name__ == '__main__':
         for name, result in backtests.items():
             report_lines.append(
                 f"    {name:<6} 投入 {result.cost:>6.0f} 元，奖金 {result.winnings:>6.0f} 元，"
-                f"净收益 {result.profit:>7.0f} 元，回报率 {result.roi:>7.2%}"
+                f"净收益 {result.profit:>7.0f} 元，回报率 {result.roi:>7.2%}，"
+                f"池覆盖 {result.average_pool_red_hits:.2f}/6，"
+                f"单注红球 {result.average_ticket_red_hits:.3f}/6，3+红 {result.three_plus_red_rate:.2%}"
             )
+    report_lines.append("  - 实际红球在模型评分排名中的分布:")
+    for band, label in (
+        ("high", "高端(1-4)"), ("middle", "中段(13-21)"),
+        ("low", "低端(30-33)"), ("other", "其他"),
+    ):
+        band_width = len(RANK_BANDS[band]) if band in RANK_BANDS else RANK_OTHER_WIDTH
+        report_lines.append(
+            f"    {label:<13}: {backtest.rank_band_hits[band]:>3} 个 "
+            f"(占比 {backtest.rank_band_rate(band):.2%}，"
+            f"随机基线 {band_width / 33:.2%}，相对 {backtest.rank_band_lift(band):.2f}x)"
+        )
     report_lines.append("中奖详情如下：")
     aggregated_counts = {name: 0 for name in set(PRIZE_NAMES.values())}
     for (red, blue), count in backtest.prize_counts.items():

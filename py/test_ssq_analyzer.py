@@ -3,6 +3,7 @@ import sys
 import unittest
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -122,9 +123,66 @@ class AnalyzerTests(unittest.TestCase):
     self.assertEqual(ranked[0], ((2, 3, 4, 5, 6, 7, 8), 7))
 
   def test_backtest_result_metrics(self):
-    result = analyzer.BacktestResult(50, 50, 500, 1000, 280, {})
-    self.assertEqual(result.profit, -720)
-    self.assertEqual(result.roi, 0.28)
+    result = analyzer.BacktestResult(
+        50, 48, 480, 960, 280, {}, evaluated_periods=50,
+        pool_red_hits=155, ticket_red_hit_counts=analyzer.Counter({2: 360, 3: 100, 4: 20}),
+        blue_hit_periods=4,
+        rank_band_hits=analyzer.Counter({"high": 30, "middle": 100, "low": 20, "other": 150}),
+    )
+    self.assertEqual(result.profit, -680)
+    self.assertAlmostEqual(result.roi, 280 / 960)
+    self.assertEqual(result.average_pool_red_hits, 3.1)
+    self.assertAlmostEqual(result.average_ticket_red_hits, 2.2916666667)
+    self.assertEqual(result.three_plus_red_tickets, 120)
+    self.assertEqual(result.three_plus_red_rate, 0.25)
+    self.assertEqual(result.blue_hit_rate, 0.08)
+    self.assertEqual(result.rank_band_rate("middle"), 1 / 3)
+    self.assertAlmostEqual(result.rank_band_lift("middle"), 11 / 9)
+
+  def test_actual_red_rank_bands_include_unselected_ranks(self):
+    scores = {ball: float(34 - ball) for ball in range(1, 34)}
+    counts = analyzer.count_actual_reds_by_rank_band(scores, {1, 4, 13, 21, 30, 22})
+    self.assertEqual(
+        counts,
+        {"high": 2, "middle": 2, "low": 1, "other": 1},
+    )
+    self.assertEqual(sum(counts.values()), 6)
+
+  def test_backtest_tracks_evaluation_and_hit_quality(self):
+    frame = pd.DataFrame({
+        "红球": [[7, 8, 9, 10, 11, 12] for _ in range(50)]
+                + [[1, 13, 22, 30, 32, 33]],
+        "蓝球": [1 for _ in range(50)] + [7],
+    })
+    red_scores = {ball: float(34 - ball) for ball in range(1, 34)}
+    blue_scores = {ball: float(ball == 7) for ball in range(1, 17)}
+    red_models = {ball: object() for ball in range(1, 34)}
+    blue_models = {ball: object() for ball in range(1, 17)}
+
+    with (
+        patch.object(analyzer, "train_prediction_models", return_value=(red_models, blue_models)),
+        patch.object(
+            analyzer, "run_strategy_and_get_scores", return_value=(red_scores, blue_scores)
+        ),
+        patch.object(analyzer, "make_rejection_set", return_value=set()),
+        patch.object(analyzer, "get_omission", return_value={}),
+        patch.object(analyzer, "build_red_pool", return_value=[1, 2, 3, 4, 13, 14]),
+        patch.object(analyzer, "passes_red_filters", return_value=True),
+    ):
+      result = analyzer.run_full_backtest(
+          frame, analyzer.DEFAULT_PARAMS, [], 1
+      )["mixed"]
+
+    self.assertEqual(result.periods, 1)
+    self.assertEqual(result.evaluated_periods, 1)
+    self.assertEqual(result.active_periods, 1)
+    self.assertEqual(result.pool_red_hits, 2)
+    self.assertEqual(result.ticket_red_hit_counts, {2: 1})
+    self.assertEqual(result.blue_hit_periods, 1)
+    self.assertEqual(
+        result.rank_band_hits,
+        {"high": 1, "middle": 1, "low": 3, "other": 1},
+    )
 
   def test_red_score_adjustments_restore_original_bonuses(self):
     history = pd.DataFrame({'红球': [
