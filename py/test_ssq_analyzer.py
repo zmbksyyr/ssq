@@ -755,6 +755,32 @@ class AnalyzerTests(unittest.TestCase):
     self.assertEqual(aggregate.windows['earlier'].average_pool_red_hits, 3)
     self.assertEqual(aggregate.windows['recent'].average_pool_red_hits, 4)
 
+  def test_backtest_result_is_a_snapshot_of_accumulated_metrics(self):
+    accumulator = backtesting.BacktestAccumulator(
+        prize_counts=Counter({(3, 1): 1}),
+        ticket_red_hit_counts=Counter({3: 2}),
+        candidate_red_hit_counts=Counter({2: 4}),
+        rank_band_hits=Counter({'middle': 3}),
+    )
+    windows = {'earlier': backtesting.BacktestResult(
+        1, 0, 0, 0, 0, Counter()
+    )}
+    result = accumulator.to_result(1, windows)
+
+    accumulator.prize_counts[(3, 1)] += 1
+    accumulator.ticket_red_hit_counts[3] += 1
+    accumulator.candidate_red_hit_counts[2] += 1
+    accumulator.rank_band_hits['middle'] += 1
+    accumulator.rank_band_widths['middle'] = 99
+    windows.clear()
+
+    self.assertEqual(result.prize_counts, {(3, 1): 1})
+    self.assertEqual(result.ticket_red_hit_counts, {3: 2})
+    self.assertEqual(result.candidate_red_hit_counts, {2: 4})
+    self.assertEqual(result.rank_band_hits, {'middle': 3})
+    self.assertEqual(result.rank_band_widths['middle'], 9)
+    self.assertIn('earlier', result.windows)
+
   def test_full_backtest_aggregate_equals_sum_of_stability_windows(self):
     frame = pd.DataFrame({
         '期号': list(range(2025001, 2025053)),

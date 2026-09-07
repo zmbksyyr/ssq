@@ -148,16 +148,16 @@ class BacktestAccumulator:
             tickets=self.tickets,
             cost=self.cost,
             winnings=self.winnings,
-            prize_counts=self.prize_counts,
+            prize_counts=Counter(self.prize_counts),
             evaluated_periods=self.evaluated_periods,
             pool_red_hits=self.pool_red_hits,
-            ticket_red_hit_counts=self.ticket_red_hit_counts,
+            ticket_red_hit_counts=Counter(self.ticket_red_hit_counts),
             candidate_tickets=self.candidate_tickets,
-            candidate_red_hit_counts=self.candidate_red_hit_counts,
+            candidate_red_hit_counts=Counter(self.candidate_red_hit_counts),
             blue_hit_periods=self.blue_hit_periods,
-            rank_band_hits=self.rank_band_hits,
-            rank_band_widths=self.rank_band_widths,
-            windows=windows or {},
+            rank_band_hits=Counter(self.rank_band_hits),
+            rank_band_widths=self.rank_band_widths.copy(),
+            windows=dict(windows or {}),
         )
 
 
