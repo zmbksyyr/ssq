@@ -5,45 +5,22 @@ import tempfile
 from datetime import date, datetime, timedelta
 from math import isfinite
 from numbers import Integral, Real
-from zoneinfo import ZoneInfo
 
-RED_MIN = 1
-RED_MAX = 33
-BLUE_MIN = 1
-BLUE_MAX = 16
-RED_COUNT = 6
-RED_BALLS = tuple(range(RED_MIN, RED_MAX + 1))
-BLUE_BALLS = tuple(range(BLUE_MIN, BLUE_MAX + 1))
-PRIME_RED_BALLS = frozenset({2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31})
-DRAW_COLUMNS = ('期号', '日期', '红球', '蓝球')
-DRAW_WEEKDAYS = {1, 3, 6}  # Tuesday, Thursday, Sunday
-LOCAL_TIMEZONE = ZoneInfo('Asia/Shanghai')
+import ssq_domain as _domain
 
-PRIZE_RULES = {
-    (6, 1): 5_000_000,
-    (6, 0): 100_000,
-    (5, 1): 3_000,
-    (5, 0): 200,
-    (4, 1): 200,
-    (4, 0): 10,
-    (3, 1): 10,
-    (2, 1): 5,
-    (1, 1): 5,
-    (0, 1): 5,
-}
-
-PRIZE_NAMES = {
-    (6, 1): "一等奖",
-    (6, 0): "二等奖",
-    (5, 1): "三等奖",
-    (5, 0): "四等奖",
-    (4, 1): "四等奖",
-    (4, 0): "五等奖",
-    (3, 1): "五等奖",
-    (2, 1): "六等奖",
-    (1, 1): "六等奖",
-    (0, 1): "六等奖",
-}
+RED_MIN = _domain.RED_MIN
+RED_MAX = _domain.RED_MAX
+BLUE_MIN = _domain.BLUE_MIN
+BLUE_MAX = _domain.BLUE_MAX
+RED_COUNT = _domain.RED_COUNT
+RED_BALLS = _domain.RED_BALLS
+BLUE_BALLS = _domain.BLUE_BALLS
+PRIME_RED_BALLS = _domain.PRIME_RED_BALLS
+DRAW_COLUMNS = _domain.DRAW_COLUMNS
+DRAW_WEEKDAYS = _domain.DRAW_WEEKDAYS
+LOCAL_TIMEZONE = _domain.LOCAL_TIMEZONE
+PRIZE_RULES = _domain.PRIZE_RULES
+PRIZE_NAMES = _domain.PRIZE_NAMES
 
 
 def parse_integer(value, field_name):
