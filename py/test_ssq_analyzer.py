@@ -1,3 +1,4 @@
+import inspect
 import io
 import json
 import random
@@ -74,6 +75,10 @@ class AnalyzerTests(unittest.TestCase):
     self.assertIs(analyzer.StrategyConfig, config.StrategyConfig)
     self.assertIs(analyzer.parse_cli_options, config.parse_cli_options)
     self.assertEqual(analyzer.DEFAULT_PARAMS, config.DEFAULT_PARAMS)
+    self.assertEqual(
+        inspect.signature(rules.select_recommendations).parameters['limit'].default,
+        config.NUM_RECOMMENDATIONS,
+    )
 
   def test_analyzer_reexports_modeling_functions(self):
     self.assertIs(analyzer.feature_engineer, modeling.feature_engineer)
