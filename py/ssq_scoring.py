@@ -1,40 +1,13 @@
 """Frequency, omission, and model-signal fusion for lottery balls."""
 
-from collections import Counter
-
 import numpy as np
 from ssq_config import validate_strategy_params
 from ssq_domain import BLUE_BALLS, RED_BALLS
 from ssq_features import validate_feature_columns
 from ssq_parsing import validate_ball_scores
+from ssq_score_adjustments import apply_red_score_adjustments
 from ssq_score_signals import get_omission, get_weighted_frequency
 from ssq_training import predict_positive_probability, validate_model_sets
-
-
-def apply_red_score_adjustments(red_scores, df_history, params):
-    """Apply the hot, cold, and previous-draw bonuses."""
-    adjusted = dict(red_scores)
-    hot_lookback = int(params.get('hot_lookback', 0))
-    hot_threshold = int(params.get('hot_threshold', 0))
-    if hot_lookback > 0 and hot_threshold > 0:
-        recent = df_history.tail(hot_lookback)['红球']
-        hot_counts = Counter(ball for draw in recent for ball in draw)
-        for ball, count in hot_counts.items():
-            if count >= hot_threshold:
-                adjusted[ball] *= params.get('hot_bonus', 1.0)
-
-    cold_lookback = int(params.get('cold_lookback', 0))
-    if cold_lookback > 0:
-        recent_numbers = {
-            ball for draw in df_history.tail(cold_lookback)['红球'] for ball in draw
-        }
-        for ball in set(RED_BALLS) - recent_numbers:
-            adjusted[ball] *= params.get('cold_bonus', 1.0)
-
-    if not df_history.empty:
-        for ball in df_history.iloc[-1]['红球']:
-            adjusted[ball] *= params.get('repeat_bonus', 1.0)
-    return adjusted
 
 
 def run_strategy_and_get_scores(
