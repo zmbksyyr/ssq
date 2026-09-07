@@ -1,6 +1,10 @@
 """Command-line entry point and compatibility facade for prize checking."""
 
-from ssq_bonus_reporting import build_bonus_report  # noqa: F401
+from ssq_bonus_reporting import (  # noqa: F401
+    BonusReportData,
+    build_bonus_report,
+    format_bonus_report,
+)
 from ssq_bonus_workflow import (  # noqa: F401
     CSV_PATH,
     PROJECT_ROOT,

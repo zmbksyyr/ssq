@@ -5,7 +5,7 @@ import os
 import re
 
 import pandas as pd
-from ssq_bonus_reporting import build_bonus_report
+from ssq_bonus_reporting import BonusReportData, format_bonus_report
 from ssq_core import atomic_write_text, local_now, parse_issue
 from ssq_draw_data import normalize_draw_frame, validate_draw_dates_not_future
 from ssq_prizes import parse_report_bets
@@ -86,15 +86,15 @@ def run_bonus_check(
         raise SystemExit(f'错误: 未能从报告 {report_filepath} 中成功解析出投注号码。')
 
     generated_at = generated_at or local_now()
-    report = build_bonus_report(
-        report_filepath,
-        target_issue,
-        latest_draw['red'],
-        latest_draw['blue'],
-        single_bets,
-        duplex_bet,
-        generated_at,
-    )
+    report = format_bonus_report(BonusReportData(
+        report_filepath=report_filepath,
+        target_issue=target_issue,
+        winning_reds=latest_draw['red'],
+        winning_blue=latest_draw['blue'],
+        single_bets=single_bets,
+        duplex_bet=duplex_bet,
+        generated_at=generated_at,
+    ))
     print('\n' + report)
 
     timestamp = generated_at.strftime('%Y%m%d_%H%M%S')

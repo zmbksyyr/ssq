@@ -11,6 +11,35 @@ from ssq_core import LOCAL_TIMEZONE
 
 
 class BonusCalculationTests(unittest.TestCase):
+    def test_legacy_bonus_report_api_builds_complete_data_object(self):
+        generated_at = datetime(2026, 1, 2, 3, 4, 5, tzinfo=LOCAL_TIMEZONE)
+        singles = [{'red': [1, 2, 3, 4, 5, 6], 'blue': 7}]
+        duplex = {'red': [1, 2, 3, 4, 5, 6, 7], 'blue': [7]}
+        with patch(
+            'ssq_bonus_reporting.format_bonus_report',
+            return_value='report',
+        ) as format_report:
+            result = bonus.build_bonus_report(
+                'analysis.txt',
+                2026001,
+                {1, 2, 3, 4, 5, 6},
+                7,
+                singles,
+                duplex,
+                generated_at,
+            )
+
+        self.assertEqual(result, 'report')
+        data = format_report.call_args.args[0]
+        self.assertIsInstance(data, bonus.BonusReportData)
+        self.assertEqual(data.report_filepath, 'analysis.txt')
+        self.assertEqual(data.target_issue, 2026001)
+        self.assertEqual(data.winning_reds, {1, 2, 3, 4, 5, 6})
+        self.assertEqual(data.winning_blue, 7)
+        self.assertIs(data.single_bets, singles)
+        self.assertIs(data.duplex_bet, duplex)
+        self.assertIs(data.generated_at, generated_at)
+
     def test_latest_draw_is_selected_by_validated_issue(self):
         content = (
             '期号,日期,红球,蓝球\n'
