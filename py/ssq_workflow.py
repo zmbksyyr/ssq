@@ -7,6 +7,7 @@ import ssq_prediction_workflow as _prediction_workflow
 import ssq_report_output as _report_output
 import ssq_strategy_params as _strategy_params
 import ssq_workflow_models as _workflow_models
+from ssq_analysis_result import build_analysis_report_data
 from ssq_anti_crowding import make_rejection_set, rejection_seed_for_issue
 from ssq_backtest_runner import run_backtest
 from ssq_candidates import generate_candidates
@@ -31,9 +32,7 @@ from ssq_draw_schedule import infer_next_issue, local_now
 from ssq_duplex import rank_duplex_candidates
 from ssq_features import feature_engineer
 from ssq_file_io import atomic_write_text
-from ssq_rank_bands import build_rank_band_labels, build_rank_band_widths
 from ssq_report_builder import build_analysis_report
-from ssq_report_models import AnalysisReportData
 from ssq_rule_auditing import (
     audit_historical_hard_pipeline,
     audit_historical_rule_coverage,
@@ -162,8 +161,6 @@ def save_analysis_report(data):
 
 def run_analysis(options):
     """Execute one complete analysis run and return the saved report path."""
-    config = options.strategy_config
-
     print('=' * 70)
     print('         双色球策略分析器 v7.0')
     print('=' * 70)
@@ -202,30 +199,15 @@ def run_analysis(options):
 
     print('\n[阶段 8/8] 正在生成最终推荐报告...')
     generated_at = local_now()
-    report_data = AnalysisReportData(
-        latest_issue=history.latest_issue,
-        target_issue=history.target_issue,
-        generated_at=generated_at,
-        params_loaded=evaluation.loaded_params.loaded_from_file,
-        params=evaluation.loaded_params.values,
-        config=config,
-        rejection_seed=current.rejection_seed,
-        backtest=evaluation.selected_backtest,
-        backtests=evaluation.backtests,
-        pool_mode=options.pool_mode,
-        rank_band_widths=build_rank_band_widths(config),
-        rank_band_labels=build_rank_band_labels(config),
-        pipeline_stats=current.pipeline_stats,
-        rule_coverage=evaluation.rule_coverage,
-        hard_pipeline_coverage=evaluation.hard_pipeline_coverage,
-        rule_audit_periods=options.rule_audit_periods,
-        selection=current.candidate_selection,
-        recommended_blues=current.recommended_blues,
-        best_7_reds=best_7_reds,
-        runtime_versions=collect_runtime_versions(),
-        history_sha256=history.sha256,
-        model_features=history.feature_columns,
-        model_training_params=MODEL_TRAINING_PARAMS,
+    report_data = build_analysis_report_data(
+        history,
+        evaluation,
+        current,
+        options,
+        best_7_reds,
+        generated_at,
+        collect_runtime_versions(),
+        MODEL_TRAINING_PARAMS,
     )
     return save_analysis_report(report_data)
 
