@@ -1,3 +1,4 @@
+import ast
 import sys
 import unittest
 from pathlib import Path
@@ -9,6 +10,25 @@ from ssq_domain import PRIZE_NAMES, PRIZE_RULES
 
 
 class PrizeCalculationTests(unittest.TestCase):
+    def test_runtime_modules_do_not_depend_on_prizes_compatibility_facade(self):
+        module_dir = Path(__file__).parent
+        offenders = []
+        for path in module_dir.glob('ssq_*.py'):
+            if path.name == 'ssq_prizes.py':
+                continue
+            tree = ast.parse(path.read_text(encoding='utf-8'))
+            if any(
+                isinstance(node, (ast.Import, ast.ImportFrom))
+                and (
+                    getattr(node, 'module', None) == 'ssq_prizes'
+                    or any(alias.name == 'ssq_prizes' for alias in node.names)
+                )
+                for node in ast.walk(tree)
+            ):
+                offenders.append(path.name)
+
+        self.assertEqual(offenders, [])
+
     def test_prizes_preserves_calculator_compatibility_exports(self):
         self.assertIs(
             prizes.calculate_single_prize,

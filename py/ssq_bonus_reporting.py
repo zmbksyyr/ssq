@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from ssq_domain import PRIZE_NAMES
-from ssq_prizes import calculate_duplex_prize, calculate_single_prize
+from ssq_prize_calculation import calculate_duplex_prize, calculate_single_prize
 
 
 @dataclass(frozen=True)

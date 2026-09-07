@@ -8,11 +8,11 @@ from typing import Any
 import ssq_latest_draw as _latest_draw
 import ssq_report_discovery as _report_discovery
 from pandas.errors import ParserError
+from ssq_bet_parsing import parse_report_bets
 from ssq_bonus_reporting import BonusReportData, format_bonus_report
 from ssq_draw_data import normalize_draw_frame, validate_draw_dates_not_future
 from ssq_draw_schedule import local_now
 from ssq_file_io import atomic_write_text
-from ssq_prizes import parse_report_bets
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
