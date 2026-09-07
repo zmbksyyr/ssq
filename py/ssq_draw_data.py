@@ -1,5 +1,6 @@
 """Shared validation and normalization for lottery draw tables."""
 
+import hashlib
 from itertools import pairwise
 
 import pandas as pd
@@ -87,3 +88,12 @@ def serialize_draw_frame(frame):
     )
     serialized['蓝球'] = serialized['蓝球'].apply(lambda number: f'{number:02d}')
     return serialized
+
+
+def fingerprint_draw_frame(frame):
+    """Return a stable fingerprint of normalized, serialized draw history."""
+    canonical_csv = serialize_draw_frame(frame).to_csv(
+        index=False,
+        lineterminator='\n',
+    )
+    return hashlib.sha256(canonical_csv.encode('utf-8')).hexdigest()

@@ -26,7 +26,11 @@ from ssq_core import (
     infer_next_issue,
     local_now,
 )
-from ssq_draw_data import normalize_draw_frame, validate_draw_dates_not_future
+from ssq_draw_data import (
+    fingerprint_draw_frame,
+    normalize_draw_frame,
+    validate_draw_dates_not_future,
+)
 from ssq_modeling import (
     FEATURE_COLUMNS,
     feature_engineer,
@@ -140,6 +144,7 @@ def run_analysis(options):
     full_df = load_and_preprocess_data()
     if full_df is None or len(full_df) < 50:
         raise SystemExit('错误: 历史数据加载失败或数据量过少（至少需要50期），程序终止。')
+    history_sha256 = fingerprint_draw_frame(full_df)
     full_df = feature_engineer(full_df)
     feature_columns = FEATURE_COLUMNS
     latest_issue = str(full_df.iloc[-1]['期号'])
@@ -285,6 +290,7 @@ def run_analysis(options):
         recommended_blues=recommended_blues,
         best_7_reds=best_7_reds,
         runtime_versions=collect_runtime_versions(),
+        history_sha256=history_sha256,
     )
     report = build_analysis_report(report_data)
     print('\n\n' + report)

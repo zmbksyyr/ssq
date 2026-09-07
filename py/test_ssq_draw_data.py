@@ -6,6 +6,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent))
 from ssq_draw_data import (
+    fingerprint_draw_frame,
     normalize_draw_frame,
     serialize_draw_frame,
     validate_draw_dates_not_future,
@@ -50,6 +51,31 @@ class DrawDataTests(unittest.TestCase):
 
         self.assertEqual(result.iloc[0]['红球'], '01,02,03,04,05,06')
         self.assertEqual(result.iloc[0]['蓝球'], '07')
+
+    def test_history_fingerprint_is_canonical_and_content_sensitive(self):
+        first = pd.DataFrame({
+            '期号': ['2026002', '2026001'],
+            '日期': ['2026-01-04', '2026-01-01'],
+            '红球': ['7,6,5,4,3,2', '6,5,4,3,2,1'],
+            '蓝球': ['08', '07'],
+        })
+        equivalent = pd.DataFrame({
+            '蓝球': [7, 8],
+            '红球': [[1, 2, 3, 4, 5, 6], [2, 3, 4, 5, 6, 7]],
+            '日期': ['2026-01-01', '2026-01-04'],
+            '期号': [2026001, 2026002],
+        })
+        changed = equivalent.copy(deep=True)
+        changed.at[1, '红球'] = [2, 3, 4, 5, 6, 8]
+
+        self.assertEqual(
+            fingerprint_draw_frame(first),
+            fingerprint_draw_frame(equivalent),
+        )
+        self.assertNotEqual(
+            fingerprint_draw_frame(equivalent),
+            fingerprint_draw_frame(changed),
+        )
 
     def test_rejects_dates_outside_the_draw_calendar(self):
         frame = pd.DataFrame([{

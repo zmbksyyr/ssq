@@ -42,6 +42,7 @@ class AnalysisReportData:
     recommended_blues: list[int]
     best_7_reds: list
     runtime_versions: dict[str, str] = field(default_factory=dict)
+    history_sha256: str = ''
 
 
 def format_backtest_report(data):
@@ -253,6 +254,8 @@ def build_analysis_report(data):
         f"Prediction_Target_Issue: {data.target_issue}",
         f"报告生成时间: {data.generated_at.strftime('%Y-%m-%d %H:%M:%S')}",
     ]
+    if data.history_sha256:
+        lines.append(f'Data_History_SHA256: {data.history_sha256}')
     for name, version in data.runtime_versions.items():
         lines.append(f'Runtime_{name}: {version}')
     lines.extend(format_backtest_report(data))

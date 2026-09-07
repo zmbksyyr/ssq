@@ -161,12 +161,14 @@ class AnalyzerTests(unittest.TestCase):
             'python': '3.11.0',
             'lightgbm': '4.7.0',
         },
+        history_sha256='a' * 64,
     )
 
     report = analyzer.build_analysis_report(data)
 
     self.assertIn('Data_Basis_Issue: 2026103', report)
     self.assertIn('报告生成时间: 2026-09-07 12:34:56', report)
+    self.assertIn(f"Data_History_SHA256: {'a' * 64}", report)
     self.assertIn('Runtime_python: 3.11.0', report)
     self.assertIn('Runtime_lightgbm: 4.7.0', report)
     self.assertIn('模式: 使用内置的默认参数', report)
