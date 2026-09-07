@@ -4,8 +4,6 @@ import json
 import os
 import platform
 import random
-import sys
-import time
 from dataclasses import dataclass
 from importlib.metadata import version
 from typing import Any
@@ -16,11 +14,18 @@ from ssq_backtesting import (
     run_backtest,
 )
 from ssq_config import (
-    COUNTDOWN_SECONDS,
-    INTERACTIVE_THRESHOLD,
     LoadedStrategyParams,
     parse_cli_options,
     validate_strategy_params,
+)
+from ssq_console import (
+    display_passed_combinations as _display_passed_combinations,
+)
+from ssq_console import (
+    get_user_input_with_timeout as _get_user_input_with_timeout,
+)
+from ssq_console import (
+    is_confirmation_input as _is_confirmation_input,
 )
 from ssq_core import (
     atomic_write_text,
@@ -56,11 +61,6 @@ from ssq_selection import (
     rank_duplex_candidates,
     rejection_seed_for_issue,
 )
-
-try:
-    import msvcrt
-except ImportError:
-    import select
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
@@ -134,37 +134,13 @@ def load_and_preprocess_data(filepath=CSV_PATH):
 
 
 def is_confirmation_input(value):
-    """Return whether terminal input explicitly confirms the prompt."""
-    if isinstance(value, bytes):
-        value = value.decode(errors='ignore')
-    return value.strip().lower() == 'y'
+    """Compatibility wrapper for terminal confirmation parsing."""
+    return _is_confirmation_input(value)
 
 
 def get_user_input_with_timeout(timeout):
-    """Wait up to ``timeout`` seconds and return whether the user confirmed."""
-    prompt = (
-        f"\n发现大量高质量组合。输入 'y' 并回车可在 {timeout} 秒内查看全部，"
-        '否则将仅输出随机推荐...\n'
-    )
-    sys.stdout.write(prompt)
-    sys.stdout.flush()
-
-    confirmed = False
-    if 'msvcrt' in sys.modules:
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            if msvcrt.kbhit() and is_confirmation_input(msvcrt.getch()):
-                confirmed = True
-                break
-            time.sleep(0.1)
-    else:
-        ready, _, _ = select.select([sys.stdin], [], [], timeout)
-        if ready:
-            confirmed = is_confirmation_input(sys.stdin.readline())
-
-    sys.stdout.write('\n倒计时结束。\n')
-    sys.stdout.flush()
-    return confirmed
+    """Compatibility wrapper for cross-platform timed input."""
+    return _get_user_input_with_timeout(timeout)
 
 
 def prepare_history():
@@ -294,22 +270,8 @@ def select_current_issue(history, options, params, models):
 
 
 def display_passed_combinations(passed_combos, non_interactive):
-    """Display candidate combinations according to the existing CLI policy."""
-    if 0 < len(passed_combos) < INTERACTIVE_THRESHOLD:
-        print(
-            f'\n通过检验的组合数量为 {len(passed_combos)} '
-            f'(低于{INTERACTIVE_THRESHOLD})，全部输出如下：'
-        )
-        for index, combo in enumerate(passed_combos, 1):
-            print(f"  组合 {index:>2}: {' '.join(f'{number:02d}' for number in combo)}")
-    elif (
-        len(passed_combos) >= INTERACTIVE_THRESHOLD
-        and not non_interactive
-        and get_user_input_with_timeout(COUNTDOWN_SECONDS)
-    ):
-        print('\n根据您的确认，输出所有通过检验的组合：')
-        for index, combo in enumerate(passed_combos, 1):
-            print(f"  组合 {index:>3}: {' '.join(f'{number:02d}' for number in combo)}")
+    """Compatibility wrapper for candidate display policy."""
+    return _display_passed_combinations(passed_combos, non_interactive)
 
 
 def save_analysis_report(data):

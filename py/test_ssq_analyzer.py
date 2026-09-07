@@ -21,6 +21,7 @@ import ssq_analyzer as analyzer
 import ssq_backtest_metrics as backtest_metrics
 import ssq_backtesting as backtesting
 import ssq_config as config
+import ssq_console as console
 import ssq_modeling as modeling
 import ssq_reporting as reporting
 import ssq_rule_auditing as auditing
@@ -389,25 +390,25 @@ class AnalyzerTests(unittest.TestCase):
 
   def test_confirmation_wait_does_not_leak_previous_result(self):
     output = io.StringIO()
-    if hasattr(workflow, 'msvcrt'):
+    if hasattr(console, 'msvcrt'):
       with (
-          patch.object(workflow.sys, 'stdout', output),
-          patch.object(workflow.msvcrt, 'kbhit', return_value=True),
-          patch.object(workflow.msvcrt, 'getch', return_value=b'y'),
+          patch.object(console.sys, 'stdout', output),
+          patch.object(console.msvcrt, 'kbhit', return_value=True),
+          patch.object(console.msvcrt, 'getch', return_value=b'y'),
       ):
         self.assertTrue(workflow.get_user_input_with_timeout(1))
-      with patch.object(workflow.sys, 'stdout', output):
+      with patch.object(console.sys, 'stdout', output):
         self.assertFalse(workflow.get_user_input_with_timeout(0))
     else:
       with (
-          patch.object(workflow.sys, 'stdout', output),
-          patch.object(workflow.sys, 'stdin', io.StringIO('y\n')),
-          patch.object(workflow.select, 'select', return_value=([object()], [], [])),
+          patch.object(console.sys, 'stdout', output),
+          patch.object(console.sys, 'stdin', io.StringIO('y\n')),
+          patch.object(console.select, 'select', return_value=([object()], [], [])),
       ):
         self.assertTrue(workflow.get_user_input_with_timeout(1))
       with (
-          patch.object(workflow.sys, 'stdout', output),
-          patch.object(workflow.select, 'select', return_value=([], [], [])),
+          patch.object(console.sys, 'stdout', output),
+          patch.object(console.select, 'select', return_value=([], [], [])),
       ):
         self.assertFalse(workflow.get_user_input_with_timeout(0))
 
