@@ -683,6 +683,21 @@ class AnalyzerTests(unittest.TestCase):
     self.assertEqual(result.rank_band_rate("middle"), 1 / 3)
     self.assertAlmostEqual(result.rank_band_lift("middle"), 11 / 9)
 
+  def test_backtest_result_preserves_earlier_and_recent_windows(self):
+    earlier = backtesting.BacktestResult(
+        2, 2, 20, 40, 0, Counter(), evaluated_periods=2, pool_red_hits=6
+    )
+    recent = backtesting.BacktestResult(
+        3, 3, 30, 60, 0, Counter(), evaluated_periods=3, pool_red_hits=12
+    )
+    aggregate = backtesting.BacktestAccumulator(
+        evaluated_periods=5,
+        pool_red_hits=18,
+    ).to_result(5, {'earlier': earlier, 'recent': recent})
+
+    self.assertEqual(aggregate.windows['earlier'].average_pool_red_hits, 3)
+    self.assertEqual(aggregate.windows['recent'].average_pool_red_hits, 4)
+
   def test_actual_red_rank_bands_include_unselected_ranks(self):
     scores = {ball: float(34 - ball) for ball in range(1, 34)}
     counts = selection.count_actual_reds_by_rank_band(

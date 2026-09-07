@@ -5,7 +5,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 
 from ssq_config import DEFAULT_STRATEGY_CONFIG, RULE_AUDIT_PERIODS
-from ssq_core import PRIZE_RULES
+from ssq_core import BLUE_BALLS, PRIZE_RULES, RED_BALLS
 from ssq_modeling import (
     get_omission,
     run_strategy_and_get_scores,
@@ -41,6 +41,7 @@ class BacktestResult:
     rank_band_widths: dict[str, int] = field(
         default_factory=lambda: RANK_BAND_WIDTHS.copy()
     )
+    windows: dict[str, 'BacktestResult'] = field(default_factory=dict)
 
     @property
     def profit(self):
@@ -140,7 +141,7 @@ class BacktestAccumulator:
         default_factory=lambda: RANK_BAND_WIDTHS.copy()
     )
 
-    def to_result(self, periods):
+    def to_result(self, periods, windows=None):
         return BacktestResult(
             periods=periods,
             active_periods=self.active_periods,
@@ -156,6 +157,7 @@ class BacktestAccumulator:
             blue_hit_periods=self.blue_hit_periods,
             rank_band_hits=self.rank_band_hits,
             rank_band_widths=self.rank_band_widths,
+            windows=windows or {},
         )
 
 
@@ -256,6 +258,7 @@ def evaluate_backtest_mode(
     context,
     rejection_set,
     config,
+    additional_accumulators=(),
 ):
     """Evaluate one pool mode for one historical issue."""
     selection = generate_red_candidates(
@@ -265,6 +268,30 @@ def evaluate_backtest_mode(
         config=config,
         mode=mode,
     )
+    red_hits_by_combo = None
+    for accumulator in (current, *additional_accumulators):
+        red_hits_by_combo = record_backtest_selection(
+            accumulator,
+            selection,
+            actual_red_set,
+            actual_blue,
+            recommended_blue,
+            rank_band_hits,
+            red_hits_by_combo,
+        )
+    return selection
+
+
+def record_backtest_selection(
+    current,
+    selection,
+    actual_red_set,
+    actual_blue,
+    recommended_blue,
+    rank_band_hits,
+    red_hits_by_combo=None,
+):
+    """Accumulate one already-generated selection into a result window."""
     current.evaluated_periods += 1
     current.pool_red_hits += len(set(selection.red_pool) & actual_red_set)
     current.rank_band_hits.update(rank_band_hits)
@@ -272,12 +299,13 @@ def evaluate_backtest_mode(
         current.blue_hit_periods += 1
 
     if not selection.passed_combos:
-        return
+        return {}
 
-    red_hits_by_combo = {
-        combo: len(set(combo) & actual_red_set)
-        for combo in selection.passed_combos
-    }
+    if red_hits_by_combo is None:
+        red_hits_by_combo = {
+            combo: len(set(combo) & actual_red_set)
+            for combo in selection.passed_combos
+        }
     current.candidate_tickets += len(selection.passed_combos)
     current.candidate_red_hit_counts.update(red_hits_by_combo.values())
     current.active_periods += 1
@@ -292,6 +320,7 @@ def evaluate_backtest_mode(
         if prize > 0:
             current.winnings += prize
             current.prize_counts[hit_key] += 1
+    return red_hits_by_combo
 
 
 def run_full_backtest(
@@ -323,10 +352,22 @@ def run_full_backtest(
         mode: BacktestAccumulator(rank_band_widths=rank_band_widths.copy())
         for mode in pool_modes
     }
+    window_metrics = {
+        name: {
+            mode: BacktestAccumulator(rank_band_widths=rank_band_widths.copy())
+            for mode in pool_modes
+        }
+        for name in ('earlier', 'recent')
+    }
     backtest_range = range(len(full_df) - num_periods, len(full_df))
+    split_offset = len(backtest_range) // 2
+    window_periods = {
+        'earlier': split_offset,
+        'recent': len(backtest_range) - split_offset,
+    }
 
     with tqdm(total=len(backtest_range), desc='执行严谨回测', ncols=80) as progress:
-        for index in backtest_range:
+        for offset, index in enumerate(backtest_range):
             history = full_df.iloc[:index]
             actual_draw = full_df.iloc[index]
             actual_red_set = set(actual_draw['红球'])
@@ -341,7 +382,10 @@ def run_full_backtest(
                 training_data,
                 feature_columns,
             )
-            if len(red_models) != 33 or len(blue_models) != 16:
+            if (
+                len(red_models) != len(RED_BALLS)
+                or len(blue_models) != len(BLUE_BALLS)
+            ):
                 progress.update(1)
                 continue
 
@@ -367,6 +411,7 @@ def run_full_backtest(
                 random.Random(rejection_seed),
             )
             context = historical_rule_context(full_df, index)
+            window_name = 'earlier' if offset < split_offset else 'recent'
 
             for mode in pool_modes:
                 evaluate_backtest_mode(
@@ -380,11 +425,20 @@ def run_full_backtest(
                     context,
                     rejection_set,
                     config,
+                    additional_accumulators=(
+                        window_metrics[window_name][mode],
+                    ),
                 )
             progress.update(1)
 
     print('回测完成。\n')
     return {
-        mode: value.to_result(len(backtest_range))
+        mode: value.to_result(len(backtest_range), windows=(
+            {
+                name: window_metrics[name][mode].to_result(window_periods[name])
+                for name in ('earlier', 'recent')
+            }
+            if len(backtest_range) >= 2 else {}
+        ))
         for mode, value in metrics.items()
     }

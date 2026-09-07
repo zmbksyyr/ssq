@@ -8,6 +8,7 @@ from ssq_backtesting import (  # noqa: F401 - compatibility exports
     audit_historical_rule_coverage,
     evaluate_backtest_mode,
     historical_rule_context,
+    record_backtest_selection,
     run_full_backtest,
 )
 from ssq_config import (  # noqa: F401 - compatibility exports

@@ -92,6 +92,26 @@ def format_backtest_report(data):
                 f"3+红 {result.three_plus_red_rate:.2%} "
                 f"({result.ranking_three_plus_delta:+.2%})"
             )
+    if backtest.windows:
+        earlier_periods = backtest.windows['earlier'].periods
+        recent_periods = backtest.windows['recent'].periods
+        lines.append(
+            f"  - 候选池分段稳定性 (较早{earlier_periods}期 / "
+            f"最近{recent_periods}期验证):"
+        )
+        for name, result in data.backtests.items():
+            earlier = result.windows['earlier']
+            recent = result.windows['recent']
+            lines.append(
+                f"    {name:<6} 池覆盖 {earlier.average_pool_red_hits:.2f} -> "
+                f"{recent.average_pool_red_hits:.2f}/6，单注红球 "
+                f"{earlier.average_ticket_red_hits:.3f} -> "
+                f"{recent.average_ticket_red_hits:.3f}/6，3+红 "
+                f"{earlier.three_plus_red_rate:.2%} -> "
+                f"{recent.three_plus_red_rate:.2%}，排序增益 "
+                f"{earlier.ranking_red_hit_delta:+.3f} -> "
+                f"{recent.ranking_red_hit_delta:+.3f}"
+            )
     lines.append("  - 实际红球在模型评分排名中的分布:")
     total_rank_width = sum(data.rank_band_widths.values())
     for band in RANK_BAND_NAMES:
