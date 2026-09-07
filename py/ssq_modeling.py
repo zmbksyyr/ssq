@@ -9,6 +9,27 @@ import pandas as pd
 from ssq_core import BLUE_BALLS, PRIME_RED_BALLS, RED_BALLS
 from tqdm import tqdm
 
+FEATURE_COLUMNS = (
+    'red_sum',
+    'red_span',
+    'odd_count',
+    'blue_lag1',
+    'red_zone_small',
+    'red_zone_medium',
+    'red_zone_large',
+    'red_big_count',
+    'red_prime_count',
+    'red_sum_tail',
+    'red_consecutive_groups',
+    'red_ac_value',
+    'red_tail_uniques',
+    'red_sum_lag1',
+    'odd_count_lag1',
+    'red_sum_ma5',
+    'odd_count_ma5',
+    'blue_ma5',
+)
+
 
 def _count_consecutive_groups(numbers):
     groups = 0
@@ -24,7 +45,7 @@ def _count_consecutive_groups(numbers):
 
 
 def feature_engineer(df):
-    """Return a copy of draw history with the model's 18 input features."""
+    """Return a copy of draw history with the declared model input features."""
     df = df.copy()
     df['red_sum'] = df['红球'].apply(sum)
     df['red_span'] = df['红球'].apply(lambda numbers: max(numbers) - min(numbers))
@@ -65,6 +86,25 @@ def feature_engineer(df):
     df['odd_count_ma5'] = df['odd_count'].shift(1).rolling(window=window_size).mean()
     df['blue_ma5'] = df['蓝球'].shift(1).rolling(window=window_size).mean()
     return df
+
+
+def validate_feature_columns(frame, feature_columns=FEATURE_COLUMNS):
+    """Reject missing, duplicate, or undeclared model feature names."""
+    columns = tuple(feature_columns)
+    if len(columns) != len(set(columns)):
+        raise ValueError('模型特征列不能重复')
+    missing = sorted(set(FEATURE_COLUMNS) - set(columns))
+    undeclared = sorted(set(columns) - set(FEATURE_COLUMNS))
+    if missing:
+        raise ValueError(f'缺少声明的模型特征列: {missing}')
+    if undeclared:
+        raise ValueError(f'包含未声明的模型特征列: {undeclared}')
+    if columns != FEATURE_COLUMNS:
+        raise ValueError('模型特征列顺序与声明不一致')
+    missing_from_frame = sorted(set(columns) - set(frame.columns))
+    if missing_from_frame:
+        raise ValueError(f'模型数据缺少特征列: {missing_from_frame}')
+    return columns
 
 
 def get_omission(df):
@@ -134,7 +174,7 @@ def train_ball_models(
     iterator = (
         tqdm(candidates, desc=description, ncols=80) if description else candidates
     )
-    features = training_df[feature_columns]
+    features = training_df[list(feature_columns)]
     for candidate in iterator:
         target = training_df[outcome_column].apply(
             lambda outcome, current=candidate: int(
@@ -152,6 +192,7 @@ def train_ball_models(
 
 def train_prediction_models(training_df, feature_columns, show_progress=False):
     """Train the complete red and blue model sets."""
+    feature_columns = validate_feature_columns(training_df, feature_columns)
     red_models = train_ball_models(
         training_df,
         feature_columns,
@@ -199,8 +240,9 @@ def run_strategy_and_get_scores(
 ):
     """Combine frequency, omission, and model signals into ball scores."""
     validate_model_sets(ml_models_red, ml_models_blue)
+    feature_columns = validate_feature_columns(df_history, feature_columns)
 
-    last_features = df_history.iloc[[-1]][feature_columns].copy()
+    last_features = df_history.iloc[[-1]][list(feature_columns)].copy()
     for column in last_features.columns:
         if last_features[column].isnull().any():
             last_features[column] = last_features[column].fillna(

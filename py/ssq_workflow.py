@@ -26,6 +26,7 @@ from ssq_core import (
 )
 from ssq_draw_data import normalize_draw_frame
 from ssq_modeling import (
+    FEATURE_COLUMNS,
     feature_engineer,
     get_omission,
     run_strategy_and_get_scores,
@@ -128,10 +129,7 @@ def run_analysis(options):
     if full_df is None or len(full_df) < 50:
         raise SystemExit('错误: 历史数据加载失败或数据量过少（至少需要50期），程序终止。')
     full_df = feature_engineer(full_df)
-    excluded_columns = {'期号', '日期', '红球', '蓝球'}
-    feature_columns = [
-        column for column in full_df.columns if column not in excluded_columns
-    ]
+    feature_columns = FEATURE_COLUMNS
     rule_coverage = audit_historical_rule_coverage(
         full_df,
         options.rule_audit_periods,

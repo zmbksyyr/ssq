@@ -306,7 +306,30 @@ class AnalyzerTests(unittest.TestCase):
     })
     result = modeling.feature_engineer(source)
     self.assertEqual(list(source.columns), ['红球', '蓝球'])
-    self.assertIn('red_sum', result.columns)
+    self.assertEqual(
+        tuple(column for column in result if column not in source.columns),
+        modeling.FEATURE_COLUMNS,
+    )
+
+  def test_model_feature_contract_rejects_accidental_columns(self):
+    frame = modeling.feature_engineer(pd.DataFrame({
+        '红球': [[1, 2, 3, 4, 5, 6]],
+        '蓝球': [7],
+        'future_result': [1],
+    }))
+
+    self.assertEqual(
+        modeling.validate_feature_columns(frame),
+        modeling.FEATURE_COLUMNS,
+    )
+    for feature_columns in (
+        (*modeling.FEATURE_COLUMNS, 'future_result'),
+        modeling.FEATURE_COLUMNS[:-1],
+        (*modeling.FEATURE_COLUMNS, modeling.FEATURE_COLUMNS[-1]),
+        tuple(reversed(modeling.FEATURE_COLUMNS)),
+    ):
+      with self.subTest(feature_columns=feature_columns), self.assertRaises(ValueError):
+        modeling.validate_feature_columns(frame, feature_columns)
 
   def test_omission_uses_row_position_instead_of_index_labels(self):
     history = pd.DataFrame(
