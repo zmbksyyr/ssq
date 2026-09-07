@@ -14,6 +14,7 @@ import ssq_workflow_models as _workflow_models
 from ssq_analysis_result import build_analysis_report_data
 from ssq_anti_crowding import make_rejection_set, rejection_seed_for_issue
 from ssq_backtest_runner import run_backtest
+from ssq_ball_scoring import run_strategy_and_get_scores
 from ssq_candidates import generate_candidates
 from ssq_config import (
     parse_cli_options,
@@ -42,10 +43,7 @@ from ssq_rule_auditing import (
     audit_historical_rule_coverage,
 )
 from ssq_rule_registry import filter_pipeline_stats
-from ssq_scoring import (
-    get_omission,
-    run_strategy_and_get_scores,
-)
+from ssq_score_signals import get_omission
 from ssq_selection_models import DuplexSelectionRequest
 from ssq_training import (
     MODEL_TRAINING_PARAMS,

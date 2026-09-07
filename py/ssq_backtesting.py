@@ -7,6 +7,7 @@ import ssq_backtest_preparation as _backtest_preparation
 import ssq_backtest_runner as _backtest_runner
 import ssq_backtest_validation as _backtest_validation
 from ssq_anti_crowding import make_rejection_set, rejection_seed_for_issue
+from ssq_ball_scoring import run_strategy_and_get_scores
 from ssq_candidates import count_actual_reds_by_rank_band
 from ssq_config import (
     DEFAULT_STRATEGY_CONFIG,
@@ -22,7 +23,6 @@ from ssq_rule_auditing import (
     audit_historical_rule_coverage as _audit_historical_rule_coverage,
 )
 from ssq_rule_auditing import historical_rule_context as _historical_rule_context
-from ssq_scoring import run_strategy_and_get_scores
 from ssq_training import train_prediction_models, validate_model_sets
 from tqdm import tqdm
 
