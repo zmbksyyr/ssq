@@ -1,8 +1,7 @@
 """Pure text formatting for complete analysis reports."""
 
-from itertools import combinations
-
 import ssq_backtest_reporting as _backtest_reporting
+import ssq_recommendation_reporting as _recommendation_reporting
 import ssq_report_models as _report_models
 import ssq_rule_reporting as _rule_reporting
 
@@ -17,36 +16,9 @@ format_prize_counts = _backtest_reporting.format_prize_counts
 format_backtest_report = _backtest_reporting.format_backtest_report
 format_audit_window = _rule_reporting.format_audit_window
 format_rule_audit_report = _rule_reporting.format_rule_audit_report
-
-
-def format_recommendations_report(data):
-    lines = ["\n--- 2. 推荐组合 ---"]
-    top_blue = data.recommended_blues[0] if data.recommended_blues else None
-    single_combos = data.selection.recommendations if top_blue is not None else ()
-    lines.append(f"\n【单式推荐 ({len(single_combos)}组)】")
-    if single_combos:
-        max_overlap = max(
-            (
-                len(set(left) & set(right))
-                for left, right in combinations(single_combos, 2)
-            ),
-            default=0,
-        )
-        lines.append(f'  实际任意两注最大重合红球数: {max_overlap}')
-        for index, combo in enumerate(single_combos, 1):
-            lines.append(
-                f"  组合 {index:>2}: 红球 {list(combo)!s:<24} 蓝球 [{top_blue:02d}]"
-            )
-    else:
-        lines.append("  - 未能生成足够的单式组合。")
-
-    lines.append("\n【7+N 复式推荐 (1组)】")
-    if data.best_7_reds and data.recommended_blues:
-        lines.append(f"  红球: {list(data.best_7_reds[0][0])}")
-        lines.append(f"  蓝球: {data.recommended_blues}")
-    else:
-        lines.append("  - 未能生成足够的复式组合。")
-    return lines
+format_recommendations_report = (
+    _recommendation_reporting.format_recommendations_report
+)
 
 
 def build_analysis_report(data):
