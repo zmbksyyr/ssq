@@ -1,12 +1,12 @@
 """Application workflow for loading data, running analysis, and saving reports."""
 
-import json
 import os
 import platform
 import random
 from importlib.metadata import version
 
 import pandas as pd
+import ssq_strategy_params as _strategy_params
 import ssq_workflow_models as _workflow_models
 from ssq_anti_crowding import make_rejection_set, rejection_seed_for_issue
 from ssq_backtesting import (
@@ -15,9 +15,7 @@ from ssq_backtesting import (
 )
 from ssq_candidates import generate_candidates
 from ssq_config import (
-    LoadedStrategyParams,
     parse_cli_options,
-    validate_strategy_params,
 )
 from ssq_console import (
     display_passed_combinations as _display_passed_combinations,
@@ -79,14 +77,8 @@ def collect_runtime_versions():
 
 
 def load_strategy_params(filepath=PARAMS_JSON_PATH):
-    try:
-        with open(filepath, encoding='utf-8') as handle:
-            values = validate_strategy_params(json.load(handle))
-    except FileNotFoundError:
-        return LoadedStrategyParams(validate_strategy_params({}), False)
-    except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
-        raise ValueError(f'参数文件 {filepath} 无效: {exc}') from exc
-    return LoadedStrategyParams(values, True)
+    """Compatibility wrapper using the analyzer's default parameter path."""
+    return _strategy_params.load_strategy_params(filepath)
 
 
 def load_and_preprocess_data(filepath=CSV_PATH):
