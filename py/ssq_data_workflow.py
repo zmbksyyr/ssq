@@ -4,7 +4,6 @@ import logging
 import os
 import sys
 
-from ssq_core import DRAW_COLUMNS
 from ssq_data_sources import (
     HTML_DATA_URL,
     TXT_DATA_URL,
@@ -16,6 +15,7 @@ from ssq_data_sources import (
     parse_txt_data,
 )
 from ssq_data_store import update_csv_file
+from ssq_domain import DRAW_COLUMNS
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)

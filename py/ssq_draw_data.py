@@ -4,14 +4,8 @@ import hashlib
 from itertools import pairwise
 
 import pandas as pd
-from ssq_core import (
-    DRAW_COLUMNS,
-    DRAW_WEEKDAYS,
-    local_today,
-    parse_blue_ball,
-    parse_issue,
-    parse_red_balls,
-)
+from ssq_core import local_today, parse_blue_ball, parse_issue, parse_red_balls
+from ssq_domain import DRAW_COLUMNS, DRAW_WEEKDAYS
 
 
 def validate_draw_dates_not_future(frame, today=None):

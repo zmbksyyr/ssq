@@ -1,6 +1,6 @@
 """Formatting for strategy settings and rolling backtest metrics."""
 
-from ssq_core import PRIZE_NAMES
+from ssq_domain import PRIZE_NAMES
 from ssq_rank_bands import RANK_BAND_NAMES
 
 PRIZE_DISPLAY_ORDER = (

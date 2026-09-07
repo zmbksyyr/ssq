@@ -5,7 +5,8 @@ from math import isfinite
 from numbers import Real
 
 from ssq_config import normalize_integer_param
-from ssq_core import RED_BALLS, parse_red_balls
+from ssq_core import parse_red_balls
+from ssq_domain import RED_BALLS
 from ssq_rule_models import RecommendationRequest, RuleContext
 
 

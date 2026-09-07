@@ -3,7 +3,7 @@
 from collections import Counter
 from itertools import combinations
 
-from ssq_core import PRIME_RED_BALLS
+from ssq_domain import PRIME_RED_BALLS
 
 
 def is_prime(number):

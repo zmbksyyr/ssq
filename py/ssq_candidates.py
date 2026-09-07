@@ -5,7 +5,8 @@ from collections.abc import Collection, Mapping
 from itertools import combinations
 
 from ssq_config import DEFAULT_STRATEGY_CONFIG, RED_POOL_MODES, StrategyConfig
-from ssq_core import RED_BALLS, validate_ball_scores
+from ssq_core import validate_ball_scores
+from ssq_domain import RED_BALLS
 from ssq_rank_bands import RANK_BAND_NAMES, build_rank_bands
 from ssq_ranking import select_recommendation_portfolio
 from ssq_rule_models import RecommendationRequest, RuleContext

@@ -1,7 +1,7 @@
 """Evaluation of generated candidates against historical draw results."""
 
 from ssq_candidates import generate_candidates
-from ssq_core import PRIZE_RULES
+from ssq_domain import PRIZE_RULES
 from ssq_selection_models import CandidateGenerationRequest
 
 

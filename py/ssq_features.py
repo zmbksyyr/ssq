@@ -2,7 +2,7 @@
 
 from itertools import combinations, pairwise
 
-from ssq_core import PRIME_RED_BALLS
+from ssq_domain import PRIME_RED_BALLS
 
 FEATURE_COLUMNS = (
     'red_sum',

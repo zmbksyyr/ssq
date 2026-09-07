@@ -1,7 +1,7 @@
 """Score-rank band definitions shared by selection and reporting."""
 
 from ssq_config import DEFAULT_STRATEGY_CONFIG
-from ssq_core import RED_BALLS
+from ssq_domain import RED_BALLS
 
 RANK_BAND_NAMES = ('high', 'middle', 'low', 'other')
 

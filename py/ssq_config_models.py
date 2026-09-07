@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 from math import comb
 
-from ssq_core import BLUE_BALLS, RED_BALLS, RED_COUNT
+from ssq_domain import BLUE_BALLS, RED_BALLS, RED_COUNT
 from ssq_strategy_validation import normalize_integer_param
 
 POOL_SIZE_RED = 17

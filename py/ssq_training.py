@@ -6,7 +6,7 @@ from types import MappingProxyType
 
 import lightgbm as lgb
 import numpy as np
-from ssq_core import BLUE_BALLS, RED_BALLS
+from ssq_domain import BLUE_BALLS, RED_BALLS
 from ssq_features import validate_feature_columns
 from tqdm import tqdm
 

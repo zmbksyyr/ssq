@@ -5,7 +5,8 @@ from collections import Counter
 import numpy as np
 import pandas as pd
 from ssq_config import validate_strategy_params
-from ssq_core import BLUE_BALLS, RED_BALLS, validate_ball_scores
+from ssq_core import validate_ball_scores
+from ssq_domain import BLUE_BALLS, RED_BALLS
 from ssq_features import validate_feature_columns
 from ssq_training import predict_positive_probability, validate_model_sets
 

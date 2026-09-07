@@ -5,7 +5,7 @@ from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 
-from ssq_core import PRIZE_NAMES
+from ssq_domain import PRIZE_NAMES
 from ssq_prizes import calculate_duplex_prize, calculate_single_prize
 
 
