@@ -4,6 +4,12 @@ import ssq_rule_execution as _rule_execution
 import ssq_rule_functions as _rule_functions
 import ssq_rule_validation as _rule_validation
 from ssq_rule_models import RuleDefinition
+from ssq_rule_scoring import (
+    score_big_small_balance,
+    score_odd_even_balance,
+    score_prime_balance,
+    score_zone_balance,
+)
 
 COMBINATION_SIGNAL_WEIGHT = 0.50
 
@@ -27,10 +33,6 @@ filter_head_tail_range = _rule_functions.filter_head_tail_range
 filter_sum_of_tails = _rule_functions.filter_sum_of_tails
 filter_related_numbers = _rule_functions.filter_related_numbers
 filter_diagonal_consecutive = _rule_functions.filter_diagonal_consecutive
-score_zone_balance = _rule_functions.score_zone_balance
-score_odd_even_balance = _rule_functions.score_odd_even_balance
-score_prime_balance = _rule_functions.score_prime_balance
-score_big_small_balance = _rule_functions.score_big_small_balance
 
 
 RED_RULES = (

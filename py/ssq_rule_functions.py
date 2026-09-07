@@ -117,22 +117,9 @@ def filter_diagonal_consecutive(combo, last_draw, previous_draw):
     )
 
 
-def score_zone_balance(combo):
-    counts = (
-        sum(ball <= 11 for ball in combo),
-        sum(12 <= ball <= 22 for ball in combo),
-        sum(ball >= 23 for ball in combo),
-    )
-    return 1.0 - (max(counts) - min(counts)) / 6
-
-
-def score_odd_even_balance(combo):
-    return 1.0 - abs(sum(ball % 2 for ball in combo) - 3) / 3
-
-
-def score_prime_balance(combo):
-    return 1.0 - abs(sum(is_prime(ball) for ball in combo) - 3) / 3
-
-
-def score_big_small_balance(combo):
-    return 1.0 - abs(sum(ball <= 16 for ball in combo) - 3) / 3
+from ssq_rule_scoring import (
+    score_big_small_balance,  # noqa: F401
+    score_odd_even_balance,  # noqa: F401
+    score_prime_balance,  # noqa: F401
+    score_zone_balance,  # noqa: F401
+)
