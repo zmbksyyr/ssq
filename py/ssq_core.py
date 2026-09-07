@@ -1,10 +1,8 @@
-"""Shared domain rules for the Double Color Ball lottery."""
-
-import os
-import tempfile
+"""Compatibility exports for shared Double Color Ball helpers."""
 
 import ssq_domain as _domain
 import ssq_draw_schedule as _draw_schedule
+import ssq_file_io as _file_io
 import ssq_parsing as _parsing
 
 RED_MIN = _domain.RED_MIN
@@ -33,23 +31,4 @@ parse_blue_ball = _parsing.parse_blue_ball
 parse_blue_balls = _parsing.parse_blue_balls
 validate_ball_scores = _parsing.validate_ball_scores
 infer_next_issue = _draw_schedule.infer_next_issue
-
-
-def atomic_write_text(path, content, encoding='utf-8'):
-    """Write text via an adjacent temporary file and atomically replace the target."""
-    target = os.path.abspath(os.fspath(path))
-    directory = os.path.dirname(target)
-    os.makedirs(directory, exist_ok=True)
-    temporary_path = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode='w', encoding=encoding, newline='', dir=directory,
-            prefix='.ssq-', suffix='.tmp', delete=False,
-        ) as temporary_file:
-            temporary_path = temporary_file.name
-            temporary_file.write(content)
-        os.replace(temporary_path, target)
-        temporary_path = None
-    finally:
-        if temporary_path and os.path.exists(temporary_path):
-            os.unlink(temporary_path)
+atomic_write_text = _file_io.atomic_write_text

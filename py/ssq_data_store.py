@@ -3,10 +3,10 @@
 import csv
 import logging
 import os
-import tempfile
 
 import pandas as pd
 from ssq_draw_data import serialize_draw_frame, validate_draw_dates_not_future
+from ssq_file_io import atomic_text_writer
 
 MIN_FULL_SNAPSHOT_RECORDS = 100
 logger = logging.getLogger('ssq_data_processor')
@@ -50,31 +50,12 @@ def read_existing_csv(csv_path):
 
 
 def atomic_write_csv(frame, csv_path):
-    target = os.path.abspath(os.fspath(csv_path))
-    target_directory = os.path.dirname(target)
-    os.makedirs(target_directory, exist_ok=True)
-    temporary_path = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode='w',
-            encoding='utf-8',
-            newline='',
-            dir=target_directory,
-            prefix='.ssq-',
-            suffix='.tmp',
-            delete=False,
-        ) as temporary_file:
-            temporary_path = temporary_file.name
-            frame.to_csv(
-                temporary_file,
-                index=False,
-                quoting=csv.QUOTE_MINIMAL,
-            )
-        os.replace(temporary_path, target)
-        temporary_path = None
-    finally:
-        if temporary_path and os.path.exists(temporary_path):
-            os.unlink(temporary_path)
+    with atomic_text_writer(csv_path) as temporary_file:
+        frame.to_csv(
+            temporary_file,
+            index=False,
+            quoting=csv.QUOTE_MINIMAL,
+        )
 
 
 def update_csv_file(csv_path, all_new_data, require_full_snapshot=False):
