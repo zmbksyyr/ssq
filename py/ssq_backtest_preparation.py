@@ -12,9 +12,10 @@ from ssq_backtest_models import (
     PreparedBacktestIssue,
 )
 from ssq_ball_scoring import run_strategy_and_get_scores
+from ssq_model_training import train_prediction_models
+from ssq_model_validation import validate_model_sets
 from ssq_red_pool import count_actual_reds_by_rank_band
 from ssq_rule_auditing import historical_rule_context
-from ssq_training import train_prediction_models, validate_model_sets
 
 
 @dataclass(frozen=True)

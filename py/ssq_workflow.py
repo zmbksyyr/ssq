@@ -37,6 +37,9 @@ from ssq_draw_schedule import infer_next_issue, local_now
 from ssq_duplex import rank_duplex_candidates
 from ssq_features import feature_engineer
 from ssq_file_io import atomic_write_text
+from ssq_model_contracts import MODEL_TRAINING_PARAMS
+from ssq_model_training import train_prediction_models
+from ssq_model_validation import validate_model_sets
 from ssq_report_builder import build_analysis_report
 from ssq_rule_auditing import (
     audit_historical_hard_pipeline,
@@ -45,11 +48,6 @@ from ssq_rule_auditing import (
 from ssq_rule_registry import filter_pipeline_stats
 from ssq_score_signals import get_omission
 from ssq_selection_models import DuplexSelectionRequest
-from ssq_training import (
-    MODEL_TRAINING_PARAMS,
-    train_prediction_models,
-    validate_model_sets,
-)
 
 SCRIPT_DIR = _paths.SCRIPT_DIR
 PROJECT_ROOT = _paths.PROJECT_ROOT

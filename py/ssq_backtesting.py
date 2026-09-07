@@ -14,6 +14,8 @@ from ssq_config import (
     RULE_AUDIT_PERIODS,
     validate_strategy_params,
 )
+from ssq_model_training import train_prediction_models
+from ssq_model_validation import validate_model_sets
 from ssq_rank_bands import build_rank_band_widths
 from ssq_red_pool import count_actual_reds_by_rank_band
 from ssq_rule_auditing import FILTER_NAMES as _FILTER_NAMES
@@ -24,7 +26,6 @@ from ssq_rule_auditing import (
     audit_historical_rule_coverage as _audit_historical_rule_coverage,
 )
 from ssq_rule_auditing import historical_rule_context as _historical_rule_context
-from ssq_training import train_prediction_models, validate_model_sets
 from tqdm import tqdm
 
 FILTER_NAMES = _FILTER_NAMES
