@@ -93,6 +93,11 @@ class AnalyzerTests(unittest.TestCase):
 
   def test_analyzer_reexports_backtesting_functions(self):
     self.assertIs(analyzer.BacktestResult, backtesting.BacktestResult)
+    self.assertIs(analyzer.BacktestIssue, backtesting.BacktestIssue)
+    self.assertIs(
+        analyzer.BacktestSelectionInputs,
+        backtesting.BacktestSelectionInputs,
+    )
     self.assertIs(analyzer.run_full_backtest, backtesting.run_full_backtest)
 
   def test_analyzer_reexports_workflow_entrypoint(self):
@@ -1085,6 +1090,34 @@ class AnalyzerTests(unittest.TestCase):
     self.assertEqual(result.rank_band_hits, {'middle': 3})
     self.assertEqual(result.rank_band_widths['middle'], 9)
     self.assertIn('earlier', result.windows)
+
+  def test_backtest_selection_reuses_combo_hits_across_accumulators(self):
+    selection_result = SimpleNamespace(
+        red_pool=(1, 2, 3, 4, 5, 6, 7),
+        passed_combos=((1, 2, 3, 4, 5, 6),),
+        recommendations=((1, 2, 3, 4, 5, 6),),
+    )
+    issue = backtesting.BacktestIssue(
+        actual_reds=frozenset((1, 2, 3, 4, 5, 6)),
+        actual_blue=8,
+        recommended_blue=8,
+        rank_band_hits=Counter({'middle': 6}),
+    )
+    total = backtesting.BacktestAccumulator()
+    window = backtesting.BacktestAccumulator()
+
+    hits = backtesting.record_backtest_selection(total, selection_result, issue)
+    reused_hits = backtesting.record_backtest_selection(
+        window,
+        selection_result,
+        issue,
+        hits,
+    )
+
+    self.assertIs(reused_hits, hits)
+    self.assertEqual(total.to_result(1), window.to_result(1))
+    self.assertEqual(total.pool_red_hits, 6)
+    self.assertEqual(total.blue_hit_periods, 1)
 
   def test_full_backtest_aggregate_equals_sum_of_stability_windows(self):
     frame = pd.DataFrame({

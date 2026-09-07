@@ -169,6 +169,22 @@ class BacktestAccumulator:
         )
 
 
+@dataclass(frozen=True)
+class BacktestIssue:
+    actual_reds: frozenset[int]
+    actual_blue: int
+    recommended_blue: int
+    rank_band_hits: Counter
+
+
+@dataclass(frozen=True)
+class BacktestSelectionInputs:
+    red_scores: dict[int, float]
+    context: RuleContext
+    rejection_set: set[tuple[int, ...]]
+    config: StrategyConfig
+
+
 def historical_rule_context(full_df, index):
     """Build rule inputs using only draws before the audited issue."""
     history = full_df.iloc[:index]
@@ -258,22 +274,16 @@ def audit_historical_hard_pipeline(full_df, periods=RULE_AUDIT_PERIODS):
 def evaluate_backtest_mode(
     mode,
     current,
-    actual_red_set,
-    actual_blue,
-    recommended_blue,
-    rank_band_hits,
-    red_scores,
-    context,
-    rejection_set,
-    config,
+    issue,
+    selection_inputs,
     additional_accumulators=(),
 ):
     """Evaluate one pool mode for one historical issue."""
     selection = generate_red_candidates(
-        red_scores,
-        context,
-        rejection_set,
-        config=config,
+        selection_inputs.red_scores,
+        selection_inputs.context,
+        selection_inputs.rejection_set,
+        config=selection_inputs.config,
         mode=mode,
     )
     red_hits_by_combo = None
@@ -281,10 +291,7 @@ def evaluate_backtest_mode(
         red_hits_by_combo = record_backtest_selection(
             accumulator,
             selection,
-            actual_red_set,
-            actual_blue,
-            recommended_blue,
-            rank_band_hits,
+            issue,
             red_hits_by_combo,
         )
     return selection
@@ -293,17 +300,14 @@ def evaluate_backtest_mode(
 def record_backtest_selection(
     current,
     selection,
-    actual_red_set,
-    actual_blue,
-    recommended_blue,
-    rank_band_hits,
+    issue,
     red_hits_by_combo=None,
 ):
     """Accumulate one already-generated selection into a result window."""
     current.evaluated_periods += 1
-    current.pool_red_hits += len(set(selection.red_pool) & actual_red_set)
-    current.rank_band_hits.update(rank_band_hits)
-    if recommended_blue == actual_blue:
+    current.pool_red_hits += len(set(selection.red_pool) & issue.actual_reds)
+    current.rank_band_hits.update(issue.rank_band_hits)
+    if issue.recommended_blue == issue.actual_blue:
         current.blue_hit_periods += 1
 
     if not selection.passed_combos:
@@ -311,7 +315,7 @@ def record_backtest_selection(
 
     if red_hits_by_combo is None:
         red_hits_by_combo = {
-            combo: len(set(combo) & actual_red_set)
+            combo: len(set(combo) & issue.actual_reds)
             for combo in selection.passed_combos
         }
     current.candidate_tickets += len(selection.passed_combos)
@@ -319,7 +323,7 @@ def record_backtest_selection(
     current.active_periods += 1
     current.tickets += len(selection.recommendations)
     current.cost += len(selection.recommendations) * 2
-    blue_hits = int(recommended_blue == actual_blue)
+    blue_hits = int(issue.recommended_blue == issue.actual_blue)
     for combo in selection.recommendations:
         red_hits = red_hits_by_combo[combo]
         current.ticket_red_hit_counts[red_hits] += 1
@@ -448,19 +452,25 @@ def run_full_backtest(
             )
             context = historical_rule_context(full_df, index)
             window_name = 'earlier' if offset < split_offset else 'recent'
+            issue = BacktestIssue(
+                actual_reds=frozenset(actual_red_set),
+                actual_blue=actual_blue,
+                recommended_blue=recommended_blue,
+                rank_band_hits=rank_band_hits,
+            )
+            selection_inputs = BacktestSelectionInputs(
+                red_scores=red_scores,
+                context=context,
+                rejection_set=rejection_set,
+                config=config,
+            )
 
             for mode in pool_modes:
                 evaluate_backtest_mode(
                     mode,
                     metrics[mode],
-                    actual_red_set,
-                    actual_blue,
-                    recommended_blue,
-                    rank_band_hits,
-                    red_scores,
-                    context,
-                    rejection_set,
-                    config,
+                    issue,
+                    selection_inputs,
                     additional_accumulators=(
                         window_metrics[window_name][mode],
                     ),
