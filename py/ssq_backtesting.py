@@ -2,6 +2,7 @@
 
 import random
 from collections import Counter
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 from ssq_config import (
@@ -185,6 +186,19 @@ class BacktestSelectionInputs:
     config: StrategyConfig
 
 
+@dataclass(frozen=True)
+class BacktestRunContext:
+    params: dict
+    feature_columns: Sequence[str]
+    config: StrategyConfig
+
+
+@dataclass(frozen=True)
+class PreparedBacktestIssue:
+    issue: BacktestIssue
+    selection_inputs: BacktestSelectionInputs
+
+
 def historical_rule_context(full_df, index):
     """Build rule inputs using only draws before the audited issue."""
     history = full_df.iloc[:index]
@@ -358,6 +372,61 @@ def validate_backtest_request(num_periods, pool_modes, config):
     return num_periods, pool_modes
 
 
+def prepare_backtest_issue(full_df, index, run_context):
+    """Build leakage-free model and selection inputs for one historical issue."""
+    history = full_df.iloc[:index]
+    training_data = history.iloc[5:].copy()
+    if len(training_data) < 20:
+        return None
+
+    red_models, blue_models = train_prediction_models(
+        training_data,
+        run_context.feature_columns,
+    )
+    try:
+        validate_model_sets(red_models, blue_models)
+    except ValueError:
+        return None
+
+    red_scores, blue_scores = run_strategy_and_get_scores(
+        history,
+        run_context.params,
+        red_models,
+        blue_models,
+        run_context.feature_columns,
+    )
+    actual_draw = full_df.iloc[index]
+    actual_reds = frozenset(actual_draw['红球'])
+    recommended_blue = max(blue_scores, key=blue_scores.get)
+    rank_band_hits = count_actual_reds_by_rank_band(
+        red_scores,
+        actual_reds,
+        run_context.config,
+    )
+    rejection_seed = rejection_seed_for_issue(
+        run_context.config.random_seed,
+        actual_draw['期号'],
+    )
+    rejection_set = make_rejection_set(
+        run_context.config.rejection_lib_size,
+        random.Random(rejection_seed),
+    )
+    return PreparedBacktestIssue(
+        issue=BacktestIssue(
+            actual_reds=actual_reds,
+            actual_blue=actual_draw['蓝球'],
+            recommended_blue=recommended_blue,
+            rank_band_hits=rank_band_hits,
+        ),
+        selection_inputs=BacktestSelectionInputs(
+            red_scores=red_scores,
+            context=historical_rule_context(full_df, index),
+            rejection_set=rejection_set,
+            config=run_context.config,
+        ),
+    )
+
+
 def run_full_backtest(
     full_df,
     params,
@@ -406,71 +475,22 @@ def run_full_backtest(
         'earlier': split_offset,
         'recent': len(backtest_range) - split_offset,
     }
+    run_context = BacktestRunContext(params, feature_columns, config)
 
     with tqdm(total=len(backtest_range), desc='执行严谨回测', ncols=80) as progress:
         for offset, index in enumerate(backtest_range):
-            history = full_df.iloc[:index]
-            actual_draw = full_df.iloc[index]
-            actual_red_set = set(actual_draw['红球'])
-            actual_blue = actual_draw['蓝球']
-
-            training_data = history.iloc[5:].copy()
-            if len(training_data) < 20:
+            prepared = prepare_backtest_issue(full_df, index, run_context)
+            if prepared is None:
                 progress.update(1)
                 continue
-
-            red_models, blue_models = train_prediction_models(
-                training_data,
-                feature_columns,
-            )
-            try:
-                validate_model_sets(red_models, blue_models)
-            except ValueError:
-                progress.update(1)
-                continue
-
-            red_scores, blue_scores = run_strategy_and_get_scores(
-                history,
-                params,
-                red_models,
-                blue_models,
-                feature_columns,
-            )
-            recommended_blue = max(blue_scores, key=blue_scores.get)
-            rank_band_hits = count_actual_reds_by_rank_band(
-                red_scores,
-                actual_red_set,
-                config,
-            )
-            rejection_seed = rejection_seed_for_issue(
-                config.random_seed,
-                actual_draw['期号'],
-            )
-            rejection_set = make_rejection_set(
-                config.rejection_lib_size,
-                random.Random(rejection_seed),
-            )
-            context = historical_rule_context(full_df, index)
             window_name = 'earlier' if offset < split_offset else 'recent'
-            issue = BacktestIssue(
-                actual_reds=frozenset(actual_red_set),
-                actual_blue=actual_blue,
-                recommended_blue=recommended_blue,
-                rank_band_hits=rank_band_hits,
-            )
-            selection_inputs = BacktestSelectionInputs(
-                red_scores=red_scores,
-                context=context,
-                rejection_set=rejection_set,
-                config=config,
-            )
 
             for mode in pool_modes:
                 evaluate_backtest_mode(
                     mode,
                     metrics[mode],
-                    issue,
-                    selection_inputs,
+                    prepared.issue,
+                    prepared.selection_inputs,
                     additional_accumulators=(
                         window_metrics[window_name][mode],
                     ),
