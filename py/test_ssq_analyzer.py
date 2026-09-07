@@ -564,6 +564,59 @@ class AnalyzerTests(unittest.TestCase):
     actual = modeling.predict_positive_probability(model, features.iloc[:2])
     self.assertTrue(np.array_equal(actual, expected))
 
+  def test_positive_probability_rejects_invalid_model_output(self):
+    features = pd.DataFrame({'value': [1]})
+    for probabilities in (
+        [[0.5, np.nan]],
+        [[-0.1, 1.1]],
+        [[0.5]],
+    ):
+      model = SimpleNamespace(
+          classes_=np.array([0, 1]),
+          predict_proba=lambda _features, value=probabilities: value,
+      )
+      with self.subTest(probabilities=probabilities), self.assertRaises(ValueError):
+        modeling.predict_positive_probability(model, features)
+
+  def test_model_and_score_domains_must_match_all_lottery_balls(self):
+    red_models = {ball: object() for ball in range(1, 34)}
+    blue_models = {ball: object() for ball in range(1, 17)}
+    modeling.validate_model_sets(red_models, blue_models)
+
+    with self.assertRaises(ValueError):
+      modeling.validate_model_sets({**red_models, 34: object()}, blue_models)
+    with self.assertRaises(ValueError):
+      modeling.validate_model_sets(red_models, {1: object()})
+
+    scores = modeling.validate_ball_scores(
+        {ball: np.float64(ball) for ball in range(1, 34)},
+        range(1, 34),
+        '红球',
+    )
+    self.assertEqual(set(scores), set(range(1, 34)))
+    self.assertTrue(all(type(value) is float for value in scores.values()))
+
+    with self.assertRaises(ValueError):
+      modeling.validate_ball_scores({1: 0.5}, range(1, 34), '红球')
+    with self.assertRaises(ValueError):
+      modeling.validate_ball_scores(
+          {ball: np.nan for ball in range(1, 34)}, range(1, 34), '红球'
+      )
+
+  def test_strategy_scoring_rejects_empty_history_explicitly(self):
+    history = pd.DataFrame(columns=modeling.FEATURE_COLUMNS)
+    red_models = {ball: object() for ball in range(1, 34)}
+    blue_models = {ball: object() for ball in range(1, 17)}
+
+    with self.assertRaisesRegex(ValueError, '历史数据不能为空'):
+      modeling.run_strategy_and_get_scores(
+          history,
+          analyzer.DEFAULT_PARAMS,
+          red_models,
+          blue_models,
+          modeling.FEATURE_COLUMNS,
+      )
+
   def test_strategy_scores_with_single_class_training_history(self):
     history = modeling.feature_engineer(pd.DataFrame({
         '红球': [[1, 2, 3, 4, 5, 6] for _ in range(12)],
@@ -578,6 +631,10 @@ class AnalyzerTests(unittest.TestCase):
     red_scores, blue_scores = modeling.run_strategy_and_get_scores(
         history, analyzer.DEFAULT_PARAMS, red_models, blue_models, feature_columns
     )
+    self.assertEqual(set(red_scores), set(range(1, 34)))
+    self.assertEqual(set(blue_scores), set(range(1, 17)))
+    self.assertTrue(all(np.isfinite(score) for score in red_scores.values()))
+    self.assertTrue(all(np.isfinite(score) for score in blue_scores.values()))
     self.assertGreater(red_scores[1], red_scores[7])
     self.assertGreater(blue_scores[1], blue_scores[2])
 

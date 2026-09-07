@@ -2,6 +2,7 @@
 
 from collections import Counter
 from itertools import combinations, pairwise
+from numbers import Real
 
 import lightgbm as lgb
 import numpy as np
@@ -215,20 +216,56 @@ def train_prediction_models(training_df, feature_columns, show_progress=False):
 def validate_model_sets(red_models, blue_models):
     missing_red = sorted(set(RED_BALLS) - set(red_models))
     missing_blue = sorted(set(BLUE_BALLS) - set(blue_models))
-    if missing_red or missing_blue:
-        raise ValueError(f"模型训练不完整: 红球缺失 {missing_red}, 蓝球缺失 {missing_blue}")
+    extra_red = sorted(set(red_models) - set(RED_BALLS))
+    extra_blue = sorted(set(blue_models) - set(BLUE_BALLS))
+    if missing_red or missing_blue or extra_red or extra_blue:
+        raise ValueError(
+            '模型集合与号码范围不一致: '
+            f'红球缺失 {missing_red}, 红球多余 {extra_red}, '
+            f'蓝球缺失 {missing_blue}, 蓝球多余 {extra_blue}'
+        )
+
+
+def validate_ball_scores(scores, candidates, label):
+    """Return numeric scores after enforcing the complete ball-domain contract."""
+    expected = set(candidates)
+    missing = sorted(expected - set(scores))
+    extra = sorted(set(scores) - expected)
+    if missing or extra:
+        raise ValueError(f'{label}评分键不完整: 缺失 {missing}, 多余 {extra}')
+
+    normalized = {}
+    for ball in candidates:
+        value = scores[ball]
+        if isinstance(value, bool) or not isinstance(value, Real):
+            raise TypeError(f'{label} {ball} 的评分必须为数值')
+        value = float(value)
+        if not np.isfinite(value):
+            raise ValueError(f'{label} {ball} 的评分必须为有限数值')
+        normalized[ball] = value
+    return normalized
 
 
 def predict_positive_probability(model, features):
     """Return P(class=1), including correct behavior for one-class models."""
     classes = np.asarray(model.classes_)
     if len(classes) == 1:
+        if classes[0] not in (0, 1):
+            raise ValueError(f"单类别模型只能包含类别 0 或 1: {classes.tolist()}")
         return np.full(len(features), float(classes[0] == 1))
     positive_columns = np.flatnonzero(classes == 1)
     if len(positive_columns) != 1:
         raise ValueError(f"模型类别缺少唯一正类 1: {classes.tolist()}")
-    probabilities = np.asarray(model.predict_proba(features))
-    return probabilities[:, int(positive_columns[0])]
+    probabilities = np.asarray(model.predict_proba(features), dtype=float)
+    expected_shape = (len(features), len(classes))
+    if probabilities.shape != expected_shape:
+        raise ValueError(
+            f'模型概率矩阵形状应为 {expected_shape}, 实际为 {probabilities.shape}'
+        )
+    positive = probabilities[:, int(positive_columns[0])]
+    if not np.isfinite(positive).all() or ((positive < 0) | (positive > 1)).any():
+        raise ValueError('模型正类概率必须是 0 到 1 之间的有限数值')
+    return positive
 
 
 def run_strategy_and_get_scores(
@@ -241,6 +278,8 @@ def run_strategy_and_get_scores(
     """Combine frequency, omission, and model signals into ball scores."""
     validate_model_sets(ml_models_red, ml_models_blue)
     feature_columns = validate_feature_columns(df_history, feature_columns)
+    if df_history.empty:
+        raise ValueError('评分历史数据不能为空')
 
     last_features = df_history.iloc[[-1]][list(feature_columns)].copy()
     for column in last_features.columns:
@@ -248,6 +287,12 @@ def run_strategy_and_get_scores(
             last_features[column] = last_features[column].fillna(
                 df_history[column].mean()
             )
+    try:
+        feature_values = last_features.to_numpy(dtype=float)
+    except (TypeError, ValueError) as exc:
+        raise ValueError('最新一期模型特征必须为数值') from exc
+    if not np.isfinite(feature_values).all():
+        raise ValueError('最新一期模型特征包含无法填补的非有限值')
 
     red_weighted_freq = get_weighted_frequency(
         df_history['红球'], params['decay_factor']
@@ -269,6 +314,7 @@ def run_strategy_and_get_scores(
         for ball in RED_BALLS
     }
     red_scores = apply_red_score_adjustments(red_scores, df_history, params)
+    red_scores = validate_ball_scores(red_scores, RED_BALLS, '红球')
 
     blue_weighted_freq = get_weighted_frequency(
         df_history['蓝球'].apply(lambda ball: [ball]), params['decay_factor']
@@ -286,4 +332,5 @@ def run_strategy_and_get_scores(
         )
         for ball in BLUE_BALLS
     }
+    blue_scores = validate_ball_scores(blue_scores, BLUE_BALLS, '蓝球')
     return red_scores, blue_scores
