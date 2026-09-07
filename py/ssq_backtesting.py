@@ -29,7 +29,7 @@ from ssq_rule_auditing import (
     audit_historical_rule_coverage as _audit_historical_rule_coverage,
 )
 from ssq_rule_auditing import historical_rule_context as _historical_rule_context
-from ssq_rules import RuleContext
+from ssq_rule_models import RuleContext
 from ssq_selection import (
     CandidateGenerationRequest,
     count_actual_reds_by_rank_band,

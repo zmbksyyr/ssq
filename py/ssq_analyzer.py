@@ -68,9 +68,13 @@ from ssq_reporting import (  # noqa: F401 - compatibility exports
     AnalysisReportData,
     build_analysis_report,
 )
-from ssq_rules import (  # noqa: F401 - compatibility exports
+from ssq_rule_models import (  # noqa: F401 - compatibility exports
+    CombinationScoreContext,
     RecommendationRequest,
     RuleContext,
+    RuleDefinition,
+)
+from ssq_rules import (  # noqa: F401 - compatibility exports
     filter_pipeline_stats,
     select_recommendation_portfolio,
     select_recommendations,
