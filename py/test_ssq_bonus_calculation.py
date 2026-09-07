@@ -1,10 +1,12 @@
 import sys
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 import ssq_bonus_calculation as bonus
+from ssq_core import LOCAL_TIMEZONE
 
 
 class BonusCalculationTests(unittest.TestCase):
@@ -130,6 +132,41 @@ class BonusCalculationTests(unittest.TestCase):
                 [1, 2, 3, 4, 5, 6, 7], [1, 1],
                 {1, 2, 3, 4, 5, 6}, 7,
             )
+
+    def test_complete_bonus_workflow_uses_one_generation_time(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            csv_path = root / 'draws.csv'
+            csv_path.write_text(
+                '期号,日期,红球,蓝球\n'
+                '2026001,2026-01-01,"01,02,03,04,05,06",07\n',
+                encoding='utf-8',
+            )
+            analysis_path = root / 'ssq_analysis_output_20251231_000000.txt'
+            analysis_path.write_text(
+                'Prediction_Target_Issue: 2026001\n'
+                '【单式推荐 (1组)】\n'
+                '组合  1: 红球 [1, 2, 3, 4, 5, 6] 蓝球 [07]\n'
+                '【7+N 复式推荐 (1组)】\n'
+                '红球: [1, 2, 3, 4, 5, 6, 7]\n'
+                '蓝球: [1, 2, 3, 4, 5, 6, 7]\n',
+                encoding='utf-8',
+            )
+            generated_at = datetime(2026, 1, 2, 3, 4, 5, tzinfo=LOCAL_TIMEZONE)
+
+            result = bonus.run_bonus_check(
+                csv_path=csv_path,
+                report_dir=root,
+                generated_at=generated_at,
+            )
+
+            self.assertEqual(
+                Path(result).name, 'ssq_bonus_check_20260102_030405.txt'
+            )
+            report = Path(result).read_text(encoding='utf-8')
+            self.assertIn('报告生成时间: 2026-01-02 03:04:05', report)
+            self.assertIn('核对开奖期数: 2026001', report)
+            self.assertIn('总计参考奖金:', report)
 
 
 if __name__ == '__main__':

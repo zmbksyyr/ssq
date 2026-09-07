@@ -6,9 +6,9 @@
 
 ## 流程
 
-1. `ssq_data_processor.py` 使用含日期的 TXT 权威源更新 `shuangseqiu.csv`，并用 HTML 源交叉核对号码。
+1. `ssq_data_processor.py` 使用含日期的 TXT 权威源更新 `shuangseqiu.csv`，并用 HTML 源交叉核对号码；`ssq_draw_data.py` 统一三个入口的开奖数据校验与规范化。
 2. `ssq_config.py` 管理策略默认值与命令行选项，`ssq_modeling.py` 负责特征工程和号码评分，`ssq_selection.py` 构建候选池并执行组合选择，`ssq_backtesting.py` 负责历史审计与滚动回测，`ssq_workflow.py` 编排完整分析流程，`ssq_rules.py` 管理硬规则与软评分，`ssq_reporting.py` 生成报告；`ssq_analyzer.py` 保留为命令入口。
-3. `ssq_bonus_calculation.py` 使用最新开奖结果核对对应预测报告。
+3. `ssq_prizes.py` 解析投注并计算参考奖金，`ssq_bonus_reporting.py` 格式化核对报告，`ssq_bonus_workflow.py` 编排核对流程；`ssq_bonus_calculation.py` 保留为命令入口。
 4. GitHub Actions 每周一、三、五北京时间 06:00 自动运行并提交结果。
 
 ## 选号策略
