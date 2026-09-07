@@ -4,7 +4,6 @@ import json
 import os
 import random
 import sys
-import threading
 import time
 from collections import Counter
 from dataclasses import dataclass, field
@@ -854,50 +853,37 @@ def find_best_7_red_combinations(passed_combos_tuples, red_pool, red_scores=None
     return [(combo, coverage) for combo, coverage, _ in ranked]
 
 # --- 3. 交互式输入模块 ---
-user_input_lock = threading.Lock() # 线程锁，确保对全局变量的访问安全
-user_input_flag = None # 全局标志，用于记录用户输入或超时状态
+
+
+def is_confirmation_input(value):
+    """Return whether terminal input explicitly confirms the prompt."""
+    if isinstance(value, bytes):
+        value = value.decode(errors='ignore')
+    return value.strip().lower() == 'y'
+
 
 def get_user_input_with_timeout(timeout):
-    """
-    在一个独立的线程中运行，用于在指定秒数内等待用户输入'y'。
-    这是一个非阻塞的输入实现，不会卡住主程序。
-
-    Args:
-        timeout (int): 等待用户输入的秒数。
-    """
-    global user_input_flag
-    start_time = time.time()
-    
+    """Wait up to ``timeout`` seconds and return whether the user confirmed."""
     prompt = f"\n发现大量高质量组合。输入 'y' 并回车可在 {timeout} 秒内查看全部，否则将仅输出随机推荐...\n"
     sys.stdout.write(prompt)
-    sys.stdout.flush() # 强制刷新输出缓冲区
+    sys.stdout.flush()
 
-    # --- 根据不同操作系统选择不同的实现方式 ---
-    if 'msvcrt' in sys.modules: # Windows 实现
-        while time.time() - start_time < timeout and user_input_flag is None:
-            if msvcrt.kbhit(): # 如果检测到键盘敲击
-                char = msvcrt.getch().decode(errors='ignore').lower()
-                if char in ('y', '\r', '\n'): # 接受 'y' 或直接回车
-                    with user_input_lock:
-                        user_input_flag = 'y'
-                    break
-            time.sleep(0.1) # 短暂休眠，避免CPU空转
-    else: # Linux/Mac 实现
-        # 使用select监听标准输入流(sys.stdin)
+    confirmed = False
+    if 'msvcrt' in sys.modules:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if msvcrt.kbhit() and is_confirmation_input(msvcrt.getch()):
+                confirmed = True
+                break
+            time.sleep(0.1)
+    else:
         rlist, _, _ = select.select([sys.stdin], [], [], timeout)
-        if rlist: # 如果在超时前监听到输入
-            s = sys.stdin.readline().strip().lower()
-            if s == 'y':
-                with user_input_lock:
-                    user_input_flag = 'y'
-    
-    # 倒计时结束后，检查标志位
-    with user_input_lock:
-        if user_input_flag is None: # 如果用户始终没有输入
-            user_input_flag = 'timeout' # 标记为超时
-    
+        if rlist:
+            confirmed = is_confirmation_input(sys.stdin.readline())
+
     sys.stdout.write("\n倒计时结束。\n")
     sys.stdout.flush()
+    return confirmed
 
 # --- 4. 核心功能模块 (回测与预测) ---
 
@@ -1153,10 +1139,7 @@ if __name__ == '__main__':
         for i, combo in enumerate(passed_combos_tuples, 1): 
             print(f"  组合 {i:>2}: {' '.join(f'{n:02d}' for n in combo)}")
     elif len(passed_combos_tuples) >= INTERACTIVE_THRESHOLD and not args.non_interactive:
-        input_thread = threading.Thread(target=get_user_input_with_timeout, args=(COUNTDOWN_SECONDS,))
-        input_thread.start()
-        input_thread.join()
-        if user_input_flag == 'y':
+        if get_user_input_with_timeout(COUNTDOWN_SECONDS):
             print("\n根据您的确认，输出所有通过检验的组合：")
             for i, combo in enumerate(passed_combos_tuples, 1): 
                 print(f"  组合 {i:>3}: {' '.join(f'{n:02d}' for n in combo)}")

@@ -1,3 +1,4 @@
+import io
 import json
 import random
 import sys
@@ -14,6 +15,38 @@ import ssq_rules as rules
 
 
 class AnalyzerTests(unittest.TestCase):
+  def test_confirmation_input_requires_explicit_y(self):
+    for value in ('y', ' Y\n', b'y'):
+      with self.subTest(value=value):
+        self.assertTrue(analyzer.is_confirmation_input(value))
+    for value in ('', '\n', 'n', b'\r'):
+      with self.subTest(value=value):
+        self.assertFalse(analyzer.is_confirmation_input(value))
+
+  def test_confirmation_wait_does_not_leak_previous_result(self):
+    output = io.StringIO()
+    if hasattr(analyzer, 'msvcrt'):
+      with (
+          patch.object(analyzer.sys, 'stdout', output),
+          patch.object(analyzer.msvcrt, 'kbhit', return_value=True),
+          patch.object(analyzer.msvcrt, 'getch', return_value=b'y'),
+      ):
+        self.assertTrue(analyzer.get_user_input_with_timeout(1))
+      with patch.object(analyzer.sys, 'stdout', output):
+        self.assertFalse(analyzer.get_user_input_with_timeout(0))
+    else:
+      with (
+          patch.object(analyzer.sys, 'stdout', output),
+          patch.object(analyzer.sys, 'stdin', io.StringIO('y\n')),
+          patch.object(analyzer.select, 'select', return_value=([object()], [], [])),
+      ):
+        self.assertTrue(analyzer.get_user_input_with_timeout(1))
+      with (
+          patch.object(analyzer.sys, 'stdout', output),
+          patch.object(analyzer.select, 'select', return_value=([], [], [])),
+      ):
+        self.assertFalse(analyzer.get_user_input_with_timeout(0))
+
   def test_default_backtest_uses_stable_window(self):
     self.assertEqual(analyzer.BACKTEST_PERIODS, 200)
 
