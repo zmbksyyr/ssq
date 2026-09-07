@@ -3,7 +3,7 @@
 from collections import Counter
 from dataclasses import dataclass, field
 
-from ssq_selection import RANK_BAND_WIDTHS
+from ssq_rank_bands import RANK_BAND_WIDTHS
 
 
 @dataclass(frozen=True)

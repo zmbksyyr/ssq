@@ -20,6 +20,7 @@ from ssq_modeling import (
     train_prediction_models,
     validate_model_sets,
 )
+from ssq_rank_bands import build_rank_band_widths
 from ssq_rule_auditing import FILTER_NAMES as _FILTER_NAMES
 from ssq_rule_auditing import (
     audit_historical_hard_pipeline as _audit_historical_hard_pipeline,
@@ -31,7 +32,6 @@ from ssq_rule_auditing import historical_rule_context as _historical_rule_contex
 from ssq_rules import RuleContext
 from ssq_selection import (
     CandidateGenerationRequest,
-    build_rank_band_widths,
     count_actual_reds_by_rank_band,
     generate_candidates,
     make_rejection_set,

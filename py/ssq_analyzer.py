@@ -57,6 +57,13 @@ from ssq_modeling import (  # noqa: F401 - compatibility exports
     validate_feature_columns,
     validate_model_sets,
 )
+from ssq_rank_bands import (  # noqa: F401 - compatibility exports
+    RANK_BAND_WIDTHS,
+    RANK_BANDS,
+    build_rank_band_labels,
+    build_rank_band_widths,
+    build_rank_bands,
+)
 from ssq_reporting import (  # noqa: F401 - compatibility exports
     AnalysisReportData,
     build_analysis_report,
@@ -69,14 +76,9 @@ from ssq_rules import (  # noqa: F401 - compatibility exports
     select_recommendations,
 )
 from ssq_selection import (  # noqa: F401 - compatibility exports
-    RANK_BAND_WIDTHS,
-    RANK_BANDS,
     CandidateGenerationRequest,
     DuplexSelectionRequest,
     RedCandidateSelection,
-    build_rank_band_labels,
-    build_rank_band_widths,
-    build_rank_bands,
     build_red_pool,
     count_actual_reds_by_rank_band,
     find_best_7_red_combinations,

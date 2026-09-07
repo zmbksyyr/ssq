@@ -7,9 +7,9 @@ from itertools import combinations
 from typing import Any
 
 from ssq_core import PRIZE_NAMES
+from ssq_rank_bands import RANK_BAND_NAMES
 from ssq_rules import FILTER_NAMES, HARD_FILTER_NAMES
 
-RANK_BAND_NAMES = ('high', 'middle', 'low', 'other')
 PRIZE_DISPLAY_ORDER = (
     '一等奖', '二等奖', '三等奖', '四等奖', '五等奖', '六等奖',
 )

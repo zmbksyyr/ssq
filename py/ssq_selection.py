@@ -15,6 +15,18 @@ from ssq_config import (
     StrategyConfig,
 )
 from ssq_core import RED_BALLS, parse_issue, validate_ball_scores
+from ssq_rank_bands import (
+    RANK_BAND_NAMES,
+)
+from ssq_rank_bands import (
+    build_rank_band_labels as _build_rank_band_labels,
+)
+from ssq_rank_bands import (
+    build_rank_band_widths as _build_rank_band_widths,
+)
+from ssq_rank_bands import (
+    build_rank_bands as _build_rank_bands,
+)
 from ssq_rules import (
     RecommendationRequest,
     RuleContext,
@@ -25,43 +37,20 @@ from ssq_rules import (
 )
 from tqdm import tqdm
 
-RANK_BAND_NAMES = ('high', 'middle', 'low', 'other')
-
 
 def build_rank_bands(config=DEFAULT_STRATEGY_CONFIG):
-    """Return score-rank bands matching the configured mixed pool."""
-    total = len(RED_BALLS)
-    middle_count = config.pool_size_red - config.high_count - config.low_count
-    available_count = total - config.high_count - config.low_count
-    middle_offset = max(0, (available_count - middle_count) // 2)
-    middle_start = config.high_count + middle_offset + 1
-    return {
-        'high': range(1, config.high_count + 1),
-        'middle': range(middle_start, middle_start + middle_count),
-        'low': range(total - config.low_count + 1, total + 1),
-    }
+    """Compatibility wrapper for shared score-rank band definitions."""
+    return _build_rank_bands(config)
 
 
 def build_rank_band_widths(config=DEFAULT_STRATEGY_CONFIG):
-    bands = build_rank_bands(config)
-    return {
-        **{name: len(ranks) for name, ranks in bands.items()},
-        'other': len(RED_BALLS) - sum(len(ranks) for ranks in bands.values()),
-    }
+    """Compatibility wrapper for shared score-rank band widths."""
+    return _build_rank_band_widths(config)
 
 
 def build_rank_band_labels(config=DEFAULT_STRATEGY_CONFIG):
-    bands = build_rank_bands(config)
-
-    def describe(title, ranks):
-        return title if not ranks else f'{title}({ranks.start}-{ranks.stop - 1})'
-
-    return {
-        'high': describe('高端', bands['high']),
-        'middle': describe('中段', bands['middle']),
-        'low': describe('低端', bands['low']),
-        'other': '其他',
-    }
+    """Compatibility wrapper for shared score-rank band labels."""
+    return _build_rank_band_labels(config)
 
 
 RANK_BANDS = build_rank_bands()

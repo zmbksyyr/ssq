@@ -41,6 +41,7 @@ from ssq_modeling import (
     train_prediction_models,
     validate_model_sets,
 )
+from ssq_rank_bands import build_rank_band_labels, build_rank_band_widths
 from ssq_reporting import AnalysisReportData, build_analysis_report
 from ssq_rule_auditing import (
     audit_historical_hard_pipeline,
@@ -50,8 +51,6 @@ from ssq_rules import RuleContext, filter_pipeline_stats
 from ssq_selection import (
     CandidateGenerationRequest,
     DuplexSelectionRequest,
-    build_rank_band_labels,
-    build_rank_band_widths,
     generate_candidates,
     make_rejection_set,
     rank_duplex_candidates,
