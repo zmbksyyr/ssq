@@ -698,6 +698,77 @@ class AnalyzerTests(unittest.TestCase):
     self.assertEqual(aggregate.windows['earlier'].average_pool_red_hits, 3)
     self.assertEqual(aggregate.windows['recent'].average_pool_red_hits, 4)
 
+  def test_full_backtest_aggregate_equals_sum_of_stability_windows(self):
+    frame = pd.DataFrame({
+        '期号': list(range(2025001, 2025053)),
+        '红球': [[7, 8, 9, 10, 11, 12] for _ in range(50)] + [
+            [1, 2, 3, 8, 9, 10],
+            [1, 2, 3, 4, 5, 6],
+        ],
+        '蓝球': [1 for _ in range(50)] + [7, 8],
+    })
+    red_scores = {ball: float(34 - ball) for ball in range(1, 34)}
+    blue_scores = {ball: float(ball == 8) for ball in range(1, 17)}
+    models = (
+        {ball: object() for ball in range(1, 34)},
+        {ball: object() for ball in range(1, 17)},
+    )
+    strategy = analyzer.StrategyConfig(
+        pool_size_red=6,
+        high_count=2,
+        low_count=2,
+        recommendation_count=1,
+        rejection_lib_size=0,
+    )
+
+    with (
+        patch.object(backtesting, 'train_prediction_models', return_value=models),
+        patch.object(
+            backtesting,
+            'run_strategy_and_get_scores',
+            return_value=(red_scores, blue_scores),
+        ),
+        patch.object(backtesting, 'get_omission', return_value={}),
+        patch.object(backtesting, 'make_rejection_set', return_value=set()),
+        patch.object(
+            selection, 'build_red_pool', return_value=[1, 2, 3, 4, 5, 6]
+        ),
+        patch.object(selection, 'passes_red_filters', return_value=True),
+    ):
+      total = backtesting.run_full_backtest(
+          frame,
+          analyzer.DEFAULT_PARAMS,
+          [],
+          2,
+          config=strategy,
+      )['mixed']
+
+    windows = (total.windows['earlier'], total.windows['recent'])
+    scalar_fields = (
+        'periods', 'active_periods', 'evaluated_periods', 'tickets', 'cost',
+        'winnings', 'pool_red_hits', 'candidate_tickets', 'blue_hit_periods',
+    )
+    counter_fields = (
+        'prize_counts', 'ticket_red_hit_counts', 'candidate_red_hit_counts',
+        'rank_band_hits',
+    )
+
+    for field_name in scalar_fields:
+      self.assertEqual(
+          getattr(total, field_name),
+          sum(getattr(window, field_name) for window in windows),
+          field_name,
+      )
+    for field_name in counter_fields:
+      self.assertEqual(
+          getattr(total, field_name),
+          sum(
+              (getattr(window, field_name) for window in windows),
+              Counter(),
+          ),
+          field_name,
+      )
+
   def test_actual_red_rank_bands_include_unselected_ranks(self):
     scores = {ball: float(34 - ball) for ball in range(1, 34)}
     counts = selection.count_actual_reds_by_rank_band(
