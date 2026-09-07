@@ -52,6 +52,11 @@ from ssq_config import (  # noqa: F401 - compatibility exports
     parse_cli_options,
     validate_strategy_params,
 )
+from ssq_duplex import (  # noqa: F401 - compatibility exports
+    find_best_7_red_combinations,
+    rank_duplex_candidates,
+    validate_duplex_selection_request,
+)
 from ssq_features import (  # noqa: F401 - compatibility exports
     FEATURE_COLUMNS,
     feature_engineer,
@@ -87,10 +92,7 @@ from ssq_scoring import (  # noqa: F401 - compatibility exports
     run_strategy_and_get_scores,
 )
 from ssq_selection import (  # noqa: F401 - compatibility exports
-    find_best_7_red_combinations,
     passes_red_filters,
-    rank_duplex_candidates,
-    validate_duplex_selection_request,
 )
 from ssq_selection_models import (  # noqa: F401 - compatibility exports
     CandidateGenerationRequest,

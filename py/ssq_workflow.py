@@ -39,6 +39,7 @@ from ssq_draw_data import (
     normalize_draw_frame,
     validate_draw_dates_not_future,
 )
+from ssq_duplex import rank_duplex_candidates
 from ssq_features import FEATURE_COLUMNS, feature_engineer
 from ssq_rank_bands import build_rank_band_labels, build_rank_band_widths
 from ssq_reporting import AnalysisReportData, build_analysis_report
@@ -51,9 +52,6 @@ from ssq_rule_registry import filter_pipeline_stats
 from ssq_scoring import (
     get_omission,
     run_strategy_and_get_scores,
-)
-from ssq_selection import (
-    rank_duplex_candidates,
 )
 from ssq_selection_models import CandidateGenerationRequest, DuplexSelectionRequest
 from ssq_training import (

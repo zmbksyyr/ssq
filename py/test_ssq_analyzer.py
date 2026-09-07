@@ -23,6 +23,7 @@ import ssq_backtesting as backtesting
 import ssq_candidates as candidates
 import ssq_config as config
 import ssq_console as console
+import ssq_duplex as duplex
 import ssq_modeling as modeling
 import ssq_reporting as reporting
 import ssq_rule_auditing as auditing
@@ -1093,7 +1094,7 @@ class AnalyzerTests(unittest.TestCase):
   def test_duplex_quality_scores_only_subtickets_that_passed_hard_rules(self):
     passed = [(1, 2, 3, 4, 5, 6)]
     scores = {ball: float(ball) for ball in range(1, 34)}
-    with patch.object(selection, 'score_combination', return_value=1.0) as score:
+    with patch.object(duplex, 'score_combination', return_value=1.0) as score:
       ranked = selection.find_best_7_red_combinations(
           passed,
           range(1, 8),
