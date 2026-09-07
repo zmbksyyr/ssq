@@ -11,8 +11,8 @@ from ssq_data_sources import (
     fetch_full_data_from_txt,
     fetch_latest_data_from_html,
 )
-from ssq_data_store import update_csv_file
 from ssq_domain import DRAW_COLUMNS
+from ssq_history_store import update_csv_file
 from ssq_http import create_http_session
 from ssq_source_comparison import cross_check_sources, find_secondary_only_issues
 from ssq_source_parsing import parse_txt_data
