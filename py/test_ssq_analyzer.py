@@ -4,6 +4,7 @@ import random
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -72,6 +73,44 @@ class AnalyzerTests(unittest.TestCase):
       loaded = analyzer.load_strategy_params(path)
       self.assertTrue(loaded.loaded_from_file)
       self.assertEqual(loaded.values, analyzer.DEFAULT_PARAMS)
+
+  def test_analysis_report_builder_preserves_section_contracts(self):
+    backtest = analyzer.BacktestResult(0, 0, 0, 0, 0, analyzer.Counter())
+    selection = analyzer.RedCandidateSelection((), (), (), ())
+    coverage = {
+        name: {'passed': 0, 'total': 0, 'rate': 0.0}
+        for name in analyzer.FILTER_NAMES
+    }
+    data = analyzer.AnalysisReportData(
+        latest_issue='2026103',
+        target_issue=2026104,
+        generated_at=datetime(2026, 9, 7, 12, 34, 56, tzinfo=timezone.utc),
+        params_loaded=False,
+        params=analyzer.DEFAULT_PARAMS,
+        config=analyzer.DEFAULT_STRATEGY_CONFIG,
+        rejection_seed=123,
+        backtest=backtest,
+        backtests={'mixed': backtest},
+        pool_mode='mixed',
+        pipeline_stats=[],
+        rule_coverage=coverage,
+        hard_pipeline_coverage={
+            'stages': [], 'passed': 0, 'total': 0, 'rate': 0.0,
+        },
+        rule_audit_periods=200,
+        selection=selection,
+        recommended_blues=[],
+        best_7_reds=[],
+    )
+
+    report = analyzer.build_analysis_report(data)
+
+    self.assertIn('Data_Basis_Issue: 2026103', report)
+    self.assertIn('报告生成时间: 2026-09-07 12:34:56', report)
+    self.assertIn('模式: 使用内置的默认参数', report)
+    self.assertIn('[软] prime_composite_ratio', report)
+    self.assertIn('未能生成足够的单式组合', report)
+    self.assertIn('未能生成足够的复式组合', report)
 
   def test_confirmation_input_requires_explicit_y(self):
     for value in ('y', ' Y\n', b'y'):
