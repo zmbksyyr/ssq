@@ -48,6 +48,7 @@ NUM_BLUE_BALLS = 7
 # (建议10000-100000)。值越大，排他性越强，但生成库的时间越长。
 REJECTION_LIB_SIZE = 500000  
 RANDOM_SEED = 42
+REJECTION_SEED_MULTIPLIER = 1_000_000_007
 
 # --- 回测与输出参数 ---
 # 执行历史回测时，使用最近的多少期数据进行验证。
@@ -573,6 +574,11 @@ def make_rejection_set(size, rng=None):
     return rejection_set
 
 
+def rejection_seed_for_issue(base_seed, issue):
+    """Derive a reproducible anti-crowding seed that changes every issue."""
+    return int(base_seed) * REJECTION_SEED_MULTIPLIER + parse_issue(issue)
+
+
 def passes_red_filters(combo, omission_values, last_10_draws_sets, last_draw_set,
                        last_2_draw_set, rejection_set=None):
     """Single source of truth for live selection and historical backtests."""
@@ -1082,7 +1088,10 @@ def run_full_backtest(full_df, params, feature_columns, num_periods, pool_modes=
             rank_band_hits = count_actual_reds_by_rank_band(red_scores, actual_red_set)
             
             # --- 在回测的每一步都重新应用完整的过滤流程 ---
-            rejection_set = make_rejection_set(REJECTION_LIB_SIZE, random.Random(RANDOM_SEED + i))
+            rejection_seed = rejection_seed_for_issue(RANDOM_SEED, actual_draw['期号'])
+            rejection_set = make_rejection_set(
+                REJECTION_LIB_SIZE, random.Random(rejection_seed)
+            )
             omission = get_omission(history_df_for_step)
             last_10 = [set(d) for d in history_df_for_step.iloc[-10:]['红球'].tolist()]
             last_1 = last_10[-1]; last_2 = last_10[-2]
@@ -1168,7 +1177,6 @@ if __name__ == '__main__':
     BACKTEST_PERIODS = args.backtest_periods
     REJECTION_LIB_SIZE = args.rejection_size
     RANDOM_SEED = args.seed
-    random.seed(RANDOM_SEED)
 
     print("="*70)
     print("         双色球策略分析器 v7.0")
@@ -1182,6 +1190,11 @@ if __name__ == '__main__':
     full_df = feature_engineer(full_df)
     FEATURE_COLUMNS = [col for col in full_df.columns if col not in ['期号', '日期', '红球', '蓝球']]
     rule_coverage = audit_historical_rule_coverage(full_df, args.rule_audit_periods)
+    latest_issue = str(full_df.iloc[-1]['期号'])
+    try:
+        target_issue = infer_next_issue(latest_issue, full_df.iloc[-1]['日期'])
+    except (TypeError, ValueError) as exc:
+        raise SystemExit(f"错误: 无法推导下一期期号: {exc}")
     print("数据加载与特征工程完成。")
 
     # --- [阶段 2/8] 执行严谨的历史回测 ---
@@ -1223,8 +1236,11 @@ if __name__ == '__main__':
     # --- [阶段 5/8] 规则过滤 ---
     print("\n[阶段 5/8] 正在从大底中生成组合并应用硬规则过滤...")
     
-    # 生成反撞号排除库。
-    rejection_set = make_rejection_set(REJECTION_LIB_SIZE, random.Random(RANDOM_SEED))
+    # 同一期可复现，不同期变化；与滚动回测采用完全相同的派生规则。
+    rejection_seed = rejection_seed_for_issue(RANDOM_SEED, target_issue)
+    rejection_set = make_rejection_set(
+        REJECTION_LIB_SIZE, random.Random(rejection_seed)
+    )
 
     # 提前计算过滤所需的历史数据
     omission_values = get_omission(full_df)
@@ -1278,12 +1294,6 @@ if __name__ == '__main__':
     report_lines = []
     report_lines.append("="*60); report_lines.append("          双色球策略分析与推荐报告 (高级过滤版)"); report_lines.append("="*60)
     
-    latest_issue = str(full_df.iloc[-1]['期号'])
-    try:
-        target_issue = infer_next_issue(latest_issue, full_df.iloc[-1]['日期'])
-    except (TypeError, ValueError) as exc:
-        raise SystemExit(f"错误: 无法推导下一期期号: {exc}")
-
     report_lines.append("\n--- 0. 报告元数据 ---")
     report_lines.append(f"Data_Basis_Issue: {latest_issue}")
     report_lines.append(f"Prediction_Target_Issue: {target_issue}")
@@ -1292,6 +1302,8 @@ if __name__ == '__main__':
     report_lines.append("\n--- 1. 策略参数与回测 ---")
     mode_desc = "加载已固化的参数" if params_loaded else "使用内置的默认参数"
     report_lines.append(f"模式: {mode_desc}")
+    report_lines.append(f"  - anti_crowding_size  : {REJECTION_LIB_SIZE}")
+    report_lines.append(f"  - anti_crowding_seed  : {RANDOM_SEED} -> {rejection_seed} (目标期派生)")
     for key, val in params.items(): 
         report_lines.append(f"  - {key:<20}: {val}")
     

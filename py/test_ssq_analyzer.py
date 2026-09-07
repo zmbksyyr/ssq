@@ -58,6 +58,12 @@ class AnalyzerTests(unittest.TestCase):
     with self.assertRaises(ValueError):
       analyzer.make_rejection_set(analyzer.TOTAL_RED_COMBINATIONS + 1)
 
+  def test_rejection_seed_is_reproducible_and_issue_specific(self):
+    first = analyzer.rejection_seed_for_issue(42, 2026104)
+    self.assertEqual(first, analyzer.rejection_seed_for_issue(42, "2026104"))
+    self.assertNotEqual(first, analyzer.rejection_seed_for_issue(42, 2026105))
+    self.assertNotEqual(first, analyzer.rejection_seed_for_issue(43, 2026104))
+
 
   def test_filter_explanation_includes_prime_rule(self):
     combo = (1, 2, 4, 6, 8, 10)
@@ -190,6 +196,7 @@ class AnalyzerTests(unittest.TestCase):
 
   def test_backtest_tracks_evaluation_and_hit_quality(self):
     frame = pd.DataFrame({
+        "期号": list(range(2025001, 2025052)),
         "红球": [[7, 8, 9, 10, 11, 12] for _ in range(50)]
                 + [[1, 13, 22, 30, 32, 33]],
         "蓝球": [1 for _ in range(50)] + [7],
@@ -204,6 +211,7 @@ class AnalyzerTests(unittest.TestCase):
         patch.object(
             analyzer, "run_strategy_and_get_scores", return_value=(red_scores, blue_scores)
         ),
+        patch.object(analyzer, "rejection_seed_for_issue", return_value=123) as seed_mock,
         patch.object(analyzer, "make_rejection_set", return_value=set()),
         patch.object(analyzer, "get_omission", return_value={}),
         patch.object(analyzer, "build_red_pool", return_value=[1, 2, 3, 4, 13, 14]),
@@ -213,6 +221,7 @@ class AnalyzerTests(unittest.TestCase):
           frame, analyzer.DEFAULT_PARAMS, [], 1
       )["mixed"]
 
+    seed_mock.assert_called_once_with(analyzer.RANDOM_SEED, 2025051)
     self.assertEqual(result.periods, 1)
     self.assertEqual(result.evaluated_periods, 1)
     self.assertEqual(result.active_periods, 1)
