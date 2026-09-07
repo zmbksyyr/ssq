@@ -107,6 +107,67 @@ class AnalyzerTests(unittest.TestCase):
     self.assertEqual(options.backtest_periods, 3)
     self.assertTrue(options.non_interactive)
 
+  def test_analysis_workflow_maps_stage_results_into_report(self):
+    options = config.AnalyzerOptions(
+        backtest_periods=0,
+        rejection_size=0,
+        non_interactive=True,
+    )
+    history = workflow.PreparedHistory(
+        frame=pd.DataFrame(),
+        feature_columns=('feature',),
+        latest_issue='2026103',
+        target_issue=2026104,
+        sha256='a' * 64,
+    )
+    loaded_params = config.LoadedStrategyParams({'param': 1}, True)
+    evaluation = workflow.HistoricalEvaluation(
+        loaded_params=loaded_params,
+        rule_coverage={'rule': 'coverage'},
+        hard_pipeline_coverage={'hard': 'coverage'},
+        backtests={'mixed': 'backtest'},
+        selected_backtest='backtest',
+    )
+    candidate_selection = SimpleNamespace(
+        passed_combos=((1, 2, 3, 4, 5, 6),),
+        red_pool=(1, 2, 3, 4, 5, 6, 7),
+    )
+    current = workflow.CurrentSelection(
+        red_scores={number: float(number) for number in range(1, 8)},
+        recommended_blues=[16],
+        rejection_seed=123,
+        rule_context='context',
+        candidate_selection=candidate_selection,
+        pipeline_stats=[{'stage': 'hard'}],
+    )
+    generated_at = datetime(2026, 9, 7, 12, 34, 56, tzinfo=timezone.utc)
+
+    with (
+        patch.object(workflow, 'prepare_history', return_value=history),
+        patch.object(workflow, 'evaluate_history', return_value=evaluation),
+        patch.object(workflow, 'train_final_models', return_value=('red', 'blue')),
+        patch.object(workflow, 'select_current_issue', return_value=current),
+        patch.object(workflow, 'display_passed_combinations') as display,
+        patch.object(workflow, 'find_best_7_red_combinations', return_value=['best']),
+        patch.object(workflow, 'local_now', return_value=generated_at),
+        patch.object(workflow, 'collect_runtime_versions', return_value={'python': 'test'}),
+        patch.object(workflow, 'save_analysis_report', return_value='report.txt') as save,
+        patch('sys.stdout', new_callable=io.StringIO),
+    ):
+      result = workflow.run_analysis(options)
+
+    self.assertEqual(result, 'report.txt')
+    display.assert_called_once_with(candidate_selection.passed_combos, True)
+    report_data = save.call_args.args[0]
+    self.assertEqual(report_data.latest_issue, history.latest_issue)
+    self.assertEqual(report_data.target_issue, history.target_issue)
+    self.assertIs(report_data.backtest, evaluation.selected_backtest)
+    self.assertIs(report_data.selection, candidate_selection)
+    self.assertEqual(report_data.recommended_blues, [16])
+    self.assertEqual(report_data.rejection_seed, 123)
+    self.assertEqual(report_data.history_sha256, 'a' * 64)
+    self.assertEqual(report_data.runtime_versions, {'python': 'test'})
+
   def test_runtime_versions_cover_model_dependencies(self):
     versions = workflow.collect_runtime_versions()
 
