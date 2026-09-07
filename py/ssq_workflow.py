@@ -42,8 +42,8 @@ from ssq_draw_data import (
 from ssq_duplex import rank_duplex_candidates
 from ssq_features import FEATURE_COLUMNS, feature_engineer
 from ssq_rank_bands import build_rank_band_labels, build_rank_band_widths
+from ssq_report_builder import build_analysis_report
 from ssq_report_models import AnalysisReportData
-from ssq_reporting import build_analysis_report
 from ssq_rule_auditing import (
     audit_historical_hard_pipeline,
     audit_historical_rule_coverage,
