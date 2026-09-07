@@ -192,6 +192,14 @@ DEFAULT_STRATEGY_CONFIG = StrategyConfig()
 
 
 @dataclass(frozen=True)
+class RedCandidateSelection:
+    red_pool: tuple[int, ...]
+    potential_combos: tuple[tuple[int, ...], ...]
+    passed_combos: tuple[tuple[int, ...], ...]
+    recommendations: tuple[tuple[int, ...], ...]
+
+
+@dataclass(frozen=True)
 class BacktestResult:
     periods: int
     active_periods: int
@@ -685,6 +693,40 @@ def build_red_pool(red_scores, config=DEFAULT_STRATEGY_CONFIG, mode="mixed"):
     return sorted(dict.fromkeys(high + middle + low))
 
 
+def generate_red_candidates(
+    red_scores,
+    context,
+    rejection_set,
+    config=DEFAULT_STRATEGY_CONFIG,
+    mode="mixed",
+    show_progress=False,
+):
+    """Run the shared red-ball selection pipeline for live runs and backtests."""
+    red_pool = tuple(build_red_pool(red_scores, config=config, mode=mode))
+    potential_combos = tuple(combinations(red_pool, 6))
+    iterator = (
+        tqdm(potential_combos, desc="规则过滤进度", ncols=80)
+        if show_progress else potential_combos
+    )
+    passed_combos = tuple(
+        combo for combo in iterator
+        if passes_red_filters(combo, context, rejection_set)
+    )
+    recommendations = tuple(select_recommendations(
+        passed_combos,
+        red_scores,
+        context.last_draw,
+        context.previous_draw,
+        limit=config.recommendation_count,
+    ))
+    return RedCandidateSelection(
+        red_pool=red_pool,
+        potential_combos=potential_combos,
+        passed_combos=passed_combos,
+        recommendations=recommendations,
+    )
+
+
 def make_rejection_set(size, rng=None):
     """Create a reproducible anti-crowding sample of six-red combinations."""
     if not 0 <= size <= TOTAL_RED_COMBINATIONS:
@@ -863,34 +905,29 @@ def evaluate_backtest_mode(mode, current, actual_red_set, actual_blue,
                            recommended_blue, rank_band_hits, red_scores,
                            context, rejection_set, config):
     """Evaluate one pool mode for one historical issue."""
-    red_pool = build_red_pool(red_scores, config=config, mode=mode)
+    selection = generate_red_candidates(
+        red_scores, context, rejection_set, config=config, mode=mode
+    )
     current.evaluated_periods += 1
-    current.pool_red_hits += len(set(red_pool) & actual_red_set)
+    current.pool_red_hits += len(set(selection.red_pool) & actual_red_set)
     current.rank_band_hits.update(rank_band_hits)
     if recommended_blue == actual_blue:
         current.blue_hit_periods += 1
 
-    passed_combos = [
-        combo for combo in combinations(sorted(red_pool), 6)
-        if passes_red_filters(combo, context, rejection_set)
-    ]
-    if not passed_combos:
+    if not selection.passed_combos:
         return
 
     red_hits_by_combo = {
-        combo: len(set(combo) & actual_red_set) for combo in passed_combos
+        combo: len(set(combo) & actual_red_set)
+        for combo in selection.passed_combos
     }
-    current.candidate_tickets += len(passed_combos)
+    current.candidate_tickets += len(selection.passed_combos)
     current.candidate_red_hit_counts.update(red_hits_by_combo.values())
-    selected_combos = select_recommendations(
-        passed_combos, red_scores, context.last_draw, context.previous_draw,
-        limit=config.recommendation_count,
-    )
     current.active_periods += 1
-    current.tickets += len(selected_combos)
-    current.cost += len(selected_combos) * 2
+    current.tickets += len(selection.recommendations)
+    current.cost += len(selection.recommendations) * 2
     blue_hits = int(recommended_blue == actual_blue)
-    for combo in selected_combos:
+    for combo in selection.recommendations:
         red_hits = red_hits_by_combo[combo]
         current.ticket_red_hit_counts[red_hits] += 1
         hit_key = (red_hits, blue_hits)
@@ -1066,11 +1103,9 @@ if __name__ == '__main__':
     # --- [阶段 4/8] 执行对下一期的预测 ---
     print("\n[阶段 4/8] 正在为下一期号码进行机器学习评分...")
     red_scores, blue_scores = run_strategy_and_get_scores(full_df, params, final_ml_models_red, final_ml_models_blue, FEATURE_COLUMNS)
-    red_pool = build_red_pool(red_scores, config=config, mode=args.pool_mode)
     recommended_blues = sorted(
         blue_scores, key=blue_scores.get, reverse=True
     )[:config.blue_count]
-    print(f"已根据ML评分选出 {config.pool_size_red} 个红球大底: {sorted(red_pool)}")
 
     # --- [阶段 5/8] 规则过滤 ---
     print("\n[阶段 5/8] 正在从大底中生成组合并应用硬规则过滤...")
@@ -1093,20 +1128,20 @@ if __name__ == '__main__':
         previous_draw=last_2_draw_set,
     )
     
-    # 从红球大底中生成所有可能的6球组合
-    potential_combos = list(combinations(sorted(red_pool), 6))
-    
-    # --- 核心过滤流程 (展开形式) ---
-    passed_combos_tuples = []
-    # 遍历所有由大底生成的潜在组合
-    for r in tqdm(potential_combos, desc="规则过滤进度", ncols=80):
-        # 硬规则负责淘汰组合，软规则在最终排序时参与评分。
-        is_passed = passes_red_filters(r, context, rejection_set)
+    selection = generate_red_candidates(
+        red_scores,
+        context,
+        rejection_set,
+        config=config,
+        mode=args.pool_mode,
+        show_progress=True,
+    )
+    red_pool = selection.red_pool
+    potential_combos = selection.potential_combos
+    passed_combos_tuples = selection.passed_combos
+    final_selection = selection.recommendations
 
-        # 组合通过全部硬规则后进入候选列表。
-        if is_passed:
-            passed_combos_tuples.append(r)
-
+    print(f"已根据ML评分选出 {config.pool_size_red} 个红球大底: {list(red_pool)}")
     print(f"过滤完成！共有 {len(passed_combos_tuples)} 组号码通过硬规则检验。")
     pipeline_stats = filter_pipeline_stats(
         potential_combos, context, rejection_set
@@ -1265,10 +1300,6 @@ if __name__ == '__main__':
         f"\n【单式推荐 ({config.recommendation_count}组)】"
     )
     if passed_combos_tuples:
-        final_selection = select_recommendations(
-            passed_combos_tuples, red_scores, last_draw_set, last_2_draw_set,
-            limit=config.recommendation_count,
-        )
         for i, combo in enumerate(final_selection, 1):
             report_lines.append(f"  组合 {i:>2}: 红球 {list(combo)!s:<24} 蓝球 [{top_blue:02d}]")
     else:

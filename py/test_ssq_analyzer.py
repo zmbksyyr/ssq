@@ -71,6 +71,43 @@ class AnalyzerTests(unittest.TestCase):
     with self.assertRaises(ValueError):
       analyzer.build_red_pool(scores, mode="invalid")
 
+  def test_candidate_generation_uses_one_selection_pipeline(self):
+    scores = {ball: float(ball) for ball in range(1, 34)}
+    context = rules.RuleContext(last_draw={1}, previous_draw={2})
+    rejected = {(1, 2, 3, 4, 5, 6)}
+    config = analyzer.StrategyConfig(
+        pool_size_red=7,
+        high_count=2,
+        low_count=2,
+        recommendation_count=2,
+        rejection_lib_size=1,
+    )
+
+    def fake_filter(combo, actual_context, actual_rejection):
+      self.assertIs(actual_context, context)
+      self.assertIs(actual_rejection, rejected)
+      return combo not in actual_rejection
+
+    def fake_select(combos, *_args, **_kwargs):
+      return list(combos)[:2]
+
+    with (
+        patch.object(analyzer, 'build_red_pool', return_value=list(range(1, 8))),
+        patch.object(analyzer, 'passes_red_filters', side_effect=fake_filter) as check,
+        patch.object(analyzer, 'select_recommendations', side_effect=fake_select) as select,
+    ):
+      result = analyzer.generate_red_candidates(
+          scores, context, rejected, config=config
+      )
+
+    self.assertEqual(result.red_pool, tuple(range(1, 8)))
+    self.assertEqual(len(result.potential_combos), 7)
+    self.assertEqual(len(result.passed_combos), 6)
+    self.assertNotIn(next(iter(rejected)), result.passed_combos)
+    self.assertEqual(result.recommendations, result.passed_combos[:2])
+    self.assertEqual(check.call_count, 7)
+    self.assertEqual(select.call_args.kwargs['limit'], 2)
+
   def test_strategy_config_rejects_incoherent_selection_limits(self):
     with self.assertRaises(ValueError):
       analyzer.StrategyConfig(pool_size_red=5)
