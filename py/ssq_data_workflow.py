@@ -7,15 +7,14 @@ import sys
 from ssq_data_sources import (
     HTML_DATA_URL,
     TXT_DATA_URL,
-    create_http_session,
-    cross_check_sources,
     fetch_full_data_from_txt,
     fetch_latest_data_from_html,
-    find_secondary_only_issues,
-    parse_txt_data,
 )
 from ssq_data_store import update_csv_file
 from ssq_domain import DRAW_COLUMNS
+from ssq_http import create_http_session
+from ssq_source_comparison import cross_check_sources, find_secondary_only_issues
+from ssq_source_parsing import parse_txt_data
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
