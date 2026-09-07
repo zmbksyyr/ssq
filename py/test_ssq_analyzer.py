@@ -760,6 +760,20 @@ class AnalyzerTests(unittest.TestCase):
     ranked = selection.find_best_7_red_combinations(passed, pool, scores)
     self.assertEqual(ranked[0], ((2, 3, 4, 5, 6, 7, 8), 7))
 
+  def test_duplex_quality_scores_only_subtickets_that_passed_hard_rules(self):
+    passed = [(1, 2, 3, 4, 5, 6)]
+    scores = {ball: float(ball) for ball in range(1, 34)}
+    with patch.object(selection, 'score_red_combination', return_value=1.0) as score:
+      ranked = selection.find_best_7_red_combinations(
+          passed,
+          range(1, 8),
+          scores,
+      )
+
+    self.assertEqual(ranked, [((1, 2, 3, 4, 5, 6, 7), 1)])
+    self.assertEqual(score.call_count, 1)
+    self.assertEqual(score.call_args.args[0], passed[0])
+
   def test_backtest_result_metrics(self):
     result = backtesting.BacktestResult(
         50, 48, 480, 960, 280, {}, evaluated_periods=50,

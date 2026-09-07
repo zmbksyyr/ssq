@@ -199,7 +199,11 @@ def find_best_7_red_combinations(
         ncols=80,
     ):
         subtickets = list(combinations(seven_combo, 6))
-        coverage = sum(subticket in passed_combos_set for subticket in subtickets)
+        valid_subtickets = [
+            subticket for subticket in subtickets
+            if subticket in passed_combos_set
+        ]
+        coverage = len(valid_subtickets)
         if not coverage:
             continue
         quality = 0.0
@@ -213,8 +217,8 @@ def find_best_7_red_combinations(
                     rank_center_scores,
                     context,
                 )
-                for subticket in subtickets
-            ) / len(subtickets)
+                for subticket in valid_subtickets
+            ) / coverage
         ranked.append((seven_combo, coverage, quality))
     ranked.sort(key=lambda item: (-item[1], -item[2], item[0]))
     return [(combo, coverage) for combo, coverage, _ in ranked]
