@@ -74,6 +74,7 @@ from ssq_rules import (  # noqa: F401 - compatibility exports
     filter_pipeline_stats,
     select_recommendation_portfolio,
     select_recommendations,
+    validate_recommendation_request,
 )
 from ssq_selection import (  # noqa: F401 - compatibility exports
     CandidateGenerationRequest,
@@ -88,6 +89,8 @@ from ssq_selection import (  # noqa: F401 - compatibility exports
     passes_red_filters,
     rank_duplex_candidates,
     rejection_seed_for_issue,
+    validate_candidate_generation_request,
+    validate_duplex_selection_request,
 )
 from ssq_workflow import (  # noqa: F401 - compatibility exports
     CSV_PATH,

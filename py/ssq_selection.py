@@ -10,11 +10,17 @@ from math import comb
 from ssq_config import (
     DEFAULT_STRATEGY_CONFIG,
     RANDOM_SEED,
+    RED_POOL_MODES,
     REJECTION_SEED_MULTIPLIER,
     TOTAL_RED_COMBINATIONS,
     StrategyConfig,
 )
-from ssq_core import RED_BALLS, parse_issue, validate_ball_scores
+from ssq_core import (
+    RED_BALLS,
+    parse_issue,
+    parse_red_balls,
+    validate_ball_scores,
+)
 from ssq_rank_bands import (
     RANK_BAND_NAMES,
 )
@@ -83,6 +89,61 @@ class DuplexSelectionRequest:
     context: RuleContext = field(default_factory=RuleContext)
 
 
+def validate_candidate_generation_request(request):
+    """Validate candidate-generation controls before enumerating combinations."""
+    if not isinstance(request, CandidateGenerationRequest):
+        raise TypeError('request must be a CandidateGenerationRequest')
+    if not isinstance(request.context, RuleContext):
+        raise TypeError('context must be a RuleContext')
+    if not isinstance(request.config, StrategyConfig):
+        raise TypeError('config must be a StrategyConfig')
+    if not isinstance(request.red_scores, Mapping):
+        raise TypeError('red_scores must be a mapping')
+    if request.mode not in RED_POOL_MODES:
+        raise ValueError(f'unknown pool mode: {request.mode}')
+    if not isinstance(request.show_progress, bool):
+        raise TypeError('show_progress must be a bool')
+    if request.rejection_set is not None and (
+        not isinstance(request.rejection_set, Collection)
+        or isinstance(request.rejection_set, (str, bytes))
+    ):
+        raise TypeError('rejection_set must be a collection or None')
+
+
+def validate_duplex_selection_request(request):
+    """Validate and materialize duplex inputs before exhaustive ranking."""
+    if not isinstance(request, DuplexSelectionRequest):
+        raise TypeError('request must be a DuplexSelectionRequest')
+    if not isinstance(request.context, RuleContext):
+        raise TypeError('context must be a RuleContext')
+    if not isinstance(request.red_pool, Collection) or isinstance(
+        request.red_pool, (str, bytes)
+    ):
+        raise TypeError('red_pool must be a collection')
+    red_pool = tuple(parse_red_balls(
+        request.red_pool,
+        expected_count=len(request.red_pool),
+    ))
+    if len(red_pool) < 7:
+        raise ValueError('red_pool must contain at least 7 balls')
+    if not isinstance(request.passed_combos, Collection) or isinstance(
+        request.passed_combos, (str, bytes)
+    ):
+        raise TypeError('passed_combos must be a collection')
+    passed_combos = tuple(
+        tuple(parse_red_balls(combo)) for combo in request.passed_combos
+    )
+    if len(passed_combos) != len(set(passed_combos)):
+        raise ValueError('passed_combos cannot contain duplicates')
+    if any(not set(combo).issubset(red_pool) for combo in passed_combos):
+        raise ValueError('every passed combination must belong to red_pool')
+    red_scores = (
+        validate_ball_scores(request.red_scores, RED_BALLS, 'red ball')
+        if request.red_scores is not None else None
+    )
+    return passed_combos, red_pool, red_scores
+
+
 def count_actual_reds_by_rank_band(
     red_scores,
     actual_reds,
@@ -137,8 +198,7 @@ def build_red_pool(red_scores, config=DEFAULT_STRATEGY_CONFIG, mode='mixed'):
 
 def generate_candidates(request):
     """Run the shared red-ball selection pipeline for live runs and backtests."""
-    if not isinstance(request, CandidateGenerationRequest):
-        raise TypeError('request 必须为 CandidateGenerationRequest')
+    validate_candidate_generation_request(request)
     red_pool = tuple(build_red_pool(
         request.red_scores,
         config=request.config,
@@ -207,24 +267,23 @@ def rejection_seed_for_issue(base_seed, issue):
 
 def rank_duplex_candidates(request):
     """Rank every 7-red ticket by valid subticket coverage, then strategy score."""
-    if not isinstance(request, DuplexSelectionRequest):
-        raise TypeError('request 必须为 DuplexSelectionRequest')
-    if not request.passed_combos:
+    passed_combos, red_pool, red_scores = validate_duplex_selection_request(request)
+    if not passed_combos:
         return []
 
-    passed_combos_set = set(request.passed_combos)
+    passed_combos_set = set(passed_combos)
     scoring_context = (
         build_combination_score_context(
-            request.red_scores,
+            red_scores,
             request.context,
         )
-        if request.red_scores else None
+        if red_scores is not None else None
     )
     ranked = []
-    seven_ball_combos = combinations(sorted(request.red_pool), 7)
+    seven_ball_combos = combinations(red_pool, 7)
     for seven_combo in tqdm(
         seven_ball_combos,
-        total=comb(len(request.red_pool), 7),
+        total=comb(len(red_pool), 7),
         desc='生成7红球大底',
         leave=False,
         ncols=80,

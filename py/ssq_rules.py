@@ -5,8 +5,12 @@ from itertools import combinations
 from math import isclose, isfinite
 from numbers import Real
 
-from ssq_config import MAX_SHARED_RED_BALLS, NUM_RECOMMENDATIONS
-from ssq_core import PRIME_RED_BALLS
+from ssq_config import (
+    MAX_SHARED_RED_BALLS,
+    NUM_RECOMMENDATIONS,
+    normalize_integer_param,
+)
+from ssq_core import PRIME_RED_BALLS, RED_BALLS, parse_red_balls
 
 COMBINATION_SIGNAL_WEIGHT = 0.50
 
@@ -42,6 +46,48 @@ class RecommendationRequest:
     context: RuleContext
     limit: int = NUM_RECOMMENDATIONS
     max_shared: int = MAX_SHARED_RED_BALLS
+
+
+def validate_recommendation_request(request):
+    """Validate and materialize recommendation inputs at the API boundary."""
+    if not isinstance(request, RecommendationRequest):
+        raise TypeError('request must be a RecommendationRequest')
+    if not isinstance(request.context, RuleContext):
+        raise TypeError('context must be a RuleContext')
+    limit = normalize_integer_param('limit', request.limit)
+    max_shared = normalize_integer_param('max_shared', request.max_shared)
+    if limit < 0:
+        raise ValueError('limit cannot be negative')
+    if not 0 <= max_shared <= 6:
+        raise ValueError('max_shared must be between 0 and 6')
+    if not isinstance(request.red_scores, Mapping):
+        raise TypeError('red_scores must be a mapping')
+    if isinstance(request.passed_combos, (str, bytes)):
+        raise TypeError('passed_combos must be an iterable of combinations')
+    try:
+        passed_combos = tuple(
+            tuple(parse_red_balls(combo)) for combo in request.passed_combos
+        )
+    except TypeError as exc:
+        raise TypeError('passed_combos must be an iterable of combinations') from exc
+    if len(passed_combos) != len(set(passed_combos)):
+        raise ValueError('passed_combos cannot contain duplicates')
+    invalid_balls = [ball for ball in request.red_scores if ball not in RED_BALLS]
+    if invalid_balls:
+        raise ValueError(f'red_scores contains invalid balls: {invalid_balls}')
+    required_balls = {ball for combo in passed_combos for ball in combo}
+    missing_balls = sorted(required_balls - set(request.red_scores))
+    if missing_balls:
+        raise ValueError(f'red_scores is missing candidate balls: {missing_balls}')
+    red_scores = {}
+    for ball, value in request.red_scores.items():
+        if isinstance(value, bool) or not isinstance(value, Real):
+            raise TypeError(f'red ball {ball} score must be numeric')
+        value = float(value)
+        if not isfinite(value):
+            raise ValueError(f'red ball {ball} score must be finite')
+        red_scores[ball] = value
+    return passed_combos, red_scores, limit, max_shared
 
 
 def is_prime(number):
@@ -411,18 +457,17 @@ def score_red_combination(combo, red_scores, last_draw=None, previous_draw=None,
 
 def select_recommendation_portfolio(request):
     """Select a diverse portfolio from ranked valid combinations."""
-    if not isinstance(request, RecommendationRequest):
-        raise TypeError('request 必须为 RecommendationRequest')
-    if request.limit <= 0:
+    passed_combos, red_scores, limit, max_shared = (
+        validate_recommendation_request(request)
+    )
+    if limit == 0:
         return []
-    if not 0 <= request.max_shared <= 6:
-        raise ValueError('max_shared must be between 0 and 6')
     scoring_context = build_combination_score_context(
-        request.red_scores,
+        red_scores,
         request.context,
     )
     ranked = sorted(
-        request.passed_combos,
+        passed_combos,
         key=lambda combo: (
             -score_combination(combo, scoring_context),
             combo,
@@ -430,7 +475,7 @@ def select_recommendation_portfolio(request):
     )
     selected = []
     selected_sets = []
-    for overlap_limit in range(request.max_shared, 7):
+    for overlap_limit in range(max_shared, 7):
         for combo in ranked:
             if combo in selected:
                 continue
@@ -439,7 +484,7 @@ def select_recommendation_portfolio(request):
                    for previous in selected_sets):
                 selected.append(combo)
                 selected_sets.append(candidate)
-                if len(selected) == request.limit:
+                if len(selected) == limit:
                     return selected
     return selected
 
