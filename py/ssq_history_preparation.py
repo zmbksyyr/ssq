@@ -5,12 +5,12 @@ from dataclasses import dataclass
 from typing import Any
 
 import pandas as pd
-from ssq_core import infer_next_issue
 from ssq_draw_data import (
     fingerprint_draw_frame,
     normalize_draw_frame,
     validate_draw_dates_not_future,
 )
+from ssq_draw_schedule import infer_next_issue
 from ssq_features import FEATURE_COLUMNS, feature_engineer
 from ssq_workflow_models import PreparedHistory
 

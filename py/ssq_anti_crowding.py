@@ -8,8 +8,8 @@ from ssq_config import (
     TOTAL_RED_COMBINATIONS,
     normalize_integer_param,
 )
-from ssq_core import parse_issue
 from ssq_domain import RED_BALLS
+from ssq_parsing import parse_issue
 
 
 def make_rejection_set(size, rng=None):

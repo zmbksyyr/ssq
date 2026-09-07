@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from importlib.metadata import version
 from typing import Any
 
-from ssq_core import atomic_write_text
+from ssq_file_io import atomic_write_text
 from ssq_report_builder import build_analysis_report
 
 RUNTIME_PACKAGES = ('numpy', 'pandas', 'lightgbm', 'scikit-learn')

@@ -3,8 +3,8 @@
 import re
 from math import comb
 
-from ssq_core import parse_blue_ball, parse_blue_balls, parse_red_balls
 from ssq_domain import PRIZE_NAMES, PRIZE_RULES
+from ssq_parsing import parse_blue_ball, parse_blue_balls, parse_red_balls
 
 SINGLE_HEADER_PATTERN = re.compile(r'^【单式推荐 \((\d+)组\)】$', re.MULTILINE)
 DUPLEX_HEADER_PATTERN = re.compile(r'^【7\+N 复式推荐 \(1组\)】$', re.MULTILINE)

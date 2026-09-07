@@ -1,9 +1,9 @@
 """Compatibility facade for features, training, and strategy scoring."""
 
 import ssq_features as _features
+import ssq_parsing as _parsing
 import ssq_scoring as _scoring
 import ssq_training as _training
-from ssq_core import validate_ball_scores  # noqa: F401 - compatibility export
 
 FEATURE_COLUMNS = _features.FEATURE_COLUMNS
 feature_engineer = _features.feature_engineer
@@ -17,6 +17,7 @@ train_prediction_models = _training.train_prediction_models
 validate_model_sets = _training.validate_model_sets
 predict_positive_probability = _training.predict_positive_probability
 lgb = _training.lgb
+validate_ball_scores = _parsing.validate_ball_scores
 
 get_omission = _scoring.get_omission
 get_weighted_frequency = _scoring.get_weighted_frequency

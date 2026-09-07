@@ -4,8 +4,8 @@ from collections.abc import Collection
 from itertools import combinations
 from math import comb
 
-from ssq_core import parse_red_balls, validate_ball_scores
 from ssq_domain import RED_BALLS
+from ssq_parsing import parse_red_balls, validate_ball_scores
 from ssq_ranking import build_combination_score_context, score_combination
 from ssq_rule_models import RuleContext
 from ssq_selection_models import DuplexSelectionRequest

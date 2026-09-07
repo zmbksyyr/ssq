@@ -1,3 +1,4 @@
+import ast
 import sys
 import tempfile
 import unittest
@@ -20,6 +21,25 @@ from ssq_core import (
 
 
 class CoreValidationTests(unittest.TestCase):
+    def test_runtime_modules_do_not_depend_on_compatibility_facade(self):
+        module_dir = Path(__file__).parent
+        offenders = []
+        for path in module_dir.glob('ssq_*.py'):
+            if path.name == 'ssq_core.py':
+                continue
+            tree = ast.parse(path.read_text(encoding='utf-8'))
+            if any(
+                isinstance(node, (ast.Import, ast.ImportFrom))
+                and (
+                    getattr(node, 'module', None) == 'ssq_core'
+                    or any(alias.name == 'ssq_core' for alias in node.names)
+                )
+                for node in ast.walk(tree)
+            ):
+                offenders.append(path.name)
+
+        self.assertEqual(offenders, [])
+
     def test_shared_ball_domains_are_complete(self):
         self.assertEqual(RED_BALLS, tuple(range(1, 34)))
         self.assertEqual(BLUE_BALLS, tuple(range(1, 17)))

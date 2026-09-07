@@ -6,7 +6,7 @@ from datetime import date
 import requests
 from bs4 import BeautifulSoup
 from requests.adapters import HTTPAdapter
-from ssq_core import parse_blue_ball, parse_issue, parse_red_balls
+from ssq_parsing import parse_blue_ball, parse_issue, parse_red_balls
 from urllib3.util.retry import Retry
 
 TXT_DATA_URL = 'https://data.17500.cn/ssq_asc.txt'

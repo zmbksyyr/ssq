@@ -23,14 +23,15 @@ from ssq_console import (
 from ssq_console import (
     is_confirmation_input as _is_confirmation_input,
 )
-from ssq_core import atomic_write_text, infer_next_issue, local_now
 from ssq_draw_data import (
     fingerprint_draw_frame,
     normalize_draw_frame,
     validate_draw_dates_not_future,
 )
+from ssq_draw_schedule import infer_next_issue, local_now
 from ssq_duplex import rank_duplex_candidates
 from ssq_features import feature_engineer
+from ssq_file_io import atomic_write_text
 from ssq_rank_bands import build_rank_band_labels, build_rank_band_widths
 from ssq_report_builder import build_analysis_report
 from ssq_report_models import AnalysisReportData
