@@ -4,6 +4,7 @@ import logging
 import os
 import sys
 
+import ssq_paths as _paths
 from ssq_data_sources import (
     HTML_DATA_URL,
     TXT_DATA_URL,
@@ -16,9 +17,9 @@ from ssq_http import create_http_session
 from ssq_source_comparison import cross_check_sources, find_secondary_only_issues
 from ssq_source_parsing import parse_txt_data
 
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
-CSV_FILE_PATH = os.path.join(PROJECT_ROOT, 'shuangseqiu.csv')
+SCRIPT_DIR = _paths.SCRIPT_DIR
+PROJECT_ROOT = _paths.PROJECT_ROOT
+CSV_FILE_PATH = _paths.CSV_PATH
 logger = logging.getLogger('ssq_data_processor')
 
 

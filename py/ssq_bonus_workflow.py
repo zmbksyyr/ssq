@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import ssq_latest_draw as _latest_draw
+import ssq_paths as _paths
 import ssq_report_discovery as _report_discovery
 from pandas.errors import ParserError
 from ssq_bet_parsing import parse_report_bets
@@ -14,10 +15,10 @@ from ssq_draw_data import normalize_draw_frame, validate_draw_dates_not_future
 from ssq_draw_schedule import local_now
 from ssq_file_io import atomic_write_text
 
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
-CSV_PATH = os.path.join(PROJECT_ROOT, 'shuangseqiu.csv')
-REPORT_DIR = os.path.join(PROJECT_ROOT, 'report')
+SCRIPT_DIR = _paths.SCRIPT_DIR
+PROJECT_ROOT = _paths.PROJECT_ROOT
+CSV_PATH = _paths.CSV_PATH
+REPORT_DIR = _paths.REPORT_DIR
 TARGET_ISSUE_PATTERN = _report_discovery.TARGET_ISSUE_PATTERN
 parse_report_target_issue = _report_discovery.parse_report_target_issue
 

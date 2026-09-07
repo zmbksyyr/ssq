@@ -1,9 +1,8 @@
 """Application workflow for loading data, running analysis, and saving reports."""
 
-import os
-
 import ssq_history_evaluation as _history_evaluation
 import ssq_history_preparation as _history_preparation
+import ssq_paths as _paths
 import ssq_prediction_workflow as _prediction_workflow
 import ssq_report_output as _report_output
 import ssq_strategy_params as _strategy_params
@@ -51,11 +50,11 @@ from ssq_training import (
     validate_model_sets,
 )
 
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
-CSV_PATH = os.path.join(PROJECT_ROOT, 'shuangseqiu.csv')
-PARAMS_JSON_PATH = os.path.join(PROJECT_ROOT, 'best_params.json')
-REPORT_DIR = os.path.join(PROJECT_ROOT, 'report')
+SCRIPT_DIR = _paths.SCRIPT_DIR
+PROJECT_ROOT = _paths.PROJECT_ROOT
+CSV_PATH = _paths.CSV_PATH
+PARAMS_JSON_PATH = _paths.PARAMS_JSON_PATH
+REPORT_DIR = _paths.REPORT_DIR
 RUNTIME_PACKAGES = _report_output.RUNTIME_PACKAGES
 PreparedHistory = _workflow_models.PreparedHistory
 HistoricalEvaluation = _workflow_models.HistoricalEvaluation
