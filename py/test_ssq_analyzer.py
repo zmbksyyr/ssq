@@ -976,6 +976,36 @@ class AnalyzerTests(unittest.TestCase):
           field_name,
       )
 
+  def test_backtest_skips_equal_length_model_sets_with_wrong_ball_keys(self):
+    frame = pd.DataFrame({
+        '期号': list(range(2025001, 2025052)),
+        '红球': [[1, 2, 3, 4, 5, 6] for _ in range(51)],
+        '蓝球': [1 for _ in range(51)],
+    })
+    red_models = {ball: object() for ball in range(1, 33)}
+    red_models[34] = object()
+    blue_models = {ball: object() for ball in range(1, 17)}
+
+    with (
+        patch.object(
+            backtesting,
+            'train_prediction_models',
+            return_value=(red_models, blue_models),
+        ),
+        patch.object(backtesting, 'run_strategy_and_get_scores') as score,
+    ):
+      result = backtesting.run_full_backtest(
+          frame,
+          analyzer.DEFAULT_PARAMS,
+          modeling.FEATURE_COLUMNS,
+          1,
+          config=analyzer.StrategyConfig(rejection_lib_size=0),
+      )['mixed']
+
+    self.assertEqual(result.periods, 1)
+    self.assertEqual(result.evaluated_periods, 0)
+    score.assert_not_called()
+
   def test_actual_red_rank_bands_include_unselected_ranks(self):
     scores = {ball: float(34 - ball) for ball in range(1, 34)}
     counts = selection.count_actual_reds_by_rank_band(

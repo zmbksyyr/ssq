@@ -12,11 +12,12 @@ from ssq_config import (
     normalize_integer_param,
     validate_strategy_params,
 )
-from ssq_core import BLUE_BALLS, PRIZE_RULES, RED_BALLS
+from ssq_core import PRIZE_RULES
 from ssq_modeling import (
     get_omission,
     run_strategy_and_get_scores,
     train_prediction_models,
+    validate_model_sets,
 )
 from ssq_rules import FILTER_NAMES, RED_RULES, RuleContext, explain_filter_failures
 from ssq_selection import (
@@ -418,10 +419,9 @@ def run_full_backtest(
                 training_data,
                 feature_columns,
             )
-            if (
-                len(red_models) != len(RED_BALLS)
-                or len(blue_models) != len(BLUE_BALLS)
-            ):
+            try:
+                validate_model_sets(red_models, blue_models)
+            except ValueError:
                 progress.update(1)
                 continue
 
