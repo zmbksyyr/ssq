@@ -4,6 +4,7 @@ from ssq_backtesting import (  # noqa: F401 - compatibility exports
     FILTER_NAMES,
     BacktestAccumulator,
     BacktestIssue,
+    BacktestRequest,
     BacktestResult,
     BacktestSelectionInputs,
     audit_historical_hard_pipeline,
@@ -11,6 +12,7 @@ from ssq_backtesting import (  # noqa: F401 - compatibility exports
     evaluate_backtest_mode,
     historical_rule_context,
     record_backtest_selection,
+    run_backtest,
     run_full_backtest,
     validate_backtest_request,
 )

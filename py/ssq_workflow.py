@@ -12,9 +12,10 @@ from typing import Any
 
 import pandas as pd
 from ssq_backtesting import (
+    BacktestRequest,
     audit_historical_hard_pipeline,
     audit_historical_rule_coverage,
-    run_full_backtest,
+    run_backtest,
 )
 from ssq_config import (
     COUNTDOWN_SECONDS,
@@ -200,13 +201,15 @@ def evaluate_history(history, options):
         history.frame,
         options.rule_audit_periods,
     )
-    backtests = run_full_backtest(
+    backtests = run_backtest(
         history.frame,
-        loaded_params.values,
-        history.feature_columns,
-        options.backtest_periods,
-        pool_modes=options.backtest_pool_modes,
-        config=options.strategy_config,
+        BacktestRequest(
+            params=loaded_params.values,
+            feature_columns=history.feature_columns,
+            num_periods=options.backtest_periods,
+            pool_modes=options.backtest_pool_modes,
+            config=options.strategy_config,
+        ),
     )
     return HistoricalEvaluation(
         loaded_params=loaded_params,

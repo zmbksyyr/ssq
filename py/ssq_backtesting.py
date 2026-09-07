@@ -194,6 +194,15 @@ class BacktestRunContext:
 
 
 @dataclass(frozen=True)
+class BacktestRequest:
+    params: dict
+    feature_columns: Sequence[str]
+    num_periods: int
+    pool_modes: Sequence[str] = ('mixed',)
+    config: StrategyConfig = DEFAULT_STRATEGY_CONFIG
+
+
+@dataclass(frozen=True)
 class PreparedBacktestIssue:
     issue: BacktestIssue
     selection_inputs: BacktestSelectionInputs
@@ -427,21 +436,18 @@ def prepare_backtest_issue(full_df, index, run_context):
     )
 
 
-def run_full_backtest(
-    full_df,
-    params,
-    feature_columns,
-    num_periods,
-    pool_modes=('mixed',),
-    config=DEFAULT_STRATEGY_CONFIG,
-):
+def run_backtest(full_df, request):
     """Run a rolling backtest that retrains using only earlier draws."""
+    if not isinstance(request, BacktestRequest):
+        raise TypeError('request 必须为 BacktestRequest')
     num_periods, pool_modes = validate_backtest_request(
-        num_periods,
-        pool_modes,
-        config,
+        request.num_periods,
+        request.pool_modes,
+        request.config,
     )
-    params = validate_strategy_params(params)
+    params = validate_strategy_params(request.params)
+    feature_columns = request.feature_columns
+    config = request.config
     print('\n' + '=' * 70)
     print(f'        最近 {num_periods} 期完整策略滚动回测')
     print('=' * 70)
@@ -508,3 +514,24 @@ def run_full_backtest(
         ))
         for mode, value in metrics.items()
     }
+
+
+def run_full_backtest(
+    full_df,
+    params,
+    feature_columns,
+    num_periods,
+    pool_modes=('mixed',),
+    config=DEFAULT_STRATEGY_CONFIG,
+):
+    """Compatibility wrapper for the request-based backtest API."""
+    return run_backtest(
+        full_df,
+        BacktestRequest(
+            params=params,
+            feature_columns=feature_columns,
+            num_periods=num_periods,
+            pool_modes=pool_modes,
+            config=config,
+        ),
+    )

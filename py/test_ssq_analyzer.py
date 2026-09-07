@@ -94,10 +94,12 @@ class AnalyzerTests(unittest.TestCase):
   def test_analyzer_reexports_backtesting_functions(self):
     self.assertIs(analyzer.BacktestResult, backtesting.BacktestResult)
     self.assertIs(analyzer.BacktestIssue, backtesting.BacktestIssue)
+    self.assertIs(analyzer.BacktestRequest, backtesting.BacktestRequest)
     self.assertIs(
         analyzer.BacktestSelectionInputs,
         backtesting.BacktestSelectionInputs,
     )
+    self.assertIs(analyzer.run_backtest, backtesting.run_backtest)
     self.assertIs(analyzer.run_full_backtest, backtesting.run_full_backtest)
 
   def test_analyzer_reexports_workflow_entrypoint(self):
@@ -1049,6 +1051,28 @@ class AnalyzerTests(unittest.TestCase):
         with self.subTest(request=request), self.assertRaises((TypeError, ValueError)):
           backtesting.run_full_backtest(**kwargs)
       train.assert_not_called()
+
+  def test_legacy_backtest_api_builds_request_without_losing_options(self):
+    strategy = analyzer.StrategyConfig(rejection_lib_size=17, random_seed=9)
+    with patch.object(backtesting, 'run_backtest', return_value='result') as run:
+      result = backtesting.run_full_backtest(
+          'frame',
+          {'weight': 1},
+          ('feature',),
+          12,
+          pool_modes=('high', 'low'),
+          config=strategy,
+      )
+
+    self.assertEqual(result, 'result')
+    self.assertEqual(run.call_args.args[0], 'frame')
+    request = run.call_args.args[1]
+    self.assertIsInstance(request, backtesting.BacktestRequest)
+    self.assertEqual(request.params, {'weight': 1})
+    self.assertEqual(request.feature_columns, ('feature',))
+    self.assertEqual(request.num_periods, 12)
+    self.assertEqual(request.pool_modes, ('high', 'low'))
+    self.assertIs(request.config, strategy)
 
   def test_backtest_result_preserves_earlier_and_recent_windows(self):
     earlier = backtesting.BacktestResult(
