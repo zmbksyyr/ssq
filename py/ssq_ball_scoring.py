@@ -8,10 +8,10 @@ import numpy as np
 from ssq_config import validate_strategy_params
 from ssq_domain import BLUE_BALLS, RED_BALLS
 from ssq_features import validate_feature_columns
+from ssq_model_validation import predict_positive_probability, validate_model_sets
 from ssq_parsing import validate_ball_scores
 from ssq_score_adjustments import apply_red_score_adjustments
 from ssq_score_signals import get_omission, get_weighted_frequency
-from ssq_training import predict_positive_probability, validate_model_sets
 
 
 @dataclass(frozen=True)
