@@ -1,29 +1,11 @@
 """LightGBM model specifications, training, and prediction validation."""
 
-from collections.abc import Callable, Sequence
-from dataclasses import dataclass
-from types import MappingProxyType
-
 import lightgbm as lgb
 import numpy as np
 from ssq_domain import BLUE_BALLS, RED_BALLS
 from ssq_features import validate_feature_columns
+from ssq_model_contracts import MODEL_TRAINING_PARAMS, BallModelSpec
 from tqdm import tqdm
-
-MODEL_TRAINING_PARAMS = MappingProxyType({
-    'random_state': 42,
-    'deterministic': True,
-    'force_col_wise': True,
-    'verbose': -1,
-})
-
-
-@dataclass(frozen=True)
-class BallModelSpec:
-    candidates: Sequence[int]
-    outcome_column: str
-    contains_candidate: Callable[[object, int], bool]
-    description: str | None = None
 
 
 def train_models_for_spec(training_df, feature_columns, spec):
