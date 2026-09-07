@@ -4,25 +4,15 @@ import os
 import glob
 import re
 from math import comb
+from ssq_core import (
+    PRIZE_NAMES, PRIZE_RULES, parse_blue_ball, parse_blue_balls, parse_red_balls,
+)
 
 # --- 动态路径设置 ---
 script_dir = os.path.dirname(os.path.abspath(__file__))
 root_dir = os.path.dirname(script_dir)
 CSV_PATH = os.path.join(root_dir, 'shuangseqiu.csv')
 REPORT_DIR = os.path.join(root_dir, 'report')
-
-# --- 1. 全局常量定义 ---
-
-# 奖金规则与名称定义
-PRIZE_RULES = {
-    (6, 1): 5000000, (6, 0): 100000, (5, 1): 3000, (5, 0): 200,
-    (4, 1): 200, (4, 0): 10, (3, 1): 10, (2, 1): 5, (1, 1): 5, (0, 1): 5
-}
-PRIZE_NAMES = {
-    (6, 1): "一等奖", (6, 0): "二等奖", (5, 1): "三等奖", 
-    (5, 0): "四等奖", (4, 1): "四等奖", (4, 0): "五等奖", 
-    (3, 1): "五等奖", (2, 1): "六等奖", (1, 1): "六等奖", (0, 1): "六等奖"
-}
 
 # --- 2. 核心功能函数 ---
 
@@ -66,11 +56,11 @@ def parse_report_bets(filepath):
     with open(filepath, 'r', encoding='utf-8') as f:
         for line in f:
             line = line.strip()
-            if "【单式推荐 (10组)】" in line:
+            if line.startswith("【单式推荐"):
                 in_single_section = True
                 in_duplex_section = False
                 continue
-            if "【7+7 复式推荐 (1组)】" in line:
+            if line.startswith("【7+") and "复式推荐" in line:
                 in_single_section = False
                 in_duplex_section = True
                 continue
@@ -79,8 +69,8 @@ def parse_report_bets(filepath):
                 try:
                     reds_str = re.search(r'\[(.*?)\]', line).group(1)
                     blue_str = re.search(r'蓝球 \[(.*?)\]', line).group(1)
-                    reds = [int(r) for r in reds_str.split(', ')]
-                    blue = int(blue_str)
+                    reds = parse_red_balls(reds_str)
+                    blue = parse_blue_ball(blue_str)
                     single_bets.append({'red': reds, 'blue': blue})
                 except Exception:
                     continue # 忽略格式不正确的行
@@ -89,10 +79,10 @@ def parse_report_bets(filepath):
                 try:
                     if "红球:" in line:
                         reds_str = re.search(r'\[(.*?)\]', line).group(1)
-                        duplex_bet['red'] = [int(r) for r in reds_str.split(', ')]
+                        duplex_bet['red'] = parse_red_balls(reds_str, expected_count=7)
                     if "蓝球:" in line:
                         blues_str = re.search(r'\[(.*?)\]', line).group(1)
-                        duplex_bet['blue'] = [int(b) for b in blues_str.split(', ')]
+                        duplex_bet['blue'] = parse_blue_balls(blues_str)
                         in_duplex_section = False # 解析完毕
                 except Exception:
                     continue
@@ -117,7 +107,8 @@ def calculate_duplex_prize(bet_reds, bet_blues, winning_reds, winning_blue):
     
     red_hits = len(set(bet_reds) & winning_reds)
     red_misses = len(bet_reds) - red_hits
-    blue_hit = 1 if winning_blue in set(bet_blues) else 0
+    unique_blues = set(bet_blues)
+    blue_hit = 1 if winning_blue in unique_blues else 0
 
     for (r_needed, b_needed), prize_value in PRIZE_RULES.items():
         if r_needed > red_hits:
@@ -126,11 +117,15 @@ def calculate_duplex_prize(bet_reds, bet_blues, winning_reds, winning_blue):
         # 计算红球组合数
         red_combos = comb(red_hits, r_needed) * comb(red_misses, 6 - r_needed)
         
-        # 检查蓝球是否匹配
-        if blue_hit == b_needed:
+        if b_needed == 1:
+            blue_combos = blue_hit
+        else:
+            blue_combos = len(unique_blues) - blue_hit
+        winning_tickets = red_combos * blue_combos
+        if winning_tickets:
             prize_name = PRIZE_NAMES.get((r_needed, b_needed))
-            prize_breakdown[prize_name] = prize_breakdown.get(prize_name, 0) + red_combos
-            total_prize += red_combos * prize_value
+            prize_breakdown[prize_name] = prize_breakdown.get(prize_name, 0) + winning_tickets
+            total_prize += winning_tickets * prize_value
             
     summary = f"总计命中 {red_hits} 个红球, {blue_hit} 个蓝球"
     return total_prize, prize_breakdown, summary
@@ -143,23 +138,23 @@ if __name__ == '__main__':
         ssq_df = pd.read_csv(CSV_PATH, header=0)
         latest_draw = ssq_df.iloc[-1]
         target_issue = latest_draw['期号']
-        winning_reds = set([int(r) for r in latest_draw['红球'].split(',')])
-        winning_blue = int(latest_draw['蓝球'])
+        winning_reds = set(parse_red_balls(latest_draw['红球']))
+        winning_blue = parse_blue_ball(latest_draw['蓝球'])
     except Exception as e:
         print(f"读取 {CSV_PATH} 文件失败: {e}")
-        exit()
+        raise SystemExit(1)
 
     # 2. 查找匹配的报告
     report_filepath, error_msg = find_matching_report(target_issue)
     if error_msg:
         print(error_msg)
-        exit()
+        raise SystemExit(1)
         
     # 3. 解析报告中的投注
     single_bets, duplex_bet = parse_report_bets(report_filepath)
-    if not single_bets or not duplex_bet['red']:
+    if not single_bets or not duplex_bet['red'] or not duplex_bet['blue']:
         print(f"错误: 未能从报告 {report_filepath} 中成功解析出投注号码。")
-        exit()
+        raise SystemExit(1)
 
     # 4. 计算奖金
     total_single_bonus = 0

@@ -5,6 +5,13 @@ on:
     - cron: '0 22 * * 0,2,4'
   workflow_dispatch:
 
+permissions:
+  contents: write
+
+concurrency:
+  group: ssq-daily-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   daily_process:
     runs-on: ubuntu-latest
@@ -37,6 +44,9 @@ jobs:
         # [MODIFIED] 指定 py/ 文件夹下的依赖文件
         pip install -r py/requirements.txt
 
+    - name: Run unit tests
+      run: python -m unittest discover -s py -p 'test_*.py' -v
+
     - name: Step 1 - Run data acquisition script
       # [MODIFIED] 使用 working-directory 指令，让命令在 py/ 文件夹内执行
       working-directory: ./py
@@ -44,7 +54,7 @@ jobs:
 
     - name: Step 2 - Run analysis script
       working-directory: ./py
-      run: python ssq_analyzer.py
+      run: python ssq_analyzer.py --compare-pools --non-interactive
 
     - name: Step 3 - Run bonus calculation script
       working-directory: ./py
@@ -60,7 +70,7 @@ jobs:
           local fixed_name=$3
           local keep=3
           echo "--- Processing files in '${search_dir}' with prefix: '${prefix}_*.txt' ---"
-          mapfile -t files < <(find "${search_dir}" -maxdepth 1 -name "${prefix}_*.txt" -print0 | xargs -0 ls -1 | sort)
+          mapfile -t files < <(find "${search_dir}" -maxdepth 1 -type f -name "${prefix}_*.txt" -print | sort)
           local count=${#files[@]}
           echo "Found $count files."
           if [ "$count" -eq 0 ]; then

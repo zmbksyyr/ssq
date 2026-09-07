@@ -24,6 +24,8 @@ import io
 import logging
 from contextlib import redirect_stdout, redirect_stderr
 import csv
+from datetime import datetime
+from ssq_core import parse_blue_ball, parse_red_balls
 
 # ==============================================================================
 # --- 配置区 ---
@@ -156,15 +158,13 @@ def fetch_latest_data_from_html(url: str = HTML_DATA_URL) -> list:
                 blue_ball_str = cells[2].text.strip()
 
                 # 验证号码格式
-                red_numbers = [int(x) for x in red_balls_str.split(',')]
-                blue_number = int(blue_ball_str)
-                if len(red_numbers) != 6 or not (1 <= blue_number <= 16):
-                    continue
+                red_numbers = parse_red_balls(red_balls_str)
+                blue_number = parse_blue_ball(blue_ball_str)
 
                 data.append({
                     '期号': period_text,
-                    '红球': red_balls_str,
-                    '蓝球': blue_ball_str
+                    '红球': ",".join(f"{number:02d}" for number in red_numbers),
+                    '蓝球': f"{blue_number:02d}"
                 })
             except (ValueError, IndexError) as e:
                 logger.warning(f"解析表格行时出错: {row.text.strip()}. 错误: {e}. 跳过此行。")
@@ -230,11 +230,16 @@ def parse_txt_data(data_lines: list) -> list:
             date = fields[1]
             red_balls = ",".join(fields[2:8])
             blue_ball = fields[8]
-            # 基础验证
-            if qihao.isdigit() and len(date.split('-')) == 3:
-                parsed_data.append([qihao, date, red_balls, blue_ball])
-        except IndexError:
-            logger.warning(f"解析TXT行时索引错误: {line}")
+            red_numbers = parse_red_balls(red_balls)
+            blue_number = parse_blue_ball(blue_ball)
+            datetime.strptime(date, "%Y-%m-%d")
+            if qihao.isdigit():
+                parsed_data.append([
+                    qihao, date, ",".join(f"{number:02d}" for number in red_numbers),
+                    f"{blue_number:02d}"
+                ])
+        except (IndexError, ValueError) as exc:
+            logger.warning(f"解析TXT行失败: {line}. 错误: {exc}")
             continue
     logger.info(f"从TXT数据中成功解析出 {len(parsed_data)} 条有效记录。")
     return parsed_data
@@ -260,7 +265,7 @@ def update_csv_file(csv_path: str, all_new_data: list):
     """
     if not all_new_data:
         logger.info("没有新的数据可供更新，CSV文件保持不变。")
-        return
+        return False
 
     try:
         # 将新数据列表转换为DataFrame
@@ -308,9 +313,11 @@ def update_csv_file(csv_path: str, all_new_data: list):
         # 保存到CSV
         final_df.to_csv(csv_path, index=False, encoding='utf-8', quoting=csv.QUOTE_MINIMAL)
         logger.info(f"CSV文件已成功更新并保存至: {csv_path}。总计 {len(final_df)} 条记录。")
+        return True
 
     except Exception as e:
         logger.error(f"更新CSV文件时发生严重错误: {e}")
+        return False
 
 
 # ==============================================================================
@@ -325,6 +332,9 @@ if __name__ == "__main__":
     txt_parsed_list = parse_txt_data(txt_data_lines)
     # 将解析后的列表转换为更易于处理的字典列表
     txt_data_dicts = [{'期号': r[0], '日期': r[1], '红球': r[2], '蓝球': r[3]} for r in txt_parsed_list]
+    if not txt_data_dicts:
+        logger.error("TXT 权威数据源未返回有效记录，拒绝使用无日期的 HTML 数据更新 CSV。")
+        raise SystemExit(1)
 
     # 步骤 2: 从HTML网页获取最新数据（不含日期），作为补充
     html_data_dicts = fetch_latest_data_from_html()
@@ -343,9 +353,10 @@ if __name__ == "__main__":
         merged_data_dict[item['期号']] = item
 
     # 将合并后的字典转换回列表
-    final_new_data = list(merged_data_dict.values())
+    final_new_data = [item for item in merged_data_dict.values() if item.get('日期')]
     
     # 步骤 4: 更新主CSV文件
-    update_csv_file(CSV_FILE_PATH, final_new_data)
+    if not update_csv_file(CSV_FILE_PATH, final_new_data):
+        raise SystemExit(1)
 
     logger.info("--- 双色球数据处理任务完成 ---")

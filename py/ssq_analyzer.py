@@ -5,7 +5,6 @@ import lightgbm as lgb
 from itertools import combinations
 from collections import Counter
 import datetime
-import warnings
 from tqdm import tqdm
 import os
 import json
@@ -13,6 +12,9 @@ import random
 import time
 import threading
 import sys
+import argparse
+from dataclasses import dataclass
+from ssq_core import PRIZE_NAMES, PRIZE_RULES, parse_blue_ball, parse_red_balls
 
 # --- 平台特定模块导入, 用于实现非阻塞的键盘输入监听 ---
 try:
@@ -22,15 +24,16 @@ except ImportError:
     # 如果导入失败 (说明不是 Windows 平台), 则导入 select, 适用于 Linux/Mac
     import select 
 
-# 忽略所有可能会出现的警告信息, 使最终的输出界面更整洁
-warnings.filterwarnings('ignore')
-
 # --- 1. 全局可调参数与路径设置 ---
 
 # --- 核心策略参数 ---
 # 红球大底号码池的大小。机器学习评分后，选出分数最高的N个红球进入这个池子。
 # (建议15-18)。值越大，后续生成的候选组合越多，计算时间越长，但覆盖面也更广。
-POOL_SIZE_RED = 16          
+# The pool deliberately mixes model ranks.  The old implementation discarded
+# the highest-ranked numbers, which made the strategy both opaque and brittle.
+POOL_SIZE_RED = 17
+RED_HIGH_COUNT = 4
+RED_LOW_COUNT = 4
 
 # 最终在报告中推荐的蓝球个数。
 NUM_BLUE_BALLS = 7          
@@ -39,6 +42,7 @@ NUM_BLUE_BALLS = 7
 # 如果一个精心筛选出的组合也存在于这个随机库中，我们认为它“不够独特”，予以排除。
 # (建议10000-100000)。值越大，排他性越强，但生成库的时间越长。
 REJECTION_LIB_SIZE = 500000  
+RANDOM_SEED = 42
 
 # --- 回测与输出参数 ---
 # 执行历史回测时，使用最近的多少期数据进行验证。
@@ -51,8 +55,90 @@ INTERACTIVE_THRESHOLD = 100
 # 在上面的交互式询问中，给用户的倒计时秒数。
 COUNTDOWN_SECONDS = 10      
 
-# 在最终报告里，随机展示多少注单式推荐。
-NUM_RECOMMENDATIONS = 10    
+# 在最终报告里展示多少注高分单式推荐。
+NUM_RECOMMENDATIONS = 10
+RULE_AUDIT_PERIODS = 200
+TOTAL_RED_COMBINATIONS = 1_107_568
+
+FILTER_NAMES = (
+    'highly_regular', 'sum_value', 'span', 'consecutive_numbers', 'zones',
+    'ac_value', 'prime_composite_ratio', 'big_small_ratio', 'recent_overlap',
+    'all_cold', 'odd_even_ratio', 'modulo3_roads', 'ending_digits',
+    'head_tail_range', 'sum_of_tails', 'related_numbers',
+    'diagonal_consecutive',
+)
+
+HARD_FILTER_NAMES = (
+    'highly_regular', 'sum_value', 'span', 'consecutive_numbers', 'zones',
+    'recent_overlap', 'all_cold', 'ending_digits', 'sum_of_tails',
+    'related_numbers',
+)
+
+SOFT_FILTER_NAMES = tuple(name for name in FILTER_NAMES if name not in HARD_FILTER_NAMES)
+
+DEFAULT_PARAMS = {
+    'decay_factor': 0.995,
+    'weight_freq': 0.3,
+    'weight_omission': 0.4,
+    'weight_ml': 0.3,
+    'hot_lookback': 10,
+    'hot_threshold': 2,
+    'hot_bonus': 1.0,
+    'cold_lookback': 30,
+    'cold_bonus': 1.0,
+    'repeat_bonus': 1.0,
+    'weight_blue_freq': 0.5,
+    'weight_blue_ml': 0.5,
+}
+
+
+def validate_strategy_params(params):
+    merged = {**DEFAULT_PARAMS, **params}
+    if not 0 < merged['decay_factor'] <= 1:
+        raise ValueError('decay_factor 必须在 (0, 1] 范围内')
+    for group in (
+        ('weight_freq', 'weight_omission', 'weight_ml'),
+        ('weight_blue_freq', 'weight_blue_ml'),
+    ):
+        values = [float(merged[name]) for name in group]
+        if any(value < 0 for value in values) or not np.isclose(sum(values), 1.0):
+            raise ValueError(f"权重 {', '.join(group)} 必须非负且总和为 1")
+    for name in ('hot_lookback', 'hot_threshold', 'cold_lookback'):
+        if int(merged[name]) < 0:
+            raise ValueError(f'{name} 不能为负数')
+    for name in ('hot_bonus', 'cold_bonus', 'repeat_bonus'):
+        if float(merged[name]) <= 0:
+            raise ValueError(f'{name} 必须大于 0')
+    return merged
+
+
+@dataclass(frozen=True)
+class StrategyConfig:
+    """All selection knobs live here so backtests and live runs share them."""
+    pool_size_red: int = POOL_SIZE_RED
+    high_count: int = RED_HIGH_COUNT
+    low_count: int = RED_LOW_COUNT
+    blue_count: int = NUM_BLUE_BALLS
+    rejection_lib_size: int = REJECTION_LIB_SIZE
+    random_seed: int = RANDOM_SEED
+
+
+@dataclass(frozen=True)
+class BacktestResult:
+    periods: int
+    active_periods: int
+    tickets: int
+    cost: int
+    winnings: int
+    prize_counts: Counter
+
+    @property
+    def profit(self):
+        return self.winnings - self.cost
+
+    @property
+    def roi(self):
+        return self.winnings / self.cost if self.cost else 0.0
 
 # --- 文件路径设置 (采纳 ssq2 的动态路径方案) ---
 # 获取当前脚本文件所在的目录的绝对路径
@@ -65,13 +151,6 @@ CSV_PATH = os.path.join(root_dir, 'shuangseqiu.csv')
 PARAMS_JSON_PATH = os.path.join(root_dir, 'best_params.json')
 # 构造报告输出目录的绝对路径 (例如: .../ssq/report/)
 REPORT_DIR = os.path.join(root_dir, 'report')
-
-# --- 新增: 奖项规则与名称映射 (来自 ssq2) ---
-# 定义双色球的中奖规则。键是(命中红球数, 命中蓝球数)的元组，值是对应的奖金。
-PRIZE_RULES = {(6, 1): 5000000, (6, 0): 100000, (5, 1): 3000, (5, 0): 200, (4, 1): 200, (4, 0): 10, (3, 1): 10, (2, 1): 5, (1, 1): 5, (0, 1): 5}
-# 定义奖项的中文名称，用于在最终报告中显示。
-PRIZE_NAMES = {(6, 1): "一等奖", (6, 0): "二等奖", (5, 1): "三等奖", (5, 0): "四等奖", (4, 1): "四等奖", (4, 0): "五等奖", (3, 1): "五等奖", (2, 1): "六等奖", (1, 1): "六等奖", (0, 1): "六等奖"}
-
 
 # --- 2. 辅助函数库 ---
 
@@ -95,13 +174,17 @@ def load_and_preprocess_data(filepath=CSV_PATH):
         print(f"错误: 无法加载数据文件 '{filepath}': {e}")
         return None
     
-    # --- 数据清洗和类型转换 ---
-    # 将'红球'列的字符串（如'1,2,3,4,5,6'）转换为排序后的整数列表（如[1, 2, 3, 4, 5, 6]）
-    df['红球'] = df['红球'].apply(lambda x: sorted([int(num) for num in str(x).split(',')]))
-    # 将'蓝球'列的数据类型强制转换为整数
-    df['蓝球'] = df['蓝球'].astype(int)
-    
-    # 按'期号'升序排列，并重置索引，确保数据是严格按照时间顺序从旧到新排列的
+    try:
+        df['期号'] = pd.to_numeric(df['期号'], errors='raise').astype(int)
+        if df['期号'].duplicated().any():
+            raise ValueError("存在重复期号")
+        pd.to_datetime(df['日期'], format='%Y-%m-%d', errors='raise')
+        df['红球'] = df['红球'].apply(parse_red_balls)
+        df['蓝球'] = df['蓝球'].apply(parse_blue_ball)
+    except (TypeError, ValueError) as exc:
+        print(f"错误: 数据文件 '{filepath}' 校验失败: {exc}")
+        return None
+
     return df.sort_values('期号').reset_index(drop=True)
 
 def feature_engineer(df):
@@ -131,7 +214,7 @@ def feature_engineer(df):
     df['red_zone_large'] = df['红球'].apply(lambda x: sum(1 for i in x if 23 <= i <= 33))
     # 特征8: 大数(>16)个数
     df['red_big_count'] = df['红球'].apply(lambda x: sum(1 for i in x if i > 16))
-    # 预先定义1-33中的所有质数，提高计算效率 (注意：1在数学上不是质数，但彩票分析中常被包含)
+    # 预先定义 1-33 中的所有质数，提高计算效率；1 不是质数。
     RED_PRIME_NUMBERS = {2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31}
     # 特征9: 质数个数
     df['red_prime_count'] = df['红球'].apply(lambda x: sum(1 for i in x if i in RED_PRIME_NUMBERS))
@@ -221,6 +304,32 @@ def get_weighted_frequency(series, decay_factor):
             weighted_counts[ball] = weighted_counts.get(ball, 0) + weights[i]
     return pd.Series(weighted_counts)
 
+
+def apply_red_score_adjustments(red_scores, df_history, params):
+    """Apply the hot, cold, and previous-draw bonuses from the original strategy."""
+    adjusted = dict(red_scores)
+    hot_lookback = int(params.get('hot_lookback', 0))
+    hot_threshold = int(params.get('hot_threshold', 0))
+    if hot_lookback > 0 and hot_threshold > 0:
+        recent = df_history.tail(hot_lookback)['红球']
+        hot_counts = Counter(ball for draw in recent for ball in draw)
+        for ball, count in hot_counts.items():
+            if count >= hot_threshold:
+                adjusted[ball] *= params.get('hot_bonus', 1.0)
+
+    cold_lookback = int(params.get('cold_lookback', 0))
+    if cold_lookback > 0:
+        recent_numbers = {
+            ball for draw in df_history.tail(cold_lookback)['红球'] for ball in draw
+        }
+        for ball in set(range(1, 34)) - recent_numbers:
+            adjusted[ball] *= params.get('cold_bonus', 1.0)
+
+    if not df_history.empty:
+        for ball in df_history.iloc[-1]['红球']:
+            adjusted[ball] *= params.get('repeat_bonus', 1.0)
+    return adjusted
+
 def run_strategy_and_get_scores(df_history, params, ml_models_red, ml_models_blue, feature_columns):
     """
     核心评分函数：结合时间加权频率、遗漏值和机器学习预测概率，为所有号码生成综合评分。
@@ -241,7 +350,7 @@ def run_strategy_and_get_scores(df_history, params, ml_models_red, ml_models_blu
     # 如果最新特征中有空值（通常是由于移动平均窗口不足），用历史均值填充
     for col in last_features.columns:
         if last_features[col].isnull().any():
-            last_features[col].fillna(df_history[col].mean(), inplace=True)
+            last_features[col] = last_features[col].fillna(df_history[col].mean())
     
     # 2. 红球评分
     # 计算红球的时间衰减加权频率
@@ -265,6 +374,7 @@ def run_strategy_and_get_scores(df_history, params, ml_models_red, ml_models_blu
         red_scores[ball] = (norm_freq * params['weight_freq'] + 
                             norm_omission * params['weight_omission'] + 
                             red_ml_probs[ball] * params['weight_ml'])
+    red_scores = apply_red_score_adjustments(red_scores, df_history, params)
     
     # 3. 蓝球评分
     # 计算蓝球的时间衰减加权频率 (注意蓝球每期只有一个，所以用apply将其包装成列表)
@@ -289,7 +399,57 @@ def run_strategy_and_get_scores(df_history, params, ml_models_red, ml_models_blu
 # r: 代表一个已排序的6红球组合元组, e.g., (1, 5, 10, 12, 23, 31)
 
 # 预计算1-33中的质数，避免在函数内重复计算
-PRIMES_IN_33 = {1, 2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31} 
+PRIMES_IN_33 = {2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31}
+def build_red_pool(red_scores, config=StrategyConfig(), mode="mixed"):
+    """Build a red pool from one score band or a high/middle/low mixture."""
+    ranked = [ball for ball, _ in sorted(red_scores.items(), key=lambda item: (-item[1], item[0]))]
+    if mode == "high":
+        return sorted(ranked[:config.pool_size_red])
+    if mode == "low":
+        return sorted(ranked[-config.pool_size_red:])
+    if mode == "middle":
+        start = max(0, (len(ranked) - config.pool_size_red) // 2)
+        return sorted(ranked[start:start + config.pool_size_red])
+    if mode != "mixed":
+        raise ValueError(f"unknown pool mode: {mode}")
+    high = ranked[:config.high_count]
+    low = ranked[-config.low_count:] if config.low_count else []
+    middle_count = max(0, config.pool_size_red - len(high) - len(low))
+    available_start = config.high_count
+    available_end = len(ranked) - config.low_count if config.low_count else len(ranked)
+    middle_start = available_start + max(0, (available_end - available_start - middle_count) // 2)
+    middle = ranked[middle_start:middle_start + middle_count]
+    return sorted(list(dict.fromkeys(high + middle + low)))
+
+
+def make_rejection_set(size, rng=None):
+    """Create a reproducible anti-crowding sample of six-red combinations."""
+    if not 0 <= size <= TOTAL_RED_COMBINATIONS:
+        raise ValueError(f"rejection size must be between 0 and {TOTAL_RED_COMBINATIONS}")
+    rng = rng or random.Random(RANDOM_SEED)
+    rejection_set = set()
+    while len(rejection_set) < size:
+        rejection_set.add(tuple(sorted(rng.sample(range(1, 34), 6))))
+    return rejection_set
+
+
+def passes_red_filters(combo, omission_values, last_10_draws_sets, last_draw_set,
+                       last_2_draw_set, rejection_set=None):
+    """Single source of truth for live selection and historical backtests."""
+    return (
+        filter_highly_regular(combo) and filter_sum_value(combo) and
+        filter_span(combo) and filter_consecutive_numbers(combo) and
+        filter_zones(combo) and
+        filter_recent_overlap(combo, last_10_draws_sets) and
+        filter_all_cold(combo, omission_values) and filter_ending_digits(combo) and
+        filter_sum_of_tails(combo) and
+        filter_related_numbers(combo, last_draw_set) and
+        (rejection_set is None or combo not in rejection_set)
+    )
+
+
+
+
 def is_prime(n):
     """判断一个数字是否是预定义的质数。"""
     return n in PRIMES_IN_33
@@ -454,6 +614,113 @@ def filter_diagonal_consecutive(r, last_draw_set, last_2_draw_set):
             return False # 发现斜连号，过滤
     return True
 
+
+def explain_filter_failures(combo, omission_values, last_10_draws_sets,
+                            last_draw_set, last_2_draw_set, rejection_set=None):
+    """Return the names of every rule that rejects a combination."""
+    checks = (
+        ("highly_regular", filter_highly_regular(combo)),
+        ("sum_value", filter_sum_value(combo)),
+        ("span", filter_span(combo)),
+        ("consecutive_numbers", filter_consecutive_numbers(combo)),
+        ("zones", filter_zones(combo)),
+        ("ac_value", filter_ac_value(combo)),
+        ("prime_composite_ratio", filter_prime_composite_ratio(combo)),
+        ("big_small_ratio", filter_big_small_ratio(combo)),
+        ("recent_overlap", filter_recent_overlap(combo, last_10_draws_sets)),
+        ("all_cold", filter_all_cold(combo, omission_values)),
+        ("odd_even_ratio", filter_odd_even_ratio(combo)),
+        ("modulo3_roads", filter_modulo3_roads(combo)),
+        ("ending_digits", filter_ending_digits(combo)),
+        ("head_tail_range", filter_head_tail_range(combo)),
+        ("sum_of_tails", filter_sum_of_tails(combo)),
+        ("related_numbers", filter_related_numbers(combo, last_draw_set)),
+        ("diagonal_consecutive", filter_diagonal_consecutive(combo, last_draw_set, last_2_draw_set)),
+        ("anti_crowding", rejection_set is None or combo not in rejection_set),
+    )
+    return [name for name, passed in checks if not passed]
+
+
+def filter_pipeline_stats(combos, omission_values, last_10_draws_sets,
+                          last_draw_set, last_2_draw_set, rejection_set=None):
+    """Measure each rule's incremental impact in the configured pipeline."""
+    checks = (
+        ("highly_regular", lambda c: filter_highly_regular(c)),
+        ("sum_value", lambda c: filter_sum_value(c)),
+        ("span", lambda c: filter_span(c)),
+        ("consecutive_numbers", lambda c: filter_consecutive_numbers(c)),
+        ("zones", lambda c: filter_zones(c)),
+        ("recent_overlap", lambda c: filter_recent_overlap(c, last_10_draws_sets)),
+        ("all_cold", lambda c: filter_all_cold(c, omission_values)),
+        ("ending_digits", lambda c: filter_ending_digits(c)),
+        ("sum_of_tails", lambda c: filter_sum_of_tails(c)),
+        ("related_numbers", lambda c: filter_related_numbers(c, last_draw_set)),
+        ("anti_crowding", lambda c: rejection_set is None or c not in rejection_set),
+    )
+    remaining = list(combos)
+    stats = []
+    for name, check in checks:
+        before = len(remaining)
+        remaining = [combo for combo in remaining if check(combo)]
+        stats.append({"rule": name, "before": before, "removed": before - len(remaining),
+                      "remaining": len(remaining)})
+    return stats
+
+
+def audit_historical_rule_coverage(full_df, periods=RULE_AUDIT_PERIODS):
+    """Measure how often each strategy rule accepts actual historical draws."""
+    if periods <= 0 or len(full_df) < 11:
+        return {name: {'passed': 0, 'total': 0, 'rate': 0.0} for name in FILTER_NAMES}
+    start = max(10, len(full_df) - periods)
+    passed_counts = Counter()
+    total = 0
+    for index in range(start, len(full_df)):
+        history = full_df.iloc[:index]
+        combo = tuple(full_df.iloc[index]['红球'])
+        last_10 = [set(draw) for draw in history.iloc[-10:]['红球']]
+        failures = set(explain_filter_failures(
+            combo, get_omission(history), last_10, last_10[-1], last_10[-2], None
+        ))
+        for name in FILTER_NAMES:
+            if name not in failures:
+                passed_counts[name] += 1
+        total += 1
+    return {
+        name: {'passed': passed_counts[name], 'total': total,
+               'rate': passed_counts[name] / total if total else 0.0}
+        for name in FILTER_NAMES
+    }
+
+
+def score_red_combination(combo, red_scores, last_draw_set=None, last_2_draw_set=None):
+    """Rank already-valid combinations using soft, explainable preferences."""
+    values = [red_scores.get(ball, 0.0) for ball in combo]
+    max_score = max(red_scores.values(), default=1.0) or 1.0
+    signal = sum(values) / (len(combo) * max_score)
+    odd_even_balance = 1.0 - abs(sum(n % 2 for n in combo) - 3) / 3
+    zone_counts = (
+        sum(n <= 11 for n in combo),
+        sum(12 <= n <= 22 for n in combo),
+        sum(n >= 23 for n in combo),
+    )
+    zone_balance = 1.0 - (max(zone_counts) - min(zone_counts)) / 6
+    prime_balance = 1.0 - abs(sum(is_prime(n) for n in combo) - 3) / 3
+    small_count = sum(n <= 16 for n in combo)
+    big_small_balance = 1.0 - abs(small_count - 3) / 3
+    ac_score = 1.0 if filter_ac_value(combo) else 0.0
+    modulo_score = 1.0 if filter_modulo3_roads(combo) else 0.0
+    head_tail_score = 1.0 if filter_head_tail_range(combo) else 0.0
+    diagonal_score = 1.0
+    if last_draw_set is not None and last_2_draw_set is not None:
+        diagonal_score = 1.0 if filter_diagonal_consecutive(
+            combo, last_draw_set, last_2_draw_set
+        ) else 0.0
+    return (
+        0.50 * signal + 0.10 * odd_even_balance + 0.10 * zone_balance +
+        0.08 * prime_balance + 0.08 * big_small_balance + 0.05 * ac_score +
+        0.04 * modulo_score + 0.03 * head_tail_score + 0.02 * diagonal_score
+    )
+
 def find_best_7_red_combinations(passed_combos_tuples, red_pool):
     """
     从所有通过规则检验的6红球组合中，提炼出覆盖度最高的7红球“小复式”组合。
@@ -556,11 +823,11 @@ def get_user_input_with_timeout(timeout):
 
 # --- 4. 核心功能模块 (回测与预测) ---
 
-def run_full_backtest(full_df, params, feature_columns, num_periods):
+def run_full_backtest(full_df, params, feature_columns, num_periods, pool_modes=("mixed",)):
     """
     [逻辑已修正] 对最近N期执行逻辑严谨的策略回测。
     核心修正: 此函数在回测的每一步，都仅使用当前步之前的数据重新训练模型，避免了“未来数据”的泄露。
-    此函数现在返回 (净利润, 中奖统计, 测试期数) 以便在主报告中格式化输出。
+    返回每种候选池模式对应的 BacktestResult。
     """
     print("\n" + "="*70)
     print(f"        [新功能] 最近 {num_periods} 期完整策略回测 (逻辑严谨版)")
@@ -569,12 +836,14 @@ def run_full_backtest(full_df, params, feature_columns, num_periods):
     # 检查是否有足够的数据进行回测 (需要回测期数 + 至少50期用于模型初次训练)
     if len(full_df) < num_periods + 50:
         print(f"历史数据不足 {num_periods + 50} 期，无法执行回测。跳过此步骤。")
-        return 0, Counter(), 0
+        return {mode: BacktestResult(0, 0, 0, 0, 0, Counter()) for mode in pool_modes}
 
     # 初始化统计变量
-    prize_counts = Counter()
-    total_cost = 0
-    total_winnings = 0
+    metrics = {
+        mode: {"prize_counts": Counter(), "cost": 0, "winnings": 0,
+               "active_periods": 0, "tickets": 0}
+        for mode in pool_modes
+    }
     
     # 定义回测的时间范围，从倒数第N期到倒数第1期
     backtest_range = range(len(full_df) - num_periods, len(full_df))
@@ -624,56 +893,82 @@ def run_full_backtest(full_df, params, feature_columns, num_periods):
             # 2. 使用刚刚训练好的【局部模型】进行评分和筛选
             red_scores, blue_scores = run_strategy_and_get_scores(history_df_for_step, params, local_ml_models_red, local_ml_models_blue, feature_columns)
             
-            # --- 修改开始：反向策略 ---
-            # 原逻辑：取评分最高的前N个 ([:POOL_SIZE_RED])
-            # 新逻辑：抛弃前N个，取剩余所有的球 ([POOL_SIZE_RED:])
-            # 也就是选出那些“没进入原本大底”的球
-            red_pool = [item[0] for item in sorted(red_scores.items(), key=lambda x: (-x[1], x[0]))[POOL_SIZE_RED:]]
             # 在回测中，我们假设每期只追评分最高的那个蓝球
             recommended_blue = sorted(blue_scores, key=blue_scores.get, reverse=True)[0]
             
             # --- 在回测的每一步都重新应用完整的过滤流程 ---
-            rejection_set = {tuple(sorted(random.sample(range(1, 34), 6))) for _ in range(REJECTION_LIB_SIZE)}
+            rejection_set = make_rejection_set(REJECTION_LIB_SIZE, random.Random(RANDOM_SEED + i))
             omission = get_omission(history_df_for_step)
             last_10 = [set(d) for d in history_df_for_step.iloc[-10:]['红球'].tolist()]
             last_1 = last_10[-1]; last_2 = last_10[-2]
             
-            potential_combos = list(combinations(sorted(red_pool), 6))
-            passed_combos = []
-            for r in potential_combos:
-                is_passed = (
-                    filter_highly_regular(r) and filter_sum_value(r) and filter_span(r) and
-                    filter_consecutive_numbers(r) and filter_zones(r) and filter_ac_value(r) and
-                    filter_big_small_ratio(r) and filter_recent_overlap(r, last_10) and
-                    filter_all_cold(r, omission) and filter_odd_even_ratio(r) and
-                    filter_modulo3_roads(r) and filter_ending_digits(r) and
-                    filter_head_tail_range(r) and filter_sum_of_tails(r) and
-                    filter_related_numbers(r, last_1) and filter_diagonal_consecutive(r, last_1, last_2) and
-                    (r not in rejection_set)
-                )
-                if is_passed:
-                    passed_combos.append(r)
-            
-            # 3. 计算当期成本和收益
-            if passed_combos:
-                total_cost += len(passed_combos) * 2
-                for combo in passed_combos:
-                    red_hits = len(set(combo) & actual_red_set)
-                    blue_hit = 1 if recommended_blue == actual_blue else 0
-                    hit_key = (red_hits, blue_hit)
+            for mode in pool_modes:
+                red_pool = build_red_pool(red_scores, mode=mode)
+                passed_combos = [
+                    combo for combo in combinations(sorted(red_pool), 6)
+                    if passes_red_filters(combo, omission, last_10, last_1, last_2, rejection_set)
+                ]
+                if not passed_combos:
+                    continue
+                selected_combos = sorted(
+                    passed_combos,
+                    key=lambda combo: (
+                        -score_red_combination(combo, red_scores, last_1, last_2), combo
+                    )
+                )[:NUM_RECOMMENDATIONS]
+                current = metrics[mode]
+                current["active_periods"] += 1
+                current["tickets"] += len(selected_combos)
+                current["cost"] += len(selected_combos) * 2
+                for combo in selected_combos:
+                    hit_key = (
+                        len(set(combo) & actual_red_set),
+                        1 if recommended_blue == actual_blue else 0,
+                    )
                     prize = PRIZE_RULES.get(hit_key, 0)
                     if prize > 0:
-                        total_winnings += prize
-                        prize_counts[hit_key] += 1
+                        current["winnings"] += prize
+                        current["prize_counts"][hit_key] += 1
             pbar.update(1)
 
-    net_profit = total_winnings - total_cost
     print("回测完成。\n")
-    return net_profit, prize_counts, len(backtest_range)
+    return {
+        mode: BacktestResult(
+            periods=len(backtest_range), active_periods=value["active_periods"],
+            tickets=value["tickets"], cost=value["cost"], winnings=value["winnings"],
+            prize_counts=value["prize_counts"]
+        )
+        for mode, value in metrics.items()
+    }
 
 
 # --- 5. 主执行逻辑 ---
 if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='双色球策略分析与推荐')
+    parser.add_argument('--backtest-periods', type=int, default=BACKTEST_PERIODS,
+                        help='回测期数，默认 %(default)s')
+    parser.add_argument('--rejection-size', type=int, default=REJECTION_LIB_SIZE,
+                        help='反撞号随机库大小，默认 %(default)s')
+    parser.add_argument('--seed', type=int, default=RANDOM_SEED,
+                        help='随机种子，默认 %(default)s')
+    parser.add_argument('--pool-mode', choices=('mixed', 'high', 'middle', 'low'),
+                        default='mixed', help='红球候选池模式，默认 %(default)s')
+    parser.add_argument('--compare-pools', action='store_true',
+                        help='在一次回测中对比四种候选池模式')
+    parser.add_argument('--non-interactive', action='store_true',
+                        help='不等待键盘输入，适用于自动化运行')
+    parser.add_argument('--rule-audit-periods', type=int, default=RULE_AUDIT_PERIODS,
+                        help='统计规则对真实开奖覆盖率的期数，默认 %(default)s')
+    args = parser.parse_args()
+    if args.backtest_periods < 0 or args.rule_audit_periods < 0:
+        parser.error('backtest-periods 和 rule-audit-periods 不能为负数')
+    if not 0 <= args.rejection_size <= TOTAL_RED_COMBINATIONS:
+        parser.error(f'rejection-size 必须在 0 到 {TOTAL_RED_COMBINATIONS} 之间')
+    BACKTEST_PERIODS = args.backtest_periods
+    REJECTION_LIB_SIZE = args.rejection_size
+    RANDOM_SEED = args.seed
+    random.seed(RANDOM_SEED)
+
     print("="*70)
     print("         双色球整合策略分析脚本 (v6.0 - 完全展开注释版)")
     print("="*70)
@@ -685,20 +980,26 @@ if __name__ == '__main__':
         exit("错误: 历史数据加载失败或数据量过少（至少需要50期），程序终止。")
     full_df = feature_engineer(full_df)
     FEATURE_COLUMNS = [col for col in full_df.columns if col not in ['期号', '日期', '红球', '蓝球']]
+    rule_coverage = audit_historical_rule_coverage(full_df, args.rule_audit_periods)
     print("数据加载与特征工程完成。")
 
     # --- [阶段 2/8] 执行严谨的历史回测 ---
     params_loaded = True
     try:
         with open(PARAMS_JSON_PATH, 'r') as f: 
-            params = json.load(f)
+            params = validate_strategy_params(json.load(f))
     except FileNotFoundError:
         params_loaded = False
         print(f"警告: 未找到参数文件 {PARAMS_JSON_PATH}，将使用内置的默认参数。")
-        params = {'decay_factor': 0.995, 'weight_freq': 0.3, 'weight_omission': 0.4, 'weight_ml': 0.3, 
-                  'weight_blue_freq': 0.5, 'weight_blue_ml': 0.5}
+        params = validate_strategy_params({})
+    except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
+        raise SystemExit(f"错误: 参数文件 {PARAMS_JSON_PATH} 无效: {exc}")
     # 执行回测并捕获其返回的统计结果
-    backtest_profit, backtest_prize_counts, backtest_num_periods = run_full_backtest(full_df, params, FEATURE_COLUMNS, BACKTEST_PERIODS)
+    pool_modes = ('mixed', 'high', 'middle', 'low') if args.compare_pools else (args.pool_mode,)
+    backtests = run_full_backtest(
+        full_df, params, FEATURE_COLUMNS, BACKTEST_PERIODS, pool_modes=pool_modes
+    )
+    backtest = backtests[args.pool_mode]
     
     # --- [阶段 3/8] 训练最终预测模型 ---
     print("\n[阶段 3/8] 正在使用全部历史数据，训练用于最终预测的模型...")
@@ -731,27 +1032,15 @@ if __name__ == '__main__':
     # --- [阶段 4/8] 执行对下一期的预测 ---
     print(f"\n[阶段 4/8] 正在为下一期号码进行机器学习评分...")
     red_scores, blue_scores = run_strategy_and_get_scores(full_df, params, final_ml_models_red, final_ml_models_blue, FEATURE_COLUMNS)
-    red_scores_list = sorted(list(red_scores.items()), key=lambda item: (-item[1], item[0]))
-    # --- 修改开始：反向策略 ---
-    # 原逻辑：red_pool = [item[0] for item in red_scores_list[:POOL_SIZE_RED]]
-    # 新逻辑：取切片 [POOL_SIZE_RED:]，即跳过前 POOL_SIZE_RED 个，取剩下的。
-    # 假如 POOL_SIZE_RED=16，总红球33个，这里会选出剩下的17个球。
-    red_pool = [item[0] for item in red_scores_list[POOL_SIZE_RED:]]
-    # --- 修改结束 ---
+    red_pool = build_red_pool(red_scores, mode=args.pool_mode)
     recommended_blues = sorted(blue_scores, key=blue_scores.get, reverse=True)[:NUM_BLUE_BALLS]
     print(f"已根据ML评分选出 {POOL_SIZE_RED} 个红球大底: {sorted(red_pool)}")
 
     # --- [阶段 5/8] 规则过滤 ---
-    print(f"\n[阶段 5/8] 正在从大底中生成组合并应用所有规则进行过滤...")
+    print(f"\n[阶段 5/8] 正在从大底中生成组合并应用硬规则过滤...")
     
     # --- 生成反向排他库 (展开形式) ---
-    rejection_set = set()
-    for _ in tqdm(range(REJECTION_LIB_SIZE), desc="生成随机抛弃库", ncols=80):
-        # 随机从1-33中选出6个号码
-        random_combo = random.sample(range(1, 34), 6)
-        # 排序后转为元组，以便存入集合
-        sorted_tuple_combo = tuple(sorted(random_combo))
-        rejection_set.add(sorted_tuple_combo)
+    rejection_set = make_rejection_set(REJECTION_LIB_SIZE, random.Random(RANDOM_SEED))
 
     # 提前计算过滤所需的历史数据
     omission_values = get_omission(full_df)
@@ -766,41 +1055,26 @@ if __name__ == '__main__':
     passed_combos_tuples = []
     # 遍历所有由大底生成的潜在组合
     for r in tqdm(potential_combos, desc="规则过滤进度", ncols=80):
-        # 将所有规则串联起来，只有全部通过 (返回True) 的组合才能进入下一步
-        is_passed = (
-            filter_highly_regular(r) and
-            filter_sum_value(r) and
-            filter_span(r) and
-            filter_consecutive_numbers(r) and
-            filter_zones(r) and
-            filter_ac_value(r) and
-            filter_big_small_ratio(r) and
-            filter_recent_overlap(r, last_10_draws_sets) and
-            filter_all_cold(r, omission_values) and
-            filter_odd_even_ratio(r) and
-            filter_modulo3_roads(r) and
-            filter_ending_digits(r) and
-            filter_head_tail_range(r) and
-            filter_sum_of_tails(r) and
-            filter_related_numbers(r, last_draw_set) and
-            filter_diagonal_consecutive(r, last_draw_set, last_2_draw_set)
-        )
+        # 硬规则负责淘汰组合，软规则在最终排序时参与评分。
+        is_passed = passes_red_filters(r, omission_values, last_10_draws_sets,
+                                       last_draw_set, last_2_draw_set, rejection_set)
 
-        # 如果组合通过了所有17条规则
+        # 组合通过全部硬规则后进入候选列表。
         if is_passed:
-            # 再检查它是否在我们的“随机抛弃库”中
-            if r not in rejection_set:
-                # 如果所有检查都通过，则将其加入最终的精华列表
-                passed_combos_tuples.append(r)
+            passed_combos_tuples.append(r)
 
-    print(f"过滤完成！共有 {len(passed_combos_tuples)} 组号码通过所有规则检验。")
+    print(f"过滤完成！共有 {len(passed_combos_tuples)} 组号码通过硬规则检验。")
+    pipeline_stats = filter_pipeline_stats(
+        potential_combos, omission_values, last_10_draws_sets,
+        last_draw_set, last_2_draw_set, rejection_set
+    )
 
     # --- [阶段 6/8] 交互式输出 ---
     if 0 < len(passed_combos_tuples) < INTERACTIVE_THRESHOLD:
         print(f"\n通过检验的组合数量为 {len(passed_combos_tuples)} (低于{INTERACTIVE_THRESHOLD})，全部输出如下：")
         for i, combo in enumerate(passed_combos_tuples, 1): 
             print(f"  组合 {i:>2}: {' '.join(f'{n:02d}' for n in combo)}")
-    elif len(passed_combos_tuples) >= INTERACTIVE_THRESHOLD:
+    elif len(passed_combos_tuples) >= INTERACTIVE_THRESHOLD and not args.non_interactive:
         input_thread = threading.Thread(target=get_user_input_with_timeout, args=(COUNTDOWN_SECONDS,))
         input_thread.start()
         input_thread.join()
@@ -835,10 +1109,24 @@ if __name__ == '__main__':
     for key, val in params.items(): 
         report_lines.append(f"  - {key:<20}: {val}")
     
-    report_lines.append(f"\n该策略在历史回测 ({backtest_num_periods}期) 中的模拟总利润为: {backtest_profit:.2f} 元")
+    report_lines.append(f"\n历史滚动回测 ({backtest.periods}期):")
+    report_lines.append(f"  - 候选池模式: {args.pool_mode}")
+    report_lines.append(f"  - 实际投注期数: {backtest.active_periods}")
+    report_lines.append(f"  - 投注注数: {backtest.tickets}")
+    report_lines.append(f"  - 总投入: {backtest.cost:.2f} 元")
+    report_lines.append(f"  - 总奖金: {backtest.winnings:.2f} 元")
+    report_lines.append(f"  - 净收益: {backtest.profit:.2f} 元")
+    report_lines.append(f"  - 回报率: {backtest.roi:.2%}")
+    if len(backtests) > 1:
+        report_lines.append("  - 候选池对照:")
+        for name, result in backtests.items():
+            report_lines.append(
+                f"    {name:<6} 投入 {result.cost:>6.0f} 元，奖金 {result.winnings:>6.0f} 元，"
+                f"净收益 {result.profit:>7.0f} 元，回报率 {result.roi:>7.2%}"
+            )
     report_lines.append("中奖详情如下：")
     aggregated_counts = {name: 0 for name in set(PRIZE_NAMES.values())}
-    for (red, blue), count in backtest_prize_counts.items():
+    for (red, blue), count in backtest.prize_counts.items():
         if count > 0: 
             prize_name = PRIZE_NAMES.get((red, blue))
             aggregated_counts[prize_name] += count
@@ -851,12 +1139,41 @@ if __name__ == '__main__':
             if count > 0:
                 report_lines.append(f"  - {prize_name:<5}: {count} 次")
 
+    report_lines.append("\n硬规则过滤统计 (按流水线累计):")
+    for item in pipeline_stats:
+        report_lines.append(
+            f"  - {item['rule']:<22}: {item['before']} -> {item['remaining']} "
+            f"(remove {item['removed']})"
+        )
+    inactive_rules = [item['rule'] for item in pipeline_stats if item['removed'] == 0]
+    aggressive_rules = [
+        item['rule'] for item in pipeline_stats
+        if item['before'] and item['removed'] / item['before'] >= 0.5
+    ]
+    if inactive_rules:
+        report_lines.append(f"  提示：本轮未淘汰组合的规则: {', '.join(inactive_rules)}")
+    if aggressive_rules:
+        report_lines.append(f"  提示：淘汰比例达到或超过50%的规则: {', '.join(aggressive_rules)}")
+
+    report_lines.append(f"\n真实开奖规则覆盖率 (最近 {args.rule_audit_periods} 期，逐条独立统计):")
+    for name in FILTER_NAMES:
+        result = rule_coverage[name]
+        rule_type = '硬' if name in HARD_FILTER_NAMES else '软'
+        report_lines.append(
+            f"  - [{rule_type}] {name:<22}: {result['passed']}/{result['total']} ({result['rate']:.2%})"
+        )
+
     report_lines.append("\n--- 2. 推荐组合 ---")
     top_blue = recommended_blues[0] if recommended_blues else "N/A"
     
     report_lines.append("\n【单式推荐 (10组)】")
     if passed_combos_tuples:
-        final_selection = random.sample(passed_combos_tuples, min(len(passed_combos_tuples), NUM_RECOMMENDATIONS))
+        final_selection = sorted(
+            passed_combos_tuples,
+            key=lambda combo: (
+                -score_red_combination(combo, red_scores, last_draw_set, last_2_draw_set), combo
+            )
+        )[:NUM_RECOMMENDATIONS]
         for i, combo in enumerate(final_selection, 1):
             report_lines.append(f"  组合 {i:>2}: 红球 {str(list(combo)):<24} 蓝球 [{top_blue:02d}]")
     else:
