@@ -3,7 +3,7 @@
 import random
 from collections import Counter
 from collections.abc import Collection, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from itertools import combinations
 from math import comb
 
@@ -84,6 +84,14 @@ class CandidateGenerationRequest:
     config: StrategyConfig = DEFAULT_STRATEGY_CONFIG
     mode: str = 'mixed'
     show_progress: bool = False
+
+
+@dataclass(frozen=True)
+class DuplexSelectionRequest:
+    passed_combos: Collection[tuple[int, ...]]
+    red_pool: Collection[int]
+    red_scores: Mapping[int, float] | None = None
+    context: RuleContext = field(default_factory=RuleContext)
 
 
 def count_actual_reds_by_rank_band(
@@ -208,34 +216,26 @@ def rejection_seed_for_issue(base_seed, issue):
     return int(base_seed) * REJECTION_SEED_MULTIPLIER + parse_issue(issue)
 
 
-def find_best_7_red_combinations(
-    passed_combos_tuples,
-    red_pool,
-    red_scores=None,
-    last_draw_set=None,
-    last_2_draw_set=None,
-    context=None,
-):
+def rank_duplex_candidates(request):
     """Rank every 7-red ticket by valid subticket coverage, then strategy score."""
-    if not passed_combos_tuples:
+    if not isinstance(request, DuplexSelectionRequest):
+        raise TypeError('request 必须为 DuplexSelectionRequest')
+    if not request.passed_combos:
         return []
 
-    passed_combos_set = set(passed_combos_tuples)
+    passed_combos_set = set(request.passed_combos)
     scoring_context = (
         build_combination_score_context(
-            red_scores,
-            context or RuleContext(
-                last_draw=last_draw_set,
-                previous_draw=last_2_draw_set,
-            ),
+            request.red_scores,
+            request.context,
         )
-        if red_scores else None
+        if request.red_scores else None
     )
     ranked = []
-    seven_ball_combos = combinations(sorted(red_pool), 7)
+    seven_ball_combos = combinations(sorted(request.red_pool), 7)
     for seven_combo in tqdm(
         seven_ball_combos,
-        total=comb(len(red_pool), 7),
+        total=comb(len(request.red_pool), 7),
         desc='生成7红球大底',
         leave=False,
         ncols=80,
@@ -257,3 +257,23 @@ def find_best_7_red_combinations(
         ranked.append((seven_combo, coverage, quality))
     ranked.sort(key=lambda item: (-item[1], -item[2], item[0]))
     return [(combo, coverage) for combo, coverage, _ in ranked]
+
+
+def find_best_7_red_combinations(
+    passed_combos_tuples,
+    red_pool,
+    red_scores=None,
+    last_draw_set=None,
+    last_2_draw_set=None,
+    context=None,
+):
+    """Compatibility wrapper for request-based duplex selection."""
+    return rank_duplex_candidates(DuplexSelectionRequest(
+        passed_combos=passed_combos_tuples,
+        red_pool=red_pool,
+        red_scores=red_scores,
+        context=context or RuleContext(
+            last_draw=last_draw_set,
+            previous_draw=last_2_draw_set,
+        ),
+    ))

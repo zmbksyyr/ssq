@@ -97,6 +97,8 @@ class AnalyzerTests(unittest.TestCase):
     self.assertIs(analyzer.build_red_pool, selection.build_red_pool)
     self.assertIs(analyzer.generate_candidates, selection.generate_candidates)
     self.assertIs(analyzer.generate_red_candidates, selection.generate_red_candidates)
+    self.assertIs(analyzer.DuplexSelectionRequest, selection.DuplexSelectionRequest)
+    self.assertIs(analyzer.rank_duplex_candidates, selection.rank_duplex_candidates)
     self.assertIs(analyzer.RecommendationRequest, rules.RecommendationRequest)
     self.assertIs(
         analyzer.select_recommendation_portfolio,
@@ -190,7 +192,11 @@ class AnalyzerTests(unittest.TestCase):
         patch.object(workflow, 'train_final_models', return_value=('red', 'blue')),
         patch.object(workflow, 'select_current_issue', return_value=current),
         patch.object(workflow, 'display_passed_combinations') as display,
-        patch.object(workflow, 'find_best_7_red_combinations', return_value=['best']),
+        patch.object(
+            workflow,
+            'rank_duplex_candidates',
+            return_value=['best'],
+        ) as rank_duplex,
         patch.object(workflow, 'local_now', return_value=generated_at),
         patch.object(workflow, 'collect_runtime_versions', return_value={'python': 'test'}),
         patch.object(workflow, 'save_analysis_report', return_value='report.txt') as save,
@@ -200,6 +206,11 @@ class AnalyzerTests(unittest.TestCase):
 
     self.assertEqual(result, 'report.txt')
     display.assert_called_once_with(candidate_selection.passed_combos, True)
+    duplex_request = rank_duplex.call_args.args[0]
+    self.assertIs(duplex_request.passed_combos, candidate_selection.passed_combos)
+    self.assertIs(duplex_request.red_pool, candidate_selection.red_pool)
+    self.assertIs(duplex_request.red_scores, current.red_scores)
+    self.assertIs(duplex_request.context, current.rule_context)
     report_data = save.call_args.args[0]
     self.assertEqual(report_data.latest_issue, history.latest_issue)
     self.assertEqual(report_data.target_issue, history.target_issue)

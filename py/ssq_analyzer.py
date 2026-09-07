@@ -71,6 +71,7 @@ from ssq_selection import (  # noqa: F401 - compatibility exports
     RANK_BAND_WIDTHS,
     RANK_BANDS,
     CandidateGenerationRequest,
+    DuplexSelectionRequest,
     RedCandidateSelection,
     build_rank_band_labels,
     build_rank_band_widths,
@@ -82,6 +83,7 @@ from ssq_selection import (  # noqa: F401 - compatibility exports
     generate_red_candidates,
     make_rejection_set,
     passes_red_filters,
+    rank_duplex_candidates,
     rejection_seed_for_issue,
 )
 from ssq_workflow import (  # noqa: F401 - compatibility exports

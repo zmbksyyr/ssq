@@ -46,11 +46,12 @@ from ssq_reporting import AnalysisReportData, build_analysis_report
 from ssq_rules import RuleContext, filter_pipeline_stats
 from ssq_selection import (
     CandidateGenerationRequest,
+    DuplexSelectionRequest,
     build_rank_band_labels,
     build_rank_band_widths,
-    find_best_7_red_combinations,
     generate_candidates,
     make_rejection_set,
+    rank_duplex_candidates,
     rejection_seed_for_issue,
 )
 
@@ -357,12 +358,12 @@ def run_analysis(options):
     )
 
     print('\n[阶段 7/8] 正在从最终组合中，生成高重合度的7红球大底...')
-    best_7_reds = find_best_7_red_combinations(
-        current.candidate_selection.passed_combos,
-        current.candidate_selection.red_pool,
-        current.red_scores,
+    best_7_reds = rank_duplex_candidates(DuplexSelectionRequest(
+        passed_combos=current.candidate_selection.passed_combos,
+        red_pool=current.candidate_selection.red_pool,
+        red_scores=current.red_scores,
         context=current.rule_context,
-    )
+    ))
 
     print('\n[阶段 8/8] 正在生成最终推荐报告...')
     generated_at = local_now()
