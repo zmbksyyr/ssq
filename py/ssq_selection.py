@@ -1,22 +1,18 @@
 """Red-ball pool construction, candidate filtering, and ticket selection."""
 
-import random
 from collections import Counter
 from collections.abc import Collection, Mapping
 from itertools import combinations
 from math import comb
 
+import ssq_anti_crowding as _anti_crowding
 from ssq_config import (
     DEFAULT_STRATEGY_CONFIG,
-    RANDOM_SEED,
     RED_POOL_MODES,
-    REJECTION_SEED_MULTIPLIER,
-    TOTAL_RED_COMBINATIONS,
     StrategyConfig,
 )
 from ssq_core import (
     RED_BALLS,
-    parse_issue,
     parse_red_balls,
     validate_ball_scores,
 )
@@ -45,6 +41,9 @@ from ssq_selection_models import (
     RedCandidateSelection,
 )
 from tqdm import tqdm
+
+make_rejection_set = _anti_crowding.make_rejection_set
+rejection_seed_for_issue = _anti_crowding.rejection_seed_for_issue
 
 
 def build_rank_bands(config=DEFAULT_STRATEGY_CONFIG):
@@ -222,24 +221,6 @@ def generate_red_candidates(
         mode=mode,
         show_progress=show_progress,
     ))
-
-
-def make_rejection_set(size, rng=None):
-    """Create a reproducible anti-crowding sample of six-red combinations."""
-    if not 0 <= size <= TOTAL_RED_COMBINATIONS:
-        raise ValueError(
-            f'rejection size must be between 0 and {TOTAL_RED_COMBINATIONS}'
-        )
-    rng = rng or random.Random(RANDOM_SEED)
-    rejection_set = set()
-    while len(rejection_set) < size:
-        rejection_set.add(tuple(sorted(rng.sample(RED_BALLS, 6))))
-    return rejection_set
-
-
-def rejection_seed_for_issue(base_seed, issue):
-    """Derive a reproducible anti-crowding seed that changes every issue."""
-    return int(base_seed) * REJECTION_SEED_MULTIPLIER + parse_issue(issue)
 
 
 def rank_duplex_candidates(request):

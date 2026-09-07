@@ -1,5 +1,9 @@
 """Command-line entry point and compatibility facade for the SSQ analyzer."""
 
+from ssq_anti_crowding import (  # noqa: F401 - compatibility exports
+    make_rejection_set,
+    rejection_seed_for_issue,
+)
 from ssq_backtesting import (  # noqa: F401 - compatibility exports
     FILTER_NAMES,
     BacktestAccumulator,
@@ -81,10 +85,8 @@ from ssq_selection import (  # noqa: F401 - compatibility exports
     find_best_7_red_combinations,
     generate_candidates,
     generate_red_candidates,
-    make_rejection_set,
     passes_red_filters,
     rank_duplex_candidates,
-    rejection_seed_for_issue,
     validate_candidate_generation_request,
     validate_duplex_selection_request,
 )

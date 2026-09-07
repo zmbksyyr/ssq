@@ -5,6 +5,7 @@ from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
 
+from ssq_anti_crowding import make_rejection_set, rejection_seed_for_issue
 from ssq_backtest_metrics import BacktestAccumulator, BacktestResult
 from ssq_config import (
     DEFAULT_STRATEGY_CONFIG,
@@ -30,8 +31,6 @@ from ssq_selection import (
     CandidateGenerationRequest,
     count_actual_reds_by_rank_band,
     generate_candidates,
-    make_rejection_set,
-    rejection_seed_for_issue,
 )
 from ssq_training import train_prediction_models, validate_model_sets
 from tqdm import tqdm

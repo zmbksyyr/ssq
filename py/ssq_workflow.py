@@ -9,6 +9,7 @@ from importlib.metadata import version
 from typing import Any
 
 import pandas as pd
+from ssq_anti_crowding import make_rejection_set, rejection_seed_for_issue
 from ssq_backtesting import (
     BacktestRequest,
     run_backtest,
@@ -54,9 +55,7 @@ from ssq_selection import (
     CandidateGenerationRequest,
     DuplexSelectionRequest,
     generate_candidates,
-    make_rejection_set,
     rank_duplex_candidates,
-    rejection_seed_for_issue,
 )
 from ssq_training import (
     MODEL_TRAINING_PARAMS,
