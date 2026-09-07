@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 from datetime import datetime
+from itertools import combinations
 from typing import Any
 
 from ssq_core import PRIZE_NAMES
@@ -217,6 +218,14 @@ def format_recommendations_report(data):
     single_combos = data.selection.recommendations if top_blue is not None else ()
     lines.append(f"\n【单式推荐 ({len(single_combos)}组)】")
     if single_combos:
+        max_overlap = max(
+            (
+                len(set(left) & set(right))
+                for left, right in combinations(single_combos, 2)
+            ),
+            default=0,
+        )
+        lines.append(f'  实际任意两注最大重合红球数: {max_overlap}')
         for index, combo in enumerate(single_combos, 1):
             lines.append(
                 f"  组合 {index:>2}: 红球 {list(combo)!s:<24} 蓝球 [{top_blue:02d}]"

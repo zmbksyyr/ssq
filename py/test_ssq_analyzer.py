@@ -165,8 +165,8 @@ class AnalyzerTests(unittest.TestCase):
     candidate_selection = selection.RedCandidateSelection(
         (),
         (),
-        ((1, 2, 3, 4, 5, 6), (7, 8, 9, 10, 11, 12)),
-        ((1, 2, 3, 4, 5, 6), (7, 8, 9, 10, 11, 12)),
+        ((1, 2, 3, 4, 5, 6), (1, 2, 7, 8, 9, 10)),
+        ((1, 2, 3, 4, 5, 6), (1, 2, 7, 8, 9, 10)),
     )
     data = SimpleNamespace(
         selection=candidate_selection,
@@ -186,6 +186,7 @@ class AnalyzerTests(unittest.TestCase):
       Path(path).unlink()
 
     self.assertIn('【单式推荐 (2组)】', report)
+    self.assertIn('实际任意两注最大重合红球数: 2', report)
     self.assertEqual(len(single_bets), 2)
 
   def test_report_emits_no_invalid_single_bets_without_a_blue(self):
