@@ -15,10 +15,14 @@ import threading
 import sys
 import argparse
 from dataclasses import dataclass, field
-from typing import Callable
 from ssq_core import (
     PRIZE_NAMES, PRIZE_RULES, atomic_write_text, infer_next_issue,
     parse_blue_ball, parse_issue, parse_red_balls,
+)
+from ssq_rules import (
+    FILTER_NAMES, HARD_FILTER_NAMES, RED_RULES, build_rank_center_scores,
+    explain_filter_failures, filter_pipeline_stats, passes_red_filters,
+    score_red_combination, select_recommendations,
 )
 
 # --- 平台特定模块导入, 用于实现非阻塞的键盘输入监听 ---
@@ -286,14 +290,6 @@ class BacktestAccumulator:
             rank_band_hits=self.rank_band_hits,
         )
 
-
-@dataclass(frozen=True)
-class RuleDefinition:
-    name: str
-    hard: bool
-    evaluator: Callable[..., bool]
-    score_weight: float = 0.0
-    scorer: Callable[..., float] | None = None
 
 # --- 文件路径设置 ---
 # 获取当前脚本文件所在的目录的绝对路径
@@ -621,8 +617,6 @@ def run_strategy_and_get_scores(df_history, params, ml_models_red, ml_models_blu
 # --- 规则过滤函数库 (每个函数都是一条独立的过滤规则) ---
 # r: 代表一个已排序的6红球组合元组, e.g., (1, 5, 10, 12, 23, 31)
 
-# 预计算1-33中的质数，避免在函数内重复计算
-PRIMES_IN_33 = {2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31}
 RANK_BANDS = {
     "high": range(1, RED_HIGH_COUNT + 1),
     "middle": range(13, 22),
@@ -683,288 +677,6 @@ def make_rejection_set(size, rng=None):
 def rejection_seed_for_issue(base_seed, issue):
     """Derive a reproducible anti-crowding seed that changes every issue."""
     return int(base_seed) * REJECTION_SEED_MULTIPLIER + parse_issue(issue)
-
-
-def passes_red_filters(combo, omission_values, last_10_draws_sets, last_draw_set,
-                       last_2_draw_set, rejection_set=None):
-    """Single source of truth for live selection and historical backtests."""
-    context = (omission_values, last_10_draws_sets, last_draw_set, last_2_draw_set)
-    return all(
-        not rule.hard or rule.evaluator(combo, *context)
-        for rule in RED_RULES
-    ) and (rejection_set is None or combo not in rejection_set)
-
-
-
-
-def is_prime(n):
-    """判断一个数字是否是预定义的质数。"""
-    return n in PRIMES_IN_33
-
-def calculate_ac_value(r): 
-    """计算AC值（算术复杂度），并进行一个自定义调整 (-5)。"""
-    standard_ac = len(set(abs(n1 - n2) for n1, n2 in combinations(r, 2)))
-    return standard_ac - 5 # 减5是一个经验调整
-
-def filter_highly_regular(r): 
-    """规则1: 过滤掉高度规律的组合 (例如等差数列 '2 4 6 8 10 12')。
-       逻辑: 如果所有相邻数字的差值都一样，则该组合只有一个差值，集合长度为1，被过滤。
-       返回: True=保留, False=过滤
-    """
-    return len(set(r[i+1] - r[i] for i in range(len(r) - 1))) > 1
-
-def filter_sum_value(r): 
-    """规则2: 过滤和值。大部分中奖号码的和值集中在中间区域。
-       逻辑: 和值必须在 70 到 160 之间。
-       返回: True=保留, False=过滤
-    """
-    return 70 <= sum(r) <= 160
-
-def filter_span(r): 
-    """规则3: 过滤跨度。跨度指最大号与最小号之差。
-       逻辑: 跨度必须大于等于 15，过滤掉号码过于集中的组合。
-       返回: True=保留, False=过滤
-    """
-    return (r[-1] - r[0]) >= 15
-
-def filter_consecutive_numbers(r):
-    """规则4: 过滤连号。不允许出现过多的连号。
-       逻辑: 不允许出现3组连号，也不允许出现4连号及以上的情况。
-       返回: True=保留, False=过滤
-    """
-    groups = 0      # 连号的组数
-    max_c = 0       # 最大连号的长度
-    current_c = 1   # 当前正在计算的连号长度
-    for i in range(len(r) - 1):
-        if r[i+1] - r[i] == 1: 
-            current_c += 1
-        else:
-            if current_c >= 2: # 如果前一个数字是连号的结尾
-                groups += 1
-                max_c = max(max_c, current_c)
-            current_c = 1 # 重置连号计数
-    if current_c >= 2: # 检查最后一组数是否是连号
-        groups += 1
-        max_c = max(max_c, current_c)
-    # 如果连号组数>=3 或 最大连号长度>=4，则过滤掉
-    return not (groups >= 3 or max_c >= 4)
-
-def filter_zones(r): 
-    """规则5: 过滤三区分布。不允许所有号码都集中在同一个区域。
-       逻辑: 检查是否所有号码都在小区(1-11)、或中区(12-22)、或大区(23-33)。
-       返回: True=保留, False=过滤
-    """
-    all_in_small = all(b <= 11 for b in r)
-    all_in_medium = all(12 <= b <= 22 for b in r)
-    all_in_large = all(b >= 23 for b in r)
-    return not (all_in_small or all_in_medium or all_in_large)
-
-def filter_ac_value(r): 
-    """规则6: 过滤AC值。
-       逻辑: 自定义AC值必须在 6 到 10 之间 (相当于标准AC值的 11-15)。
-       返回: True=保留, False=过滤
-    """
-    return 6 <= calculate_ac_value(r) <= 10
-
-def filter_prime_composite_ratio(r): 
-    """规则7: 过滤质合比。不允许质数个数极端（过多或过少）。
-       逻辑: 排除质数个数为 0, 1, 5, 6 的组合。
-       返回: True=保留, False=过滤
-    """
-    prime_count = sum(1 for ball in r if is_prime(ball))
-    return prime_count not in [0, 1, 5, 6]
-
-def filter_big_small_ratio(r): 
-    """规则8: 过滤大小比。不允许大数或小数过多。以16为界。
-       逻辑: 排除小数(<=16)个数为 0, 1, 5, 6 的组合。
-       返回: True=保留, False=过滤
-    """
-    small_count = sum(1 for ball in r if ball <= 16)
-    return small_count not in [0, 1, 5, 6]
-
-def filter_recent_overlap(r, last_10_draws_sets):
-    """规则9: 过滤历史重号。不允许与最近10期内任一期号码重合数过多。
-       逻辑: 如果与最近10期任一期的交集达到4个或以上，则过滤。
-       返回: True=保留, False=过滤
-    """
-    candidate_set = set(r)
-    for draw_set in last_10_draws_sets:
-        if len(candidate_set.intersection(draw_set)) >= 4:
-            return False # 重合过多，过滤
-    return True
-
-def filter_all_cold(r, omission_values): 
-    """规则10: 过滤全冷号组合。
-       逻辑: 不允许组合中所有6个号码都是遗漏值大于15的冷号。
-       返回: True=保留, False=过滤
-    """
-    return not all(omission_values.get(ball, 0) > 15 for ball in r)
-
-def filter_odd_even_ratio(r): 
-    """规则11: 过滤奇偶比。不允许奇偶比极端（全奇、全偶或接近全奇全偶）。
-       逻辑: 排除偶数个数为 0, 1, 5, 6 的组合。
-       返回: True=保留, False=过滤
-    """
-    even_count = sum(1 for n in r if n % 2 == 0)
-    return even_count not in [0, 1, 5, 6]
-
-def filter_modulo3_roads(r): 
-    """规则12: 过滤除3余数。要求0路、1路、2路号码都必须出现。
-       逻辑: {n % 3 for n in r} 会得到包含所有余数的集合，其长度必须为3。
-       返回: True=保留, False=过滤
-    """
-    return len({n % 3 for n in r}) == 3
-
-def filter_ending_digits(r):
-    """规则13: 过滤尾数分布。不允许出现过多同尾号，或尾数种类过少。
-       逻辑: 任一尾数出现次数不能超过2次，且不同尾数的种类不能少于3种。
-       返回: True=保留, False=过滤
-    """
-    tails = [n % 10 for n in r]
-    counts = Counter(tails) # 统计每个尾数出现的次数
-    return not (max(counts.values()) >= 3 or len(counts) <= 2)
-
-def filter_head_tail_range(r): 
-    """规则14: 过滤首尾号码范围。龙头(第一个号)不宜过大，凤尾(最后一个号)不宜过小。
-       逻辑: 龙头不能大于10，凤尾不能小于25。
-       返回: True=保留, False=过滤
-    """
-    return not (r[0] > 10 or r[-1] < 25)
-
-def filter_sum_of_tails(r): 
-    """规则15: 过滤尾数和值。所有号码的个位数之和应在一个合理范围。
-       逻辑: 尾数和应在 15 到 45 之间。
-       返回: True=保留, False=过滤
-    """
-    return 15 <= sum(n % 10 for n in r) <= 45
-
-def filter_related_numbers(r, last_draw_set):
-    """规则16: 过滤关联码。要求组合与上期号码至少有1个关联。
-       逻辑: 必须包含至少1个重号(与上期相同)或边号(与上期号码加减1)。
-       返回: True=保留, False=过滤
-    """
-    combo_set = set(r)
-    # 重号：与上期相同的号码
-    repeats = combo_set.intersection(last_draw_set)
-    # 边号：与上期号码加减1的号码
-    adjacents = combo_set.intersection({n - 1 for n in last_draw_set} | {n + 1 for n in last_draw_set})
-    # 如果重号和边号的总数大于0，则保留
-    return (len(repeats) + len(adjacents)) > 0
-
-def filter_diagonal_consecutive(r, last_draw_set, last_2_draw_set):
-    """规则17: 过滤斜连号。例如，上上期有10，上期有11，本期组合中不应出现12。
-       逻辑: 检查组合中是否存在号码 n，使得 n-1 在上期开奖中，n-2 在上上期开奖中。
-       返回: True=保留, False=过滤
-    """
-    for n in r:
-        if (n - 1) in last_draw_set and (n - 2) in last_2_draw_set:
-            return False # 发现斜连号，过滤
-    return True
-
-
-def score_zone_balance(combo):
-    counts = (
-        sum(n <= 11 for n in combo),
-        sum(12 <= n <= 22 for n in combo),
-        sum(n >= 23 for n in combo),
-    )
-    return 1.0 - (max(counts) - min(counts)) / 6
-
-
-def score_odd_even_balance(combo):
-    return 1.0 - abs(sum(n % 2 for n in combo) - 3) / 3
-
-
-def score_prime_balance(combo):
-    return 1.0 - abs(sum(is_prime(n) for n in combo) - 3) / 3
-
-
-def score_big_small_balance(combo):
-    return 1.0 - abs(sum(n <= 16 for n in combo) - 3) / 3
-
-
-RED_RULES = (
-    RuleDefinition('highly_regular', True, lambda c, *_: filter_highly_regular(c)),
-    RuleDefinition('sum_value', True, lambda c, *_: filter_sum_value(c)),
-    RuleDefinition('span', True, lambda c, *_: filter_span(c)),
-    RuleDefinition('consecutive_numbers', True, lambda c, *_: filter_consecutive_numbers(c)),
-    RuleDefinition(
-        'zones', True, lambda c, *_: filter_zones(c), 0.10,
-        lambda c, *_: score_zone_balance(c),
-    ),
-    RuleDefinition(
-        'ac_value', False, lambda c, *_: filter_ac_value(c), 0.05,
-        lambda c, *_: float(filter_ac_value(c)),
-    ),
-    RuleDefinition(
-        'prime_composite_ratio', False,
-        lambda c, *_: filter_prime_composite_ratio(c), 0.08,
-        lambda c, *_: score_prime_balance(c),
-    ),
-    RuleDefinition(
-        'big_small_ratio', False, lambda c, *_: filter_big_small_ratio(c), 0.08,
-        lambda c, *_: score_big_small_balance(c),
-    ),
-    RuleDefinition('recent_overlap', True, lambda c, _o, recent, *_: filter_recent_overlap(c, recent)),
-    RuleDefinition('all_cold', True, lambda c, omission, *_: filter_all_cold(c, omission)),
-    RuleDefinition(
-        'odd_even_ratio', False, lambda c, *_: filter_odd_even_ratio(c), 0.10,
-        lambda c, *_: score_odd_even_balance(c),
-    ),
-    RuleDefinition(
-        'modulo3_roads', False, lambda c, *_: filter_modulo3_roads(c), 0.04,
-        lambda c, *_: float(filter_modulo3_roads(c)),
-    ),
-    RuleDefinition('ending_digits', True, lambda c, *_: filter_ending_digits(c)),
-    RuleDefinition(
-        'head_tail_range', False, lambda c, *_: filter_head_tail_range(c), 0.03,
-        lambda c, *_: float(filter_head_tail_range(c)),
-    ),
-    RuleDefinition('sum_of_tails', True, lambda c, *_: filter_sum_of_tails(c)),
-    RuleDefinition('related_numbers', True, lambda c, _o, _r, last, *_: filter_related_numbers(c, last)),
-    RuleDefinition(
-        'diagonal_consecutive', False,
-        lambda c, _o, _r, last, previous: filter_diagonal_consecutive(c, last, previous),
-        0.02,
-        lambda c, _o, _r, last, previous: 1.0 if last is None or previous is None
-        else float(filter_diagonal_consecutive(c, last, previous)),
-    ),
-)
-FILTER_NAMES = tuple(rule.name for rule in RED_RULES)
-HARD_FILTER_NAMES = tuple(rule.name for rule in RED_RULES if rule.hard)
-SOFT_FILTER_NAMES = tuple(rule.name for rule in RED_RULES if not rule.hard)
-COMBINATION_SIGNAL_WEIGHT = 0.50
-
-
-def explain_filter_failures(combo, omission_values, last_10_draws_sets,
-                            last_draw_set, last_2_draw_set, rejection_set=None):
-    """Return the names of every rule that rejects a combination."""
-    context = (omission_values, last_10_draws_sets, last_draw_set, last_2_draw_set)
-    failures = [
-        rule.name for rule in RED_RULES if not rule.evaluator(combo, *context)
-    ]
-    if rejection_set is not None and combo in rejection_set:
-        failures.append('anti_crowding')
-    return failures
-
-
-def filter_pipeline_stats(combos, omission_values, last_10_draws_sets,
-                          last_draw_set, last_2_draw_set, rejection_set=None):
-    """Measure each rule's incremental impact in the configured pipeline."""
-    context = (omission_values, last_10_draws_sets, last_draw_set, last_2_draw_set)
-    checks = [
-        (rule.name, lambda combo, current=rule: current.evaluator(combo, *context))
-        for rule in RED_RULES if rule.hard
-    ]
-    checks.append(('anti_crowding', lambda combo: rejection_set is None or combo not in rejection_set))
-    remaining = list(combos)
-    stats = []
-    for name, check in checks:
-        before = len(remaining)
-        remaining = [combo for combo in remaining if check(combo)]
-        stats.append({"rule": name, "before": before, "removed": before - len(remaining),
-                      "remaining": len(remaining)})
-    return stats
 
 
 def historical_rule_context(full_df, index):
@@ -1040,69 +752,6 @@ def audit_historical_hard_pipeline(full_df, periods=RULE_AUDIT_PERIODS):
         'stages': stages,
     }
 
-
-def build_rank_center_scores(red_scores):
-    """Map each ball to a triangular preference centered on its model rank."""
-    ranked = sorted(red_scores, key=lambda ball: (-red_scores[ball], ball))
-    if len(ranked) <= 1:
-        return {ball: 1.0 for ball in ranked}
-    center = (len(ranked) - 1) / 2
-    return {
-        ball: 1.0 - abs(index - center) / center
-        for index, ball in enumerate(ranked)
-    }
-
-
-def score_rank_center_preference(combo, red_scores, rank_center_scores=None):
-    """Score balls highest near the model ranking center and lowest at both ends."""
-    rank_scores = rank_center_scores or build_rank_center_scores(red_scores)
-    return sum(rank_scores.get(ball, 0.0) for ball in combo) / len(combo)
-
-
-def score_red_combination(combo, red_scores, last_draw_set=None, last_2_draw_set=None,
-                          rank_center_scores=None):
-    """Rank already-valid combinations using soft, explainable preferences."""
-    signal = score_rank_center_preference(combo, red_scores, rank_center_scores)
-    context = (None, None, last_draw_set, last_2_draw_set)
-    rule_score = sum(
-        rule.score_weight * rule.scorer(combo, *context)
-        for rule in RED_RULES if rule.scorer is not None
-    )
-    return COMBINATION_SIGNAL_WEIGHT * signal + rule_score
-
-
-def select_recommendations(passed_combos, red_scores, last_draw_set=None,
-                           last_2_draw_set=None, limit=NUM_RECOMMENDATIONS,
-                           max_shared=MAX_SHARED_RED_BALLS):
-    """Select a high-scoring portfolio while avoiding near-duplicate tickets."""
-    if limit <= 0:
-        return []
-    if not 0 <= max_shared <= 6:
-        raise ValueError('max_shared must be between 0 and 6')
-    rank_center_scores = build_rank_center_scores(red_scores)
-    ranked = sorted(
-        passed_combos,
-        key=lambda combo: (
-            -score_red_combination(
-                combo, red_scores, last_draw_set, last_2_draw_set,
-                rank_center_scores,
-            ),
-            combo,
-        ),
-    )
-    selected = []
-    selected_sets = []
-    for overlap_limit in range(max_shared, 7):
-        for combo in ranked:
-            if combo in selected:
-                continue
-            combo_set = set(combo)
-            if all(len(combo_set & previous) <= overlap_limit for previous in selected_sets):
-                selected.append(combo)
-                selected_sets.append(combo_set)
-                if len(selected) == limit:
-                    return selected
-    return selected
 
 def find_best_7_red_combinations(passed_combos_tuples, red_pool, red_scores=None,
                                  last_draw_set=None, last_2_draw_set=None):

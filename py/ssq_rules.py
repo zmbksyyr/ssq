@@ -1,0 +1,347 @@
+from collections import Counter
+from dataclasses import dataclass
+from itertools import combinations
+from typing import Callable
+
+
+PRIMES_IN_33 = frozenset({2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31})
+COMBINATION_SIGNAL_WEIGHT = 0.50
+DEFAULT_NUM_RECOMMENDATIONS = 10
+DEFAULT_MAX_SHARED_RED_BALLS = 4
+
+
+@dataclass(frozen=True)
+class RuleDefinition:
+    name: str
+    hard: bool
+    evaluator: Callable[..., bool]
+    score_weight: float = 0.0
+    scorer: Callable[..., float] | None = None
+
+
+def is_prime(number):
+    return number in PRIMES_IN_33
+
+
+def calculate_ac_value(combo):
+    standard_ac = len({abs(left - right) for left, right in combinations(combo, 2)})
+    return standard_ac - 5
+
+
+def filter_highly_regular(combo):
+    return len({combo[index + 1] - combo[index] for index in range(len(combo) - 1)}) > 1
+
+
+def filter_sum_value(combo):
+    return 70 <= sum(combo) <= 160
+
+
+def filter_span(combo):
+    return combo[-1] - combo[0] >= 15
+
+
+def filter_consecutive_numbers(combo):
+    groups = 0
+    max_length = 0
+    current_length = 1
+    for index in range(len(combo) - 1):
+        if combo[index + 1] - combo[index] == 1:
+            current_length += 1
+        else:
+            if current_length >= 2:
+                groups += 1
+                max_length = max(max_length, current_length)
+            current_length = 1
+    if current_length >= 2:
+        groups += 1
+        max_length = max(max_length, current_length)
+    return not (groups >= 3 or max_length >= 4)
+
+
+def filter_zones(combo):
+    all_in_small = all(ball <= 11 for ball in combo)
+    all_in_medium = all(12 <= ball <= 22 for ball in combo)
+    all_in_large = all(ball >= 23 for ball in combo)
+    return not (all_in_small or all_in_medium or all_in_large)
+
+
+def filter_ac_value(combo):
+    return 6 <= calculate_ac_value(combo) <= 10
+
+
+def filter_prime_composite_ratio(combo):
+    prime_count = sum(is_prime(ball) for ball in combo)
+    return prime_count not in (0, 1, 5, 6)
+
+
+def filter_big_small_ratio(combo):
+    small_count = sum(ball <= 16 for ball in combo)
+    return small_count not in (0, 1, 5, 6)
+
+
+def filter_recent_overlap(combo, recent_draws):
+    candidate = set(combo)
+    return all(len(candidate & draw) < 4 for draw in recent_draws)
+
+
+def filter_all_cold(combo, omission_values):
+    return not all(omission_values.get(ball, 0) > 15 for ball in combo)
+
+
+def filter_odd_even_ratio(combo):
+    even_count = sum(ball % 2 == 0 for ball in combo)
+    return even_count not in (0, 1, 5, 6)
+
+
+def filter_modulo3_roads(combo):
+    return len({ball % 3 for ball in combo}) == 3
+
+
+def filter_ending_digits(combo):
+    counts = Counter(ball % 10 for ball in combo)
+    return max(counts.values()) < 3 and len(counts) > 2
+
+
+def filter_head_tail_range(combo):
+    return combo[0] <= 10 and combo[-1] >= 25
+
+
+def filter_sum_of_tails(combo):
+    return 15 <= sum(ball % 10 for ball in combo) <= 45
+
+
+def filter_related_numbers(combo, last_draw):
+    candidate = set(combo)
+    repeats = candidate & last_draw
+    adjacent_numbers = (
+        {number - 1 for number in last_draw}
+        | {number + 1 for number in last_draw}
+    )
+    return bool(repeats or candidate & adjacent_numbers)
+
+
+def filter_diagonal_consecutive(combo, last_draw, previous_draw):
+    return not any(
+        ball - 1 in last_draw and ball - 2 in previous_draw
+        for ball in combo
+    )
+
+
+def score_zone_balance(combo):
+    counts = (
+        sum(ball <= 11 for ball in combo),
+        sum(12 <= ball <= 22 for ball in combo),
+        sum(ball >= 23 for ball in combo),
+    )
+    return 1.0 - (max(counts) - min(counts)) / 6
+
+
+def score_odd_even_balance(combo):
+    return 1.0 - abs(sum(ball % 2 for ball in combo) - 3) / 3
+
+
+def score_prime_balance(combo):
+    return 1.0 - abs(sum(is_prime(ball) for ball in combo) - 3) / 3
+
+
+def score_big_small_balance(combo):
+    return 1.0 - abs(sum(ball <= 16 for ball in combo) - 3) / 3
+
+
+RED_RULES = (
+    RuleDefinition('highly_regular', True, lambda c, *_: filter_highly_regular(c)),
+    RuleDefinition('sum_value', True, lambda c, *_: filter_sum_value(c)),
+    RuleDefinition('span', True, lambda c, *_: filter_span(c)),
+    RuleDefinition(
+        'consecutive_numbers', True,
+        lambda c, *_: filter_consecutive_numbers(c),
+    ),
+    RuleDefinition(
+        'zones', True, lambda c, *_: filter_zones(c), 0.10,
+        lambda c, *_: score_zone_balance(c),
+    ),
+    RuleDefinition(
+        'ac_value', False, lambda c, *_: filter_ac_value(c), 0.05,
+        lambda c, *_: float(filter_ac_value(c)),
+    ),
+    RuleDefinition(
+        'prime_composite_ratio', False,
+        lambda c, *_: filter_prime_composite_ratio(c), 0.08,
+        lambda c, *_: score_prime_balance(c),
+    ),
+    RuleDefinition(
+        'big_small_ratio', False,
+        lambda c, *_: filter_big_small_ratio(c), 0.08,
+        lambda c, *_: score_big_small_balance(c),
+    ),
+    RuleDefinition(
+        'recent_overlap', True,
+        lambda c, _omission, recent, *_: filter_recent_overlap(c, recent),
+    ),
+    RuleDefinition(
+        'all_cold', True,
+        lambda c, omission, *_: filter_all_cold(c, omission),
+    ),
+    RuleDefinition(
+        'odd_even_ratio', False,
+        lambda c, *_: filter_odd_even_ratio(c), 0.10,
+        lambda c, *_: score_odd_even_balance(c),
+    ),
+    RuleDefinition(
+        'modulo3_roads', False,
+        lambda c, *_: filter_modulo3_roads(c), 0.04,
+        lambda c, *_: float(filter_modulo3_roads(c)),
+    ),
+    RuleDefinition('ending_digits', True, lambda c, *_: filter_ending_digits(c)),
+    RuleDefinition(
+        'head_tail_range', False,
+        lambda c, *_: filter_head_tail_range(c), 0.03,
+        lambda c, *_: float(filter_head_tail_range(c)),
+    ),
+    RuleDefinition(
+        'sum_of_tails', True, lambda c, *_: filter_sum_of_tails(c)
+    ),
+    RuleDefinition(
+        'related_numbers', True,
+        lambda c, _omission, _recent, last, *_: filter_related_numbers(c, last),
+    ),
+    RuleDefinition(
+        'diagonal_consecutive', False,
+        lambda c, _o, _r, last, previous: filter_diagonal_consecutive(
+            c, last, previous
+        ),
+        0.02,
+        lambda c, _o, _r, last, previous: (
+            1.0 if last is None or previous is None
+            else float(filter_diagonal_consecutive(c, last, previous))
+        ),
+    ),
+)
+FILTER_NAMES = tuple(rule.name for rule in RED_RULES)
+HARD_FILTER_NAMES = tuple(rule.name for rule in RED_RULES if rule.hard)
+SOFT_FILTER_NAMES = tuple(rule.name for rule in RED_RULES if not rule.hard)
+
+
+def rule_context(omission_values, recent_draws, last_draw, previous_draw):
+    return omission_values, recent_draws, last_draw, previous_draw
+
+
+def passes_red_filters(combo, omission_values, recent_draws, last_draw,
+                       previous_draw, rejection_set=None):
+    context = rule_context(
+        omission_values, recent_draws, last_draw, previous_draw
+    )
+    passes_rules = all(
+        not rule.hard or rule.evaluator(combo, *context)
+        for rule in RED_RULES
+    )
+    return passes_rules and (rejection_set is None or combo not in rejection_set)
+
+
+def explain_filter_failures(combo, omission_values, recent_draws, last_draw,
+                            previous_draw, rejection_set=None):
+    context = rule_context(
+        omission_values, recent_draws, last_draw, previous_draw
+    )
+    failures = [
+        rule.name for rule in RED_RULES
+        if not rule.evaluator(combo, *context)
+    ]
+    if rejection_set is not None and combo in rejection_set:
+        failures.append('anti_crowding')
+    return failures
+
+
+def filter_pipeline_stats(combos, omission_values, recent_draws, last_draw,
+                          previous_draw, rejection_set=None):
+    context = rule_context(
+        omission_values, recent_draws, last_draw, previous_draw
+    )
+    checks = [
+        (rule.name, lambda combo, current=rule: current.evaluator(combo, *context))
+        for rule in RED_RULES if rule.hard
+    ]
+    checks.append((
+        'anti_crowding',
+        lambda combo: rejection_set is None or combo not in rejection_set,
+    ))
+    remaining = list(combos)
+    stats = []
+    for name, check in checks:
+        before = len(remaining)
+        remaining = [combo for combo in remaining if check(combo)]
+        stats.append({
+            'rule': name,
+            'before': before,
+            'removed': before - len(remaining),
+            'remaining': len(remaining),
+        })
+    return stats
+
+
+def build_rank_center_scores(red_scores):
+    ranked = sorted(red_scores, key=lambda ball: (-red_scores[ball], ball))
+    if len(ranked) <= 1:
+        return {ball: 1.0 for ball in ranked}
+    center = (len(ranked) - 1) / 2
+    return {
+        ball: 1.0 - abs(index - center) / center
+        for index, ball in enumerate(ranked)
+    }
+
+
+def score_rank_center_preference(combo, red_scores, rank_center_scores=None):
+    rank_scores = rank_center_scores or build_rank_center_scores(red_scores)
+    return sum(rank_scores.get(ball, 0.0) for ball in combo) / len(combo)
+
+
+def score_red_combination(combo, red_scores, last_draw=None, previous_draw=None,
+                          rank_center_scores=None):
+    signal = score_rank_center_preference(
+        combo, red_scores, rank_center_scores
+    )
+    context = (None, None, last_draw, previous_draw)
+    rule_score = sum(
+        rule.score_weight * rule.scorer(combo, *context)
+        for rule in RED_RULES if rule.scorer is not None
+    )
+    return COMBINATION_SIGNAL_WEIGHT * signal + rule_score
+
+
+def select_recommendations(
+    passed_combos,
+    red_scores,
+    last_draw=None,
+    previous_draw=None,
+    limit=DEFAULT_NUM_RECOMMENDATIONS,
+    max_shared=DEFAULT_MAX_SHARED_RED_BALLS,
+):
+    if limit <= 0:
+        return []
+    if not 0 <= max_shared <= 6:
+        raise ValueError('max_shared must be between 0 and 6')
+    rank_center_scores = build_rank_center_scores(red_scores)
+    ranked = sorted(
+        passed_combos,
+        key=lambda combo: (
+            -score_red_combination(
+                combo, red_scores, last_draw, previous_draw,
+                rank_center_scores,
+            ),
+            combo,
+        ),
+    )
+    selected = []
+    selected_sets = []
+    for overlap_limit in range(max_shared, 7):
+        for combo in ranked:
+            if combo in selected:
+                continue
+            candidate = set(combo)
+            if all(len(candidate & previous) <= overlap_limit
+                   for previous in selected_sets):
+                selected.append(combo)
+                selected_sets.append(candidate)
+                if len(selected) == limit:
+                    return selected
+    return selected

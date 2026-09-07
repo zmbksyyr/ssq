@@ -9,6 +9,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent))
 import ssq_analyzer as analyzer
+import ssq_rules as rules
 
 
 class AnalyzerTests(unittest.TestCase):
@@ -29,9 +30,9 @@ class AnalyzerTests(unittest.TestCase):
       Path(path).unlink()
 
   def test_prime_definition(self):
-    self.assertFalse(analyzer.is_prime(1))
-    self.assertTrue(analyzer.is_prime(2))
-    self.assertTrue(analyzer.is_prime(31))
+    self.assertFalse(rules.is_prime(1))
+    self.assertTrue(rules.is_prime(2))
+    self.assertTrue(rules.is_prime(31))
 
   def test_feature_engineering_does_not_mutate_source_frame(self):
     source = pd.DataFrame({
@@ -99,34 +100,34 @@ class AnalyzerTests(unittest.TestCase):
 
   def test_filter_explanation_includes_prime_rule(self):
     combo = (1, 2, 4, 6, 8, 10)
-    failures = analyzer.explain_filter_failures(
+    failures = rules.explain_filter_failures(
         combo, {n: 0 for n in range(1, 34)}, [], set(), set(), set()
     )
     self.assertIn("prime_composite_ratio", failures)
 
   def test_all_rules_use_one_unique_registry(self):
-    names = [rule.name for rule in analyzer.RED_RULES]
+    names = [rule.name for rule in rules.RED_RULES]
     self.assertEqual(len(names), len(set(names)))
-    self.assertEqual(tuple(names), analyzer.FILTER_NAMES)
-    prime_rule = next(rule for rule in analyzer.RED_RULES if rule.name == 'prime_composite_ratio')
+    self.assertEqual(tuple(names), rules.FILTER_NAMES)
+    prime_rule = next(rule for rule in rules.RED_RULES if rule.name == 'prime_composite_ratio')
     self.assertFalse(prime_rule.hard)
-    self.assertTrue(all(rule.scorer is not None for rule in analyzer.RED_RULES if not rule.hard))
-    self.assertTrue(all(rule.score_weight > 0 for rule in analyzer.RED_RULES if not rule.hard))
+    self.assertTrue(all(rule.scorer is not None for rule in rules.RED_RULES if not rule.hard))
+    self.assertTrue(all(rule.score_weight > 0 for rule in rules.RED_RULES if not rule.hard))
     self.assertAlmostEqual(
-        analyzer.COMBINATION_SIGNAL_WEIGHT
-        + sum(rule.score_weight for rule in analyzer.RED_RULES),
+        rules.COMBINATION_SIGNAL_WEIGHT
+        + sum(rule.score_weight for rule in rules.RED_RULES),
         1.0,
     )
 
   def test_soft_rule_failure_does_not_reject_combination(self):
     combo = (1, 4, 8, 16, 25, 30)
-    self.assertFalse(analyzer.filter_prime_composite_ratio(combo))
-    self.assertTrue(analyzer.passes_red_filters(
+    self.assertFalse(rules.filter_prime_composite_ratio(combo))
+    self.assertTrue(rules.passes_red_filters(
         combo, {n: 0 for n in range(1, 34)}, [], {1}, set(), set()
     ))
 
   def test_filter_pipeline_stats_are_incremental(self):
-    stats = analyzer.filter_pipeline_stats(
+    stats = rules.filter_pipeline_stats(
         [(3, 8, 13, 20, 27, 31), (1, 2, 3, 4, 5, 6)],
         {n: 0 for n in range(1, 34)}, [], set(), set(), set()
     )
@@ -137,8 +138,8 @@ class AnalyzerTests(unittest.TestCase):
   def test_combination_score_is_deterministic(self):
     scores = {n: n / 33 for n in range(1, 34)}
     combo = (3, 8, 14, 21, 27, 32)
-    first = analyzer.score_red_combination(combo, scores)
-    second = analyzer.score_red_combination(combo, scores)
+    first = rules.score_red_combination(combo, scores)
+    second = rules.score_red_combination(combo, scores)
     self.assertEqual(first, second)
 
   def test_positive_probability_handles_single_class_models(self):
@@ -180,42 +181,42 @@ class AnalyzerTests(unittest.TestCase):
     combo = (3, 8, 14, 21, 27, 32)
     last_draw = {2, 7, 13, 20, 26, 31}
     previous_draw = {1, 6, 12, 19, 25, 30}
-    signal = analyzer.score_rank_center_preference(combo, scores)
+    signal = rules.score_rank_center_preference(combo, scores)
     expected = (
         0.50 * signal
-        + 0.10 * analyzer.score_odd_even_balance(combo)
-        + 0.10 * analyzer.score_zone_balance(combo)
-        + 0.08 * analyzer.score_prime_balance(combo)
-        + 0.08 * analyzer.score_big_small_balance(combo)
-        + 0.05 * float(analyzer.filter_ac_value(combo))
-        + 0.04 * float(analyzer.filter_modulo3_roads(combo))
-        + 0.03 * float(analyzer.filter_head_tail_range(combo))
+        + 0.10 * rules.score_odd_even_balance(combo)
+        + 0.10 * rules.score_zone_balance(combo)
+        + 0.08 * rules.score_prime_balance(combo)
+        + 0.08 * rules.score_big_small_balance(combo)
+        + 0.05 * float(rules.filter_ac_value(combo))
+        + 0.04 * float(rules.filter_modulo3_roads(combo))
+        + 0.03 * float(rules.filter_head_tail_range(combo))
         + 0.02 * float(
-            analyzer.filter_diagonal_consecutive(combo, last_draw, previous_draw)
+            rules.filter_diagonal_consecutive(combo, last_draw, previous_draw)
         )
     )
     self.assertAlmostEqual(
-        analyzer.score_red_combination(combo, scores, last_draw, previous_draw),
+        rules.score_red_combination(combo, scores, last_draw, previous_draw),
         expected,
     )
 
   def test_rank_signal_prefers_center_over_both_extremes(self):
     scores = {n: float(34 - n) for n in range(1, 34)}
-    middle = analyzer.score_rank_center_preference((14, 15, 16, 17, 18, 19), scores)
-    high = analyzer.score_rank_center_preference((1, 2, 3, 4, 5, 6), scores)
-    low = analyzer.score_rank_center_preference((28, 29, 30, 31, 32, 33), scores)
+    middle = rules.score_rank_center_preference((14, 15, 16, 17, 18, 19), scores)
+    high = rules.score_rank_center_preference((1, 2, 3, 4, 5, 6), scores)
+    low = rules.score_rank_center_preference((28, 29, 30, 31, 32, 33), scores)
     self.assertGreater(middle, high)
     self.assertGreater(middle, low)
-    cached = analyzer.build_rank_center_scores(scores)
+    cached = rules.build_rank_center_scores(scores)
     self.assertEqual(
       middle,
-      analyzer.score_rank_center_preference((14, 15, 16, 17, 18, 19), scores, cached),
+      rules.score_rank_center_preference((14, 15, 16, 17, 18, 19), scores, cached),
     )
 
   def test_recommendation_portfolio_limits_overlap(self):
     combos = list(analyzer.combinations(range(1, 13), 6))
     scores = {n: n / 12 for n in range(1, 13)}
-    selected = analyzer.select_recommendations(combos, scores, limit=10, max_shared=4)
+    selected = rules.select_recommendations(combos, scores, limit=10, max_shared=4)
     self.assertEqual(len(selected), 10)
     for index, combo in enumerate(selected):
       for other in selected[index + 1:]:
@@ -382,12 +383,12 @@ class AnalyzerTests(unittest.TestCase):
             [3, 4, 5, 6, 7, 8],
         ],
     })
-    rules = (
-        analyzer.RuleDefinition('first', True, lambda combo, *_: combo[0] >= 2),
-        analyzer.RuleDefinition('second', True, lambda combo, *_: combo[-1] % 2 == 0),
-        analyzer.RuleDefinition('soft', False, lambda combo, *_: False),
+    custom_rules = (
+        rules.RuleDefinition('first', True, lambda combo, *_: combo[0] >= 2),
+        rules.RuleDefinition('second', True, lambda combo, *_: combo[-1] % 2 == 0),
+        rules.RuleDefinition('soft', False, lambda combo, *_: False),
     )
-    with patch.object(analyzer, 'RED_RULES', rules):
+    with patch.object(analyzer, 'RED_RULES', custom_rules):
       result = analyzer.audit_historical_hard_pipeline(frame, periods=3)
 
     self.assertEqual(result['total'], 3)
