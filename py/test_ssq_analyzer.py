@@ -5,6 +5,7 @@ import sys
 import tempfile
 import unittest
 from datetime import datetime, timezone
+from itertools import combinations
 from pathlib import Path
 from unittest.mock import patch
 
@@ -17,6 +18,7 @@ import ssq_analyzer as analyzer
 import ssq_config as config
 import ssq_modeling as modeling
 import ssq_rules as rules
+import ssq_selection as selection
 
 
 class AnalyzerTests(unittest.TestCase):
@@ -73,6 +75,10 @@ class AnalyzerTests(unittest.TestCase):
         modeling.run_strategy_and_get_scores,
     )
 
+  def test_analyzer_reexports_selection_functions(self):
+    self.assertIs(analyzer.build_red_pool, selection.build_red_pool)
+    self.assertIs(analyzer.generate_red_candidates, selection.generate_red_candidates)
+
   def test_strategy_param_loader_distinguishes_file_states(self):
     with tempfile.TemporaryDirectory() as directory:
       path = Path(directory) / 'params.json'
@@ -92,7 +98,7 @@ class AnalyzerTests(unittest.TestCase):
 
   def test_analysis_report_builder_preserves_section_contracts(self):
     backtest = analyzer.BacktestResult(0, 0, 0, 0, 0, analyzer.Counter())
-    selection = analyzer.RedCandidateSelection((), (), (), ())
+    candidate_selection = selection.RedCandidateSelection((), (), (), ())
     coverage = {
         name: {'passed': 0, 'total': 0, 'rate': 0.0}
         for name in analyzer.FILTER_NAMES
@@ -115,7 +121,7 @@ class AnalyzerTests(unittest.TestCase):
             'stages': [], 'passed': 0, 'total': 0, 'rate': 0.0,
         },
         rule_audit_periods=200,
-        selection=selection,
+        selection=candidate_selection,
         recommended_blues=[],
         best_7_reds=[],
     )
@@ -204,7 +210,7 @@ class AnalyzerTests(unittest.TestCase):
 
   def test_build_red_pool_mixes_score_bands(self):
     scores = {ball: float(34 - ball) for ball in range(1, 34)}
-    pool = analyzer.build_red_pool(scores)
+    pool = selection.build_red_pool(scores)
     self.assertEqual(len(pool), 17)
     self.assertTrue(set(range(1, 5)).issubset(pool))
     self.assertTrue(set(range(30, 34)).issubset(pool))
@@ -212,11 +218,11 @@ class AnalyzerTests(unittest.TestCase):
 
   def test_build_red_pool_modes(self):
     scores = {ball: float(34 - ball) for ball in range(1, 34)}
-    self.assertEqual(analyzer.build_red_pool(scores, mode="high"), list(range(1, 18)))
-    self.assertEqual(analyzer.build_red_pool(scores, mode="middle"), list(range(9, 26)))
-    self.assertEqual(analyzer.build_red_pool(scores, mode="low"), list(range(17, 34)))
+    self.assertEqual(selection.build_red_pool(scores, mode="high"), list(range(1, 18)))
+    self.assertEqual(selection.build_red_pool(scores, mode="middle"), list(range(9, 26)))
+    self.assertEqual(selection.build_red_pool(scores, mode="low"), list(range(17, 34)))
     with self.assertRaises(ValueError):
-      analyzer.build_red_pool(scores, mode="invalid")
+      selection.build_red_pool(scores, mode="invalid")
 
   def test_candidate_generation_uses_one_selection_pipeline(self):
     scores = {ball: float(ball) for ball in range(1, 34)}
@@ -239,11 +245,11 @@ class AnalyzerTests(unittest.TestCase):
       return list(combos)[:2]
 
     with (
-        patch.object(analyzer, 'build_red_pool', return_value=list(range(1, 8))),
-        patch.object(analyzer, 'passes_red_filters', side_effect=fake_filter) as check,
-        patch.object(analyzer, 'select_recommendations', side_effect=fake_select) as select,
+        patch.object(selection, 'build_red_pool', return_value=list(range(1, 8))),
+        patch.object(selection, 'passes_red_filters', side_effect=fake_filter) as check,
+        patch.object(selection, 'select_recommendations', side_effect=fake_select) as select,
     ):
-      result = analyzer.generate_red_candidates(
+      result = selection.generate_red_candidates(
           scores, context, rejected, config=config
       )
 
@@ -269,18 +275,18 @@ class AnalyzerTests(unittest.TestCase):
 
 
   def test_rejection_set_is_reproducible(self):
-    first = analyzer.make_rejection_set(100, random.Random(7))
-    second = analyzer.make_rejection_set(100, random.Random(7))
+    first = selection.make_rejection_set(100, random.Random(7))
+    second = selection.make_rejection_set(100, random.Random(7))
     self.assertEqual(first, second)
     self.assertEqual(len(first), 100)
     with self.assertRaises(ValueError):
-      analyzer.make_rejection_set(analyzer.TOTAL_RED_COMBINATIONS + 1)
+      selection.make_rejection_set(config.TOTAL_RED_COMBINATIONS + 1)
 
   def test_rejection_seed_is_reproducible_and_issue_specific(self):
-    first = analyzer.rejection_seed_for_issue(42, 2026104)
-    self.assertEqual(first, analyzer.rejection_seed_for_issue(42, "2026104"))
-    self.assertNotEqual(first, analyzer.rejection_seed_for_issue(42, 2026105))
-    self.assertNotEqual(first, analyzer.rejection_seed_for_issue(43, 2026104))
+    first = selection.rejection_seed_for_issue(42, 2026104)
+    self.assertEqual(first, selection.rejection_seed_for_issue(42, "2026104"))
+    self.assertNotEqual(first, selection.rejection_seed_for_issue(42, 2026105))
+    self.assertNotEqual(first, selection.rejection_seed_for_issue(43, 2026104))
 
 
   def test_filter_explanation_includes_prime_rule(self):
@@ -420,7 +426,7 @@ class AnalyzerTests(unittest.TestCase):
     )
 
   def test_recommendation_portfolio_limits_overlap(self):
-    combos = list(analyzer.combinations(range(1, 13), 6))
+    combos = list(combinations(range(1, 13), 6))
     scores = {n: n / 12 for n in range(1, 13)}
     selected = rules.select_recommendations(combos, scores, limit=10, max_shared=4)
     self.assertEqual(len(selected), 10)
@@ -430,9 +436,9 @@ class AnalyzerTests(unittest.TestCase):
 
   def test_duplex_selection_uses_score_to_break_coverage_ties(self):
     pool = list(range(1, 9))
-    passed = list(analyzer.combinations(pool, 6))
+    passed = list(combinations(pool, 6))
     scores = {n: float(34 - n) for n in range(1, 34)}
-    ranked = analyzer.find_best_7_red_combinations(passed, pool, scores)
+    ranked = selection.find_best_7_red_combinations(passed, pool, scores)
     self.assertEqual(ranked[0], ((2, 3, 4, 5, 6, 7, 8), 7))
 
   def test_backtest_result_metrics(self):
@@ -460,7 +466,9 @@ class AnalyzerTests(unittest.TestCase):
 
   def test_actual_red_rank_bands_include_unselected_ranks(self):
     scores = {ball: float(34 - ball) for ball in range(1, 34)}
-    counts = analyzer.count_actual_reds_by_rank_band(scores, {1, 4, 13, 21, 30, 22})
+    counts = selection.count_actual_reds_by_rank_band(
+        scores, {1, 4, 13, 21, 30, 22}
+    )
     self.assertEqual(
         counts,
         {"high": 2, "middle": 2, "low": 1, "other": 1},
@@ -496,11 +504,13 @@ class AnalyzerTests(unittest.TestCase):
         patch.object(analyzer, "make_rejection_set", return_value=set()) as rejection_mock,
         patch.object(analyzer, "get_omission", return_value={}),
         patch.object(
-            analyzer, "build_red_pool", return_value=[1, 2, 3, 4, 13, 14]
+            selection, "build_red_pool", return_value=[1, 2, 3, 4, 13, 14]
         ) as pool_mock,
-        patch.object(analyzer, "passes_red_filters", return_value=True),
+        patch.object(selection, "passes_red_filters", return_value=True),
         patch.object(
-            analyzer, "select_recommendations", return_value=[(1, 2, 3, 4, 13, 14)]
+            selection,
+            "select_recommendations",
+            return_value=[(1, 2, 3, 4, 13, 14)],
         ) as selection_mock,
     ):
       result = analyzer.run_full_backtest(
