@@ -28,6 +28,7 @@ from ssq_rules import (
     FILTER_NAMES,
     HARD_FILTER_NAMES,
     RED_RULES,
+    RuleContext,
     build_rank_center_scores,
     explain_filter_failures,
     filter_pipeline_stats,
@@ -704,7 +705,12 @@ def historical_rule_context(full_df, index):
     """Build rule inputs using only draws before the audited issue."""
     history = full_df.iloc[:index]
     recent = [set(draw) for draw in history.iloc[-10:]['红球']]
-    return get_omission(history), recent, recent[-1], recent[-2]
+    return RuleContext(
+        omission_values=get_omission(history),
+        recent_draws=recent,
+        last_draw=recent[-1],
+        previous_draw=recent[-2],
+    )
 
 
 def audit_historical_rule_coverage(full_df, periods=RULE_AUDIT_PERIODS):
@@ -717,7 +723,7 @@ def audit_historical_rule_coverage(full_df, periods=RULE_AUDIT_PERIODS):
     for index in range(start, len(full_df)):
         combo = tuple(full_df.iloc[index]['红球'])
         failures = set(explain_filter_failures(
-            combo, *historical_rule_context(full_df, index), None
+            combo, historical_rule_context(full_df, index)
         ))
         for name in FILTER_NAMES:
             if name not in failures:
@@ -751,7 +757,7 @@ def audit_historical_hard_pipeline(full_df, periods=RULE_AUDIT_PERIODS):
         combo = tuple(full_df.iloc[index]['红球'])
         context = historical_rule_context(full_df, index)
         for rule in hard_rules:
-            if not rule.evaluator(combo, *context):
+            if not rule.evaluator(combo, context):
                 break
             remaining_counts[rule.name] += 1
 
@@ -855,8 +861,7 @@ def get_user_input_with_timeout(timeout):
 
 def evaluate_backtest_mode(mode, current, actual_red_set, actual_blue,
                            recommended_blue, rank_band_hits, red_scores,
-                           omission, last_10, last_1, last_2, rejection_set,
-                           config):
+                           context, rejection_set, config):
     """Evaluate one pool mode for one historical issue."""
     red_pool = build_red_pool(red_scores, config=config, mode=mode)
     current.evaluated_periods += 1
@@ -867,9 +872,7 @@ def evaluate_backtest_mode(mode, current, actual_red_set, actual_blue,
 
     passed_combos = [
         combo for combo in combinations(sorted(red_pool), 6)
-        if passes_red_filters(
-            combo, omission, last_10, last_1, last_2, rejection_set
-        )
+        if passes_red_filters(combo, context, rejection_set)
     ]
     if not passed_combos:
         return
@@ -880,7 +883,7 @@ def evaluate_backtest_mode(mode, current, actual_red_set, actual_blue,
     current.candidate_tickets += len(passed_combos)
     current.candidate_red_hit_counts.update(red_hits_by_combo.values())
     selected_combos = select_recommendations(
-        passed_combos, red_scores, last_1, last_2,
+        passed_combos, red_scores, context.last_draw, context.previous_draw,
         limit=config.recommendation_count,
     )
     current.active_periods += 1
@@ -959,12 +962,18 @@ def run_full_backtest(full_df, params, feature_columns, num_periods,
             omission = get_omission(history_df_for_step)
             last_10 = [set(d) for d in history_df_for_step.iloc[-10:]['红球'].tolist()]
             last_1 = last_10[-1]; last_2 = last_10[-2]
+            context = RuleContext(
+                omission_values=omission,
+                recent_draws=last_10,
+                last_draw=last_1,
+                previous_draw=last_2,
+            )
             
             for mode in pool_modes:
                 evaluate_backtest_mode(
                     mode, metrics[mode], actual_red_set, actual_blue,
-                    recommended_blue, rank_band_hits, red_scores, omission,
-                    last_10, last_1, last_2, rejection_set, config,
+                    recommended_blue, rank_band_hits, red_scores, context,
+                    rejection_set, config,
                 )
             pbar.update(1)
 
@@ -1077,6 +1086,12 @@ if __name__ == '__main__':
     last_10_draws_sets = [set(d) for d in full_df.iloc[-10:]['红球'].tolist()]
     last_draw_set = last_10_draws_sets[-1]
     last_2_draw_set = last_10_draws_sets[-2]
+    context = RuleContext(
+        omission_values=omission_values,
+        recent_draws=last_10_draws_sets,
+        last_draw=last_draw_set,
+        previous_draw=last_2_draw_set,
+    )
     
     # 从红球大底中生成所有可能的6球组合
     potential_combos = list(combinations(sorted(red_pool), 6))
@@ -1086,8 +1101,7 @@ if __name__ == '__main__':
     # 遍历所有由大底生成的潜在组合
     for r in tqdm(potential_combos, desc="规则过滤进度", ncols=80):
         # 硬规则负责淘汰组合，软规则在最终排序时参与评分。
-        is_passed = passes_red_filters(r, omission_values, last_10_draws_sets,
-                                       last_draw_set, last_2_draw_set, rejection_set)
+        is_passed = passes_red_filters(r, context, rejection_set)
 
         # 组合通过全部硬规则后进入候选列表。
         if is_passed:
@@ -1095,8 +1109,7 @@ if __name__ == '__main__':
 
     print(f"过滤完成！共有 {len(passed_combos_tuples)} 组号码通过硬规则检验。")
     pipeline_stats = filter_pipeline_stats(
-        potential_combos, omission_values, last_10_draws_sets,
-        last_draw_set, last_2_draw_set, rejection_set
+        potential_combos, context, rejection_set
     )
 
     # --- [阶段 6/8] 交互式输出 ---

@@ -59,7 +59,7 @@ python py\ssq_bonus_calculation.py
 ```powershell
 python py\ssq_analyzer.py --backtest-periods 1 --rejection-size 0 --compare-pools
 python -m pip install -r py\requirements-dev.txt
-ruff check py --select F,E9
+ruff check py
 python -m unittest py.test_ssq_analyzer -v
 ```
 

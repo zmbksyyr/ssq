@@ -102,7 +102,9 @@ class AnalyzerTests(unittest.TestCase):
   def test_filter_explanation_includes_prime_rule(self):
     combo = (1, 2, 4, 6, 8, 10)
     failures = rules.explain_filter_failures(
-        combo, {n: 0 for n in range(1, 34)}, [], set(), set(), set()
+        combo, rules.RuleContext(
+            omission_values={n: 0 for n in range(1, 34)}
+        )
     )
     self.assertIn("prime_composite_ratio", failures)
 
@@ -124,13 +126,32 @@ class AnalyzerTests(unittest.TestCase):
     combo = (1, 4, 8, 16, 25, 30)
     self.assertFalse(rules.filter_prime_composite_ratio(combo))
     self.assertTrue(rules.passes_red_filters(
-        combo, {n: 0 for n in range(1, 34)}, [], {1}, set(), set()
+        combo, rules.RuleContext(
+            omission_values={n: 0 for n in range(1, 34)}, last_draw={1}
+        )
     ))
+
+  def test_rule_context_routes_inputs_by_name(self):
+    context = rules.RuleContext(
+        omission_values={ball: 16 for ball in range(1, 34)},
+        recent_draws=[{1, 2, 3, 4, 20, 21}],
+        last_draw={32},
+        previous_draw={31},
+    )
+
+    failures = rules.explain_filter_failures((1, 2, 3, 4, 5, 6), context)
+    self.assertTrue(
+        {'recent_overlap', 'all_cold', 'related_numbers'}.issubset(failures)
+    )
+    diagonal_rule = next(
+        rule for rule in rules.RED_RULES if rule.name == 'diagonal_consecutive'
+    )
+    self.assertFalse(diagonal_rule.evaluator((3, 8, 14, 21, 27, 33), context))
 
   def test_filter_pipeline_stats_are_incremental(self):
     stats = rules.filter_pipeline_stats(
         [(3, 8, 13, 20, 27, 31), (1, 2, 3, 4, 5, 6)],
-        {n: 0 for n in range(1, 34)}, [], set(), set(), set()
+        rules.RuleContext(omission_values={n: 0 for n in range(1, 34)}),
     )
     self.assertGreater(len(stats), 10)
     for item in stats:

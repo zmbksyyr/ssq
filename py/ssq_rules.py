@@ -1,6 +1,6 @@
 from collections import Counter
-from collections.abc import Callable
-from dataclasses import dataclass
+from collections.abc import Callable, Collection, Mapping, Sequence
+from dataclasses import dataclass, field
 from itertools import combinations
 
 PRIMES_IN_33 = frozenset({2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31})
@@ -10,12 +10,20 @@ DEFAULT_MAX_SHARED_RED_BALLS = 4
 
 
 @dataclass(frozen=True)
+class RuleContext:
+    omission_values: Mapping[int, int] = field(default_factory=dict)
+    recent_draws: Sequence[Collection[int]] = field(default_factory=tuple)
+    last_draw: Collection[int] | None = None
+    previous_draw: Collection[int] | None = None
+
+
+@dataclass(frozen=True)
 class RuleDefinition:
     name: str
     hard: bool
-    evaluator: Callable[..., bool]
+    evaluator: Callable[[tuple[int, ...], RuleContext], bool]
     score_weight: float = 0.0
-    scorer: Callable[..., float] | None = None
+    scorer: Callable[[tuple[int, ...], RuleContext], float] | None = None
 
 
 def is_prime(number):
@@ -148,71 +156,74 @@ def score_big_small_balance(combo):
 
 
 RED_RULES = (
-    RuleDefinition('highly_regular', True, lambda c, *_: filter_highly_regular(c)),
-    RuleDefinition('sum_value', True, lambda c, *_: filter_sum_value(c)),
-    RuleDefinition('span', True, lambda c, *_: filter_span(c)),
+    RuleDefinition('highly_regular', True, lambda c, _: filter_highly_regular(c)),
+    RuleDefinition('sum_value', True, lambda c, _: filter_sum_value(c)),
+    RuleDefinition('span', True, lambda c, _: filter_span(c)),
     RuleDefinition(
         'consecutive_numbers', True,
-        lambda c, *_: filter_consecutive_numbers(c),
+        lambda c, _: filter_consecutive_numbers(c),
     ),
     RuleDefinition(
-        'zones', True, lambda c, *_: filter_zones(c), 0.10,
-        lambda c, *_: score_zone_balance(c),
+        'zones', True, lambda c, _: filter_zones(c), 0.10,
+        lambda c, _: score_zone_balance(c),
     ),
     RuleDefinition(
-        'ac_value', False, lambda c, *_: filter_ac_value(c), 0.05,
-        lambda c, *_: float(filter_ac_value(c)),
+        'ac_value', False, lambda c, _: filter_ac_value(c), 0.05,
+        lambda c, _: float(filter_ac_value(c)),
     ),
     RuleDefinition(
         'prime_composite_ratio', False,
-        lambda c, *_: filter_prime_composite_ratio(c), 0.08,
-        lambda c, *_: score_prime_balance(c),
+        lambda c, _: filter_prime_composite_ratio(c), 0.08,
+        lambda c, _: score_prime_balance(c),
     ),
     RuleDefinition(
         'big_small_ratio', False,
-        lambda c, *_: filter_big_small_ratio(c), 0.08,
-        lambda c, *_: score_big_small_balance(c),
+        lambda c, _: filter_big_small_ratio(c), 0.08,
+        lambda c, _: score_big_small_balance(c),
     ),
     RuleDefinition(
         'recent_overlap', True,
-        lambda c, _omission, recent, *_: filter_recent_overlap(c, recent),
+        lambda c, context: filter_recent_overlap(c, context.recent_draws),
     ),
     RuleDefinition(
         'all_cold', True,
-        lambda c, omission, *_: filter_all_cold(c, omission),
+        lambda c, context: filter_all_cold(c, context.omission_values),
     ),
     RuleDefinition(
-        'odd_even_ratio', False,
-        lambda c, *_: filter_odd_even_ratio(c), 0.10,
-        lambda c, *_: score_odd_even_balance(c),
+        'odd_even_ratio', False, lambda c, _: filter_odd_even_ratio(c), 0.10,
+        lambda c, _: score_odd_even_balance(c),
     ),
     RuleDefinition(
         'modulo3_roads', False,
-        lambda c, *_: filter_modulo3_roads(c), 0.04,
-        lambda c, *_: float(filter_modulo3_roads(c)),
+        lambda c, _: filter_modulo3_roads(c), 0.04,
+        lambda c, _: float(filter_modulo3_roads(c)),
     ),
-    RuleDefinition('ending_digits', True, lambda c, *_: filter_ending_digits(c)),
+    RuleDefinition('ending_digits', True, lambda c, _: filter_ending_digits(c)),
     RuleDefinition(
         'head_tail_range', False,
-        lambda c, *_: filter_head_tail_range(c), 0.03,
-        lambda c, *_: float(filter_head_tail_range(c)),
+        lambda c, _: filter_head_tail_range(c), 0.03,
+        lambda c, _: float(filter_head_tail_range(c)),
     ),
     RuleDefinition(
-        'sum_of_tails', True, lambda c, *_: filter_sum_of_tails(c)
+        'sum_of_tails', True, lambda c, _: filter_sum_of_tails(c)
     ),
     RuleDefinition(
         'related_numbers', True,
-        lambda c, _omission, _recent, last, *_: filter_related_numbers(c, last),
+        lambda c, context: filter_related_numbers(
+            c, context.last_draw or frozenset()
+        ),
     ),
     RuleDefinition(
         'diagonal_consecutive', False,
-        lambda c, _o, _r, last, previous: filter_diagonal_consecutive(
-            c, last, previous
+        lambda c, context: filter_diagonal_consecutive(
+            c, context.last_draw or (), context.previous_draw or ()
         ),
         0.02,
-        lambda c, _o, _r, last, previous: (
-            1.0 if last is None or previous is None
-            else float(filter_diagonal_consecutive(c, last, previous))
+        lambda c, context: (
+            1.0 if context.last_draw is None or context.previous_draw is None
+            else float(filter_diagonal_consecutive(
+                c, context.last_draw, context.previous_draw
+            ))
         ),
     ),
 )
@@ -221,43 +232,27 @@ HARD_FILTER_NAMES = tuple(rule.name for rule in RED_RULES if rule.hard)
 SOFT_FILTER_NAMES = tuple(rule.name for rule in RED_RULES if not rule.hard)
 
 
-def rule_context(omission_values, recent_draws, last_draw, previous_draw):
-    return omission_values, recent_draws, last_draw, previous_draw
-
-
-def passes_red_filters(combo, omission_values, recent_draws, last_draw,
-                       previous_draw, rejection_set=None):
-    context = rule_context(
-        omission_values, recent_draws, last_draw, previous_draw
-    )
+def passes_red_filters(combo, context, rejection_set=None):
     passes_rules = all(
-        not rule.hard or rule.evaluator(combo, *context)
+        not rule.hard or rule.evaluator(combo, context)
         for rule in RED_RULES
     )
     return passes_rules and (rejection_set is None or combo not in rejection_set)
 
 
-def explain_filter_failures(combo, omission_values, recent_draws, last_draw,
-                            previous_draw, rejection_set=None):
-    context = rule_context(
-        omission_values, recent_draws, last_draw, previous_draw
-    )
+def explain_filter_failures(combo, context, rejection_set=None):
     failures = [
         rule.name for rule in RED_RULES
-        if not rule.evaluator(combo, *context)
+        if not rule.evaluator(combo, context)
     ]
     if rejection_set is not None and combo in rejection_set:
         failures.append('anti_crowding')
     return failures
 
 
-def filter_pipeline_stats(combos, omission_values, recent_draws, last_draw,
-                          previous_draw, rejection_set=None):
-    context = rule_context(
-        omission_values, recent_draws, last_draw, previous_draw
-    )
+def filter_pipeline_stats(combos, context, rejection_set=None):
     checks = [
-        (rule.name, lambda combo, current=rule: current.evaluator(combo, *context))
+        (rule.name, lambda combo, current=rule: current.evaluator(combo, context))
         for rule in RED_RULES if rule.hard
     ]
     checks.append((
@@ -299,9 +294,9 @@ def score_red_combination(combo, red_scores, last_draw=None, previous_draw=None,
     signal = score_rank_center_preference(
         combo, red_scores, rank_center_scores
     )
-    context = (None, None, last_draw, previous_draw)
+    context = RuleContext(last_draw=last_draw, previous_draw=previous_draw)
     rule_score = sum(
-        rule.score_weight * rule.scorer(combo, *context)
+        rule.score_weight * rule.scorer(combo, context)
         for rule in RED_RULES if rule.scorer is not None
     )
     return COMBINATION_SIGNAL_WEIGHT * signal + rule_score
