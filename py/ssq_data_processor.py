@@ -22,7 +22,13 @@ import pandas as pd
 import requests
 from bs4 import BeautifulSoup
 from requests.adapters import HTTPAdapter
-from ssq_core import local_today, parse_blue_ball, parse_issue, parse_red_balls
+from ssq_core import (
+    DRAW_COLUMNS,
+    local_today,
+    parse_blue_ball,
+    parse_issue,
+    parse_red_balls,
+)
 from urllib3.util.retry import Retry
 
 # ==============================================================================
@@ -214,7 +220,7 @@ def parse_txt_data(data_lines: list) -> list:
 
 def normalize_lottery_frame(frame):
     """Validate and normalize a draw DataFrame before it reaches the CSV."""
-    required_columns = ['期号', '日期', '红球', '蓝球']
+    required_columns = list(DRAW_COLUMNS)
     missing = [column for column in required_columns if column not in frame.columns]
     if missing:
         raise ValueError(f"缺少字段: {', '.join(missing)}")

@@ -12,6 +12,7 @@ RED_MAX = 33
 BLUE_MIN = 1
 BLUE_MAX = 16
 RED_COUNT = 6
+DRAW_COLUMNS = ('期号', '日期', '红球', '蓝球')
 DRAW_WEEKDAYS = {1, 3, 6}  # Tuesday, Thursday, Sunday
 LOCAL_TIMEZONE = ZoneInfo('Asia/Shanghai')
 

@@ -202,6 +202,52 @@ class AnalyzerTests(unittest.TestCase):
     finally:
       Path(path).unlink()
 
+  def test_loader_rejects_unexpected_schema(self):
+    content = (
+      'issue,date,reds,blue\n'
+      '2026001,2026-01-01,"01,02,03,04,05,06",07\n'
+    )
+    with tempfile.NamedTemporaryFile('w', encoding='utf-8', delete=False) as handle:
+      handle.write(content)
+      path = handle.name
+    try:
+      self.assertIsNone(workflow.load_and_preprocess_data(path))
+    finally:
+      Path(path).unlink()
+
+  def test_loader_rejects_duplicate_issues(self):
+    content = (
+      '期号,日期,红球,蓝球\n'
+      '2026001,2026-01-01,"01,02,03,04,05,06",07\n'
+      '2026001,2026-01-01,"02,03,04,05,06,07",08\n'
+    )
+    with tempfile.NamedTemporaryFile('w', encoding='utf-8', delete=False) as handle:
+      handle.write(content)
+      path = handle.name
+    try:
+      self.assertIsNone(workflow.load_and_preprocess_data(path))
+    finally:
+      Path(path).unlink()
+
+  def test_loader_parses_and_orders_valid_draws(self):
+    content = (
+      '蓝球,红球,日期,期号\n'
+      '08,"02,03,04,05,06,07",2026-01-04,2026002\n'
+      '07,"01,02,03,04,05,06",2026-01-01,2026001\n'
+    )
+    with tempfile.NamedTemporaryFile('w', encoding='utf-8', delete=False) as handle:
+      handle.write(content)
+      path = handle.name
+    try:
+      frame = workflow.load_and_preprocess_data(path)
+    finally:
+      Path(path).unlink()
+    self.assertIsNotNone(frame)
+    self.assertEqual(tuple(frame.columns), ('期号', '日期', '红球', '蓝球'))
+    self.assertEqual(frame['期号'].tolist(), [2026001, 2026002])
+    self.assertEqual(frame.iloc[0]['红球'], [1, 2, 3, 4, 5, 6])
+    self.assertEqual(frame.iloc[1]['蓝球'], 8)
+
   def test_prime_definition(self):
     self.assertFalse(rules.is_prime(1))
     self.assertTrue(rules.is_prime(2))

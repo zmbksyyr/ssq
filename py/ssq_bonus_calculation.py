@@ -5,6 +5,7 @@ from math import comb
 
 import pandas as pd
 from ssq_core import (
+    DRAW_COLUMNS,
     PRIZE_NAMES,
     PRIZE_RULES,
     atomic_write_text,
@@ -170,7 +171,7 @@ def calculate_duplex_prize(bet_reds, bet_blues, winning_reds, winning_blue):
 
 def load_latest_draw(filepath=CSV_PATH):
     frame = pd.read_csv(filepath, header=0)
-    required = {'期号', '日期', '红球', '蓝球'}
+    required = set(DRAW_COLUMNS)
     if not required.issubset(frame.columns):
         raise ValueError(f"开奖数据缺少字段: {sorted(required - set(frame.columns))}")
     frame['期号'] = frame['期号'].apply(parse_issue)

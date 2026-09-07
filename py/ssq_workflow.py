@@ -20,6 +20,7 @@ from ssq_config import (
     validate_strategy_params,
 )
 from ssq_core import (
+    DRAW_COLUMNS,
     atomic_write_text,
     infer_next_issue,
     local_now,
@@ -71,12 +72,18 @@ def load_and_preprocess_data(filepath=CSV_PATH):
     """Load, validate, parse, and chronologically order draw history."""
     try:
         frame = pd.read_csv(filepath, header=0)
-        frame.columns = ['期号', '日期', '红球', '蓝球']
     except (OSError, UnicodeError, ValueError, pd.errors.ParserError) as exc:
         print(f"错误: 无法加载数据文件 '{filepath}': {exc}")
         return None
 
     try:
+        actual_columns = set(frame.columns)
+        expected_columns = set(DRAW_COLUMNS)
+        if actual_columns != expected_columns:
+            missing = sorted(expected_columns - actual_columns)
+            unexpected = sorted(actual_columns - expected_columns)
+            raise ValueError(f'字段不匹配: 缺少 {missing}, 多余 {unexpected}')
+        frame = frame.loc[:, list(DRAW_COLUMNS)].copy()
         frame['期号'] = frame['期号'].apply(parse_issue)
         if frame['期号'].duplicated().any():
             raise ValueError('存在重复期号')
