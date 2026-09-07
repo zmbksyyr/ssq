@@ -2,11 +2,11 @@
 
 import os
 import platform
-import random
 from importlib.metadata import version
 
 import ssq_history_evaluation as _history_evaluation
 import ssq_history_preparation as _history_preparation
+import ssq_prediction_workflow as _prediction_workflow
 import ssq_strategy_params as _strategy_params
 import ssq_workflow_models as _workflow_models
 from ssq_anti_crowding import make_rejection_set, rejection_seed_for_issue
@@ -43,13 +43,12 @@ from ssq_rule_auditing import (
     audit_historical_hard_pipeline,
     audit_historical_rule_coverage,
 )
-from ssq_rule_models import RuleContext
 from ssq_rule_registry import filter_pipeline_stats
 from ssq_scoring import (
     get_omission,
     run_strategy_and_get_scores,
 )
-from ssq_selection_models import CandidateGenerationRequest, DuplexSelectionRequest
+from ssq_selection_models import DuplexSelectionRequest
 from ssq_training import (
     MODEL_TRAINING_PARAMS,
     train_prediction_models,
@@ -129,71 +128,30 @@ def evaluate_history(history, options):
 
 
 def train_final_models(history):
-    """Train and validate the models used for the target issue."""
-    models = train_prediction_models(
-        history.frame.iloc[5:].copy(),
-        history.feature_columns,
-        show_progress=True,
+    """Compatibility wrapper for final model training."""
+    dependencies = _prediction_workflow.ModelTrainingDependencies(
+        train_models=train_prediction_models,
+        validate_models=validate_model_sets,
     )
-    try:
-        validate_model_sets(*models)
-    except ValueError as exc:
-        raise SystemExit(f'错误: {exc}') from exc
-    return models
+    return _prediction_workflow.train_final_models(history, dependencies)
 
 
 def select_current_issue(history, options, params, models):
-    """Score the target issue and apply anti-crowding and hard rules."""
-    red_scores, blue_scores = run_strategy_and_get_scores(
-        history.frame,
+    """Compatibility wrapper for current-issue candidate selection."""
+    dependencies = _prediction_workflow.CurrentSelectionDependencies(
+        score_balls=run_strategy_and_get_scores,
+        derive_rejection_seed=rejection_seed_for_issue,
+        build_rejection_set=make_rejection_set,
+        get_omission=get_omission,
+        generate_candidates=generate_candidates,
+        collect_pipeline_stats=filter_pipeline_stats,
+    )
+    return _prediction_workflow.select_current_issue(
+        history,
+        options,
         params,
-        *models,
-        history.feature_columns,
-    )
-    recommended_blues = sorted(
-        blue_scores,
-        key=blue_scores.get,
-        reverse=True,
-    )[:options.strategy_config.blue_count]
-
-    print('\n[阶段 5/8] 正在从大底中生成组合并应用硬规则过滤...')
-    config = options.strategy_config
-    rejection_seed = rejection_seed_for_issue(config.random_seed, history.target_issue)
-    rejection_set = make_rejection_set(
-        config.rejection_lib_size,
-        random.Random(rejection_seed),
-    )
-    recent_draws = [set(draw) for draw in history.frame.iloc[-10:]['红球'].tolist()]
-    context = RuleContext(
-        omission_values=get_omission(history.frame),
-        recent_draws=recent_draws,
-        last_draw=recent_draws[-1],
-        previous_draw=recent_draws[-2],
-    )
-    selection = generate_candidates(CandidateGenerationRequest(
-        red_scores=red_scores,
-        context=context,
-        rejection_set=rejection_set,
-        config=config,
-        mode=options.pool_mode,
-        show_progress=True,
-    ))
-    print(
-        f'已根据ML评分选出 {config.pool_size_red} 个红球大底: '
-        f'{list(selection.red_pool)}'
-    )
-    print(f'过滤完成！共有 {len(selection.passed_combos)} 组号码通过硬规则检验。')
-    return CurrentSelection(
-        red_scores=red_scores,
-        recommended_blues=recommended_blues,
-        rejection_seed=rejection_seed,
-        rule_context=context,
-        candidate_selection=selection,
-        pipeline_stats=filter_pipeline_stats(
-            selection.potential_combos,
-            context,
-            rejection_set,
-        ),
+        models,
+        dependencies,
     )
 
 
