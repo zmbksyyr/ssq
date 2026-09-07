@@ -13,6 +13,12 @@ PRIZE_DISPLAY_ORDER = (
 )
 
 
+def format_audit_window(actual_periods, requested_periods):
+    if actual_periods == requested_periods:
+        return f'最近 {actual_periods} 期'
+    return f'实际 {actual_periods} 期，请求 {requested_periods} 期'
+
+
 @dataclass(frozen=True)
 class AnalysisReportData:
     latest_issue: str
@@ -158,8 +164,13 @@ def format_rule_audit_report(data):
     if aggressive_rules:
         lines.append(f"  提示：淘汰比例达到或超过50%的规则: {', '.join(aggressive_rules)}")
 
+    independent_total = next(iter(data.rule_coverage.values()), {}).get('total', 0)
+    independent_window = format_audit_window(
+        independent_total,
+        data.rule_audit_periods,
+    )
     lines.append(
-        f"\n真实开奖规则覆盖率 (最近 {data.rule_audit_periods} 期，逐条独立统计):"
+        f"\n真实开奖规则覆盖率 ({independent_window}，逐条独立统计):"
     )
     for name in FILTER_NAMES:
         result = data.rule_coverage[name]
@@ -169,8 +180,13 @@ def format_rule_audit_report(data):
             f"{result['total']} ({result['rate']:.2%})"
         )
 
+    pipeline_total = data.hard_pipeline_coverage['total']
+    pipeline_window = format_audit_window(
+        pipeline_total,
+        data.rule_audit_periods,
+    )
     lines.append(
-        f"\n真实开奖硬规则累计覆盖率 (最近 {data.rule_audit_periods} 期，不含随机撞号):"
+        f"\n真实开奖硬规则累计覆盖率 ({pipeline_window}，不含随机撞号):"
     )
     for item in data.hard_pipeline_coverage['stages']:
         lines.append(

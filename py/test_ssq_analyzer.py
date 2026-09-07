@@ -200,6 +200,28 @@ class AnalyzerTests(unittest.TestCase):
     self.assertIn('【单式推荐 (0组)】', report)
     self.assertNotIn('组合  1:', report)
 
+  def test_rule_report_discloses_truncated_audit_windows(self):
+    coverage = {
+        name: {'passed': 10, 'total': 12, 'rate': 10 / 12}
+        for name in rules.FILTER_NAMES
+    }
+    data = SimpleNamespace(
+        pipeline_stats=[],
+        rule_coverage=coverage,
+        hard_pipeline_coverage={
+            'stages': [],
+            'passed': 10,
+            'total': 12,
+            'rate': 10 / 12,
+        },
+        rule_audit_periods=200,
+    )
+
+    report = '\n'.join(reporting.format_rule_audit_report(data))
+
+    self.assertIn('实际 12 期，请求 200 期，逐条独立统计', report)
+    self.assertIn('实际 12 期，请求 200 期，不含随机撞号', report)
+
   def test_confirmation_input_requires_explicit_y(self):
     for value in ('y', ' Y\n', b'y'):
       with self.subTest(value=value):
