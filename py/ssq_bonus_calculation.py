@@ -9,6 +9,8 @@ from ssq_bonus_workflow import (  # noqa: F401
     CSV_PATH,
     PROJECT_ROOT,
     REPORT_DIR,
+    BonusCheckDependencies,
+    default_bonus_dependencies,
     find_matching_report,
     load_latest_draw,
     main,

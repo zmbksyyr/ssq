@@ -1,6 +1,9 @@
 """Application workflow for checking recommendations against a draw."""
 
 import os
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import Any
 
 import ssq_latest_draw as _latest_draw
 import ssq_report_discovery as _report_discovery
@@ -19,6 +22,16 @@ TARGET_ISSUE_PATTERN = _report_discovery.TARGET_ISSUE_PATTERN
 parse_report_target_issue = _report_discovery.parse_report_target_issue
 
 
+@dataclass(frozen=True)
+class BonusCheckDependencies:
+    load_draw: Callable[..., Any]
+    find_report: Callable[..., Any]
+    parse_bets: Callable[..., Any]
+    format_report: Callable[..., str]
+    write_text: Callable[..., Any]
+    now: Callable[..., Any]
+
+
 def find_matching_report(target_issue, report_dir=REPORT_DIR):
     """Compatibility wrapper using the default report directory."""
     return _report_discovery.find_matching_report(target_issue, report_dir)
@@ -33,33 +46,49 @@ def load_latest_draw(filepath=CSV_PATH):
     )
 
 
+def default_bonus_dependencies():
+    return BonusCheckDependencies(
+        load_draw=load_latest_draw,
+        find_report=find_matching_report,
+        parse_bets=parse_report_bets,
+        format_report=format_bonus_report,
+        write_text=atomic_write_text,
+        now=local_now,
+    )
+
+
 def run_bonus_check(
     csv_path=CSV_PATH,
     report_dir=REPORT_DIR,
     generated_at=None,
+    dependencies=None,
 ):
     """Run a complete prize check and return the generated report path."""
+    dependencies = dependencies or default_bonus_dependencies()
     try:
-        latest_draw = load_latest_draw(csv_path)
+        latest_draw = dependencies.load_draw(csv_path)
     except (
         OSError, UnicodeError, TypeError, ValueError, ParserError
     ) as exc:
         raise SystemExit(f'读取 {csv_path} 文件失败: {exc}') from exc
 
     target_issue = latest_draw['issue']
-    report_filepath, error_message = find_matching_report(target_issue, report_dir)
+    report_filepath, error_message = dependencies.find_report(
+        target_issue,
+        report_dir,
+    )
     if error_message:
         raise SystemExit(error_message)
 
     try:
-        single_bets, duplex_bet = parse_report_bets(report_filepath)
+        single_bets, duplex_bet = dependencies.parse_bets(report_filepath)
     except (OSError, UnicodeError, ValueError) as exc:
         raise SystemExit(f'错误: 无法解析报告 {report_filepath}: {exc}') from exc
     if not single_bets or not duplex_bet['red'] or not duplex_bet['blue']:
         raise SystemExit(f'错误: 未能从报告 {report_filepath} 中成功解析出投注号码。')
 
-    generated_at = generated_at or local_now()
-    report = format_bonus_report(BonusReportData(
+    generated_at = generated_at or dependencies.now()
+    report = dependencies.format_report(BonusReportData(
         report_filepath=report_filepath,
         target_issue=target_issue,
         winning_reds=latest_draw['red'],
@@ -73,7 +102,7 @@ def run_bonus_check(
     timestamp = generated_at.strftime('%Y%m%d_%H%M%S')
     filepath = os.path.join(report_dir, f'ssq_bonus_check_{timestamp}.txt')
     try:
-        atomic_write_text(filepath, report)
+        dependencies.write_text(filepath, report)
     except OSError as exc:
         raise SystemExit(f'\n写入核对报告文件失败: {exc}') from exc
     print(f'\n核对报告已成功保存到文件: {filepath}')
