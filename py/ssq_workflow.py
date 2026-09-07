@@ -45,10 +45,11 @@ from ssq_modeling import (
 from ssq_reporting import AnalysisReportData, build_analysis_report
 from ssq_rules import RuleContext, filter_pipeline_stats
 from ssq_selection import (
+    CandidateGenerationRequest,
     build_rank_band_labels,
     build_rank_band_widths,
     find_best_7_red_combinations,
-    generate_red_candidates,
+    generate_candidates,
     make_rejection_set,
     rejection_seed_for_issue,
 )
@@ -262,14 +263,14 @@ def select_current_issue(history, options, params, models):
         last_draw=recent_draws[-1],
         previous_draw=recent_draws[-2],
     )
-    selection = generate_red_candidates(
-        red_scores,
-        context,
-        rejection_set,
+    selection = generate_candidates(CandidateGenerationRequest(
+        red_scores=red_scores,
+        context=context,
+        rejection_set=rejection_set,
         config=config,
         mode=options.pool_mode,
         show_progress=True,
-    )
+    ))
     print(
         f'已根据ML评分选出 {config.pool_size_red} 个红球大底: '
         f'{list(selection.red_pool)}'

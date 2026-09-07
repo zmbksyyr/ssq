@@ -23,9 +23,10 @@ from ssq_modeling import (
 from ssq_rules import FILTER_NAMES, RED_RULES, RuleContext, explain_filter_failures
 from ssq_selection import (
     RANK_BAND_WIDTHS,
+    CandidateGenerationRequest,
     build_rank_band_widths,
     count_actual_reds_by_rank_band,
-    generate_red_candidates,
+    generate_candidates,
     make_rejection_set,
     rejection_seed_for_issue,
 )
@@ -302,13 +303,13 @@ def evaluate_backtest_mode(
     additional_accumulators=(),
 ):
     """Evaluate one pool mode for one historical issue."""
-    selection = generate_red_candidates(
-        selection_inputs.red_scores,
-        selection_inputs.context,
-        selection_inputs.rejection_set,
+    selection = generate_candidates(CandidateGenerationRequest(
+        red_scores=selection_inputs.red_scores,
+        context=selection_inputs.context,
+        rejection_set=selection_inputs.rejection_set,
         config=selection_inputs.config,
         mode=mode,
-    )
+    ))
     red_hits_by_combo = None
     for accumulator in (current, *additional_accumulators):
         red_hits_by_combo = record_backtest_selection(

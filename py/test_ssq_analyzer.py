@@ -90,8 +90,36 @@ class AnalyzerTests(unittest.TestCase):
     self.assertIs(analyzer.train_models_for_spec, modeling.train_models_for_spec)
 
   def test_analyzer_reexports_selection_functions(self):
+    self.assertIs(
+        analyzer.CandidateGenerationRequest,
+        selection.CandidateGenerationRequest,
+    )
     self.assertIs(analyzer.build_red_pool, selection.build_red_pool)
+    self.assertIs(analyzer.generate_candidates, selection.generate_candidates)
     self.assertIs(analyzer.generate_red_candidates, selection.generate_red_candidates)
+
+  def test_legacy_candidate_api_builds_request_without_losing_options(self):
+    strategy = analyzer.StrategyConfig(rejection_lib_size=0)
+    context = rules.RuleContext(last_draw={1})
+    with patch.object(selection, 'generate_candidates', return_value='result') as generate:
+      result = selection.generate_red_candidates(
+          {1: 0.5},
+          context,
+          {(1, 2, 3, 4, 5, 6)},
+          config=strategy,
+          mode='middle',
+          show_progress=True,
+      )
+
+    self.assertEqual(result, 'result')
+    request = generate.call_args.args[0]
+    self.assertIsInstance(request, selection.CandidateGenerationRequest)
+    self.assertEqual(request.red_scores, {1: 0.5})
+    self.assertIs(request.context, context)
+    self.assertEqual(request.rejection_set, {(1, 2, 3, 4, 5, 6)})
+    self.assertIs(request.config, strategy)
+    self.assertEqual(request.mode, 'middle')
+    self.assertTrue(request.show_progress)
 
   def test_analyzer_reexports_backtesting_functions(self):
     self.assertIs(analyzer.BacktestResult, backtesting.BacktestResult)

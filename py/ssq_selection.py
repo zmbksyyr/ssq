@@ -2,6 +2,7 @@
 
 import random
 from collections import Counter
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from itertools import combinations
 from math import comb
@@ -11,6 +12,7 @@ from ssq_config import (
     RANDOM_SEED,
     REJECTION_SEED_MULTIPLIER,
     TOTAL_RED_COMBINATIONS,
+    StrategyConfig,
 )
 from ssq_core import RED_BALLS, parse_issue, validate_ball_scores
 from ssq_rules import (
@@ -73,6 +75,16 @@ class RedCandidateSelection:
     recommendations: tuple[tuple[int, ...], ...]
 
 
+@dataclass(frozen=True)
+class CandidateGenerationRequest:
+    red_scores: Mapping[int, float]
+    context: RuleContext
+    rejection_set: Collection[tuple[int, ...]] | None
+    config: StrategyConfig = DEFAULT_STRATEGY_CONFIG
+    mode: str = 'mixed'
+    show_progress: bool = False
+
+
 def count_actual_reds_by_rank_band(
     red_scores,
     actual_reds,
@@ -125,6 +137,39 @@ def build_red_pool(red_scores, config=DEFAULT_STRATEGY_CONFIG, mode='mixed'):
     return sorted(ranked[rank - 1] for rank in selected_ranks)
 
 
+def generate_candidates(request):
+    """Run the shared red-ball selection pipeline for live runs and backtests."""
+    if not isinstance(request, CandidateGenerationRequest):
+        raise TypeError('request 必须为 CandidateGenerationRequest')
+    red_pool = tuple(build_red_pool(
+        request.red_scores,
+        config=request.config,
+        mode=request.mode,
+    ))
+    potential_combos = tuple(combinations(red_pool, 6))
+    iterator = (
+        tqdm(potential_combos, desc='规则过滤进度', ncols=80)
+        if request.show_progress else potential_combos
+    )
+    passed_combos = tuple(
+        combo for combo in iterator
+        if passes_red_filters(combo, request.context, request.rejection_set)
+    )
+    recommendations = tuple(select_recommendations(
+        passed_combos,
+        request.red_scores,
+        limit=request.config.recommendation_count,
+        max_shared=request.config.max_shared_red_balls,
+        context=request.context,
+    ))
+    return RedCandidateSelection(
+        red_pool=red_pool,
+        potential_combos=potential_combos,
+        passed_combos=passed_combos,
+        recommendations=recommendations,
+    )
+
+
 def generate_red_candidates(
     red_scores,
     context,
@@ -133,30 +178,15 @@ def generate_red_candidates(
     mode='mixed',
     show_progress=False,
 ):
-    """Run the shared red-ball selection pipeline for live runs and backtests."""
-    red_pool = tuple(build_red_pool(red_scores, config=config, mode=mode))
-    potential_combos = tuple(combinations(red_pool, 6))
-    iterator = (
-        tqdm(potential_combos, desc='规则过滤进度', ncols=80)
-        if show_progress else potential_combos
-    )
-    passed_combos = tuple(
-        combo for combo in iterator
-        if passes_red_filters(combo, context, rejection_set)
-    )
-    recommendations = tuple(select_recommendations(
-        passed_combos,
-        red_scores,
-        limit=config.recommendation_count,
-        max_shared=config.max_shared_red_balls,
+    """Compatibility wrapper for request-based candidate generation."""
+    return generate_candidates(CandidateGenerationRequest(
+        red_scores=red_scores,
         context=context,
+        rejection_set=rejection_set,
+        config=config,
+        mode=mode,
+        show_progress=show_progress,
     ))
-    return RedCandidateSelection(
-        red_pool=red_pool,
-        potential_combos=potential_combos,
-        passed_combos=passed_combos,
-        recommendations=recommendations,
-    )
 
 
 def make_rejection_set(size, rng=None):

@@ -67,6 +67,7 @@ from ssq_rules import (  # noqa: F401 - compatibility exports
 from ssq_selection import (  # noqa: F401 - compatibility exports
     RANK_BAND_WIDTHS,
     RANK_BANDS,
+    CandidateGenerationRequest,
     RedCandidateSelection,
     build_rank_band_labels,
     build_rank_band_widths,
@@ -74,6 +75,7 @@ from ssq_selection import (  # noqa: F401 - compatibility exports
     build_red_pool,
     count_actual_reds_by_rank_band,
     find_best_7_red_combinations,
+    generate_candidates,
     generate_red_candidates,
     make_rejection_set,
     passes_red_filters,
