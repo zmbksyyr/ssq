@@ -1,23 +1,24 @@
 name: Shuangseqiu Full Process - Data, Analysis, and Bonus Check
 
 on:
+  push:
+    branches: [main]
+  pull_request:
   schedule:
     - cron: '0 22 * * 0,2,4'
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
-  group: ssq-daily-${{ github.ref }}
+  group: ssq-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  daily_process:
+  checks:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-    env:
-      TZ: Asia/Shanghai
+    timeout-minutes: 10
 
     steps:
     - name: Checkout repository
@@ -48,6 +49,40 @@ jobs:
         ruff check py
         python -m compileall -q py
         python -m unittest discover -s py -p 'test_*.py' -v
+
+  daily_process:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    needs: checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    env:
+      TZ: Asia/Shanghai
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Set up Python 3.11
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Cache pip dependencies
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('py/requirements*.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        python -m pip install -r py/requirements.txt
 
     - name: Step 1 - Run data acquisition script
       working-directory: ./py
