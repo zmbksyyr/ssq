@@ -797,6 +797,28 @@ class AnalyzerTests(unittest.TestCase):
     self.assertEqual(result.rank_band_rate("middle"), 1 / 3)
     self.assertAlmostEqual(result.rank_band_lift("middle"), 11 / 9)
 
+  def test_backtest_rejects_invalid_controls_before_training(self):
+    invalid_requests = (
+        {'num_periods': -1},
+        {'num_periods': True},
+        {'num_periods': 1, 'pool_modes': ()},
+        {'num_periods': 1, 'pool_modes': 'mixed'},
+        {'num_periods': 1, 'pool_modes': ('mixed', 'mixed')},
+        {'num_periods': 1, 'pool_modes': ('unknown',)},
+        {'num_periods': 1, 'config': object()},
+    )
+    with patch.object(backtesting, 'train_prediction_models') as train:
+      for request in invalid_requests:
+        kwargs = {
+            'full_df': pd.DataFrame(),
+            'params': analyzer.DEFAULT_PARAMS,
+            'feature_columns': modeling.FEATURE_COLUMNS,
+            **request,
+        }
+        with self.subTest(request=request), self.assertRaises((TypeError, ValueError)):
+          backtesting.run_full_backtest(**kwargs)
+      train.assert_not_called()
+
   def test_backtest_result_preserves_earlier_and_recent_windows(self):
     earlier = backtesting.BacktestResult(
         2, 2, 20, 40, 0, Counter(), evaluated_periods=2, pool_red_hits=6

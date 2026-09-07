@@ -10,6 +10,7 @@ from ssq_backtesting import (  # noqa: F401 - compatibility exports
     historical_rule_context,
     record_backtest_selection,
     run_full_backtest,
+    validate_backtest_request,
 )
 from ssq_config import (  # noqa: F401 - compatibility exports
     BACKTEST_PERIODS,
