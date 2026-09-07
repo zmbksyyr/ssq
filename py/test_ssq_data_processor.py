@@ -9,6 +9,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent))
 import ssq_data_processor as processor
+from ssq_core import DRAW_WEEKDAYS
 
 
 class DataProcessorTests(unittest.TestCase):
@@ -107,15 +108,20 @@ class DataProcessorTests(unittest.TestCase):
             self.assertEqual(path.read_text(encoding='utf-8'), original)
 
     def test_complete_authoritative_snapshot_is_accepted(self):
-        start = date(2026, 1, 1)
+        current = date(2026, 1, 1)
+        draw_dates = []
+        while len(draw_dates) < processor.MIN_FULL_SNAPSHOT_RECORDS:
+            if current.weekday() in DRAW_WEEKDAYS:
+                draw_dates.append(current)
+            current += timedelta(days=1)
         records = pd.DataFrame([
             {
                 '期号': 2026001 + index,
-                '日期': (start + timedelta(days=index)).isoformat(),
+                '日期': draw_date.isoformat(),
                 '红球': '01,02,03,04,05,06',
                 '蓝球': '07',
             }
-            for index in range(processor.MIN_FULL_SNAPSHOT_RECORDS)
+            for index, draw_date in enumerate(draw_dates)
         ])
         normalized = processor.normalize_lottery_frame(records)
         processor.validate_authoritative_snapshot(

@@ -47,6 +47,17 @@ class DrawDataTests(unittest.TestCase):
         self.assertEqual(result.iloc[0]['红球'], '01,02,03,04,05,06')
         self.assertEqual(result.iloc[0]['蓝球'], '07')
 
+    def test_rejects_dates_outside_the_draw_calendar(self):
+        frame = pd.DataFrame([{
+            '期号': 2026001,
+            '日期': '2026-01-02',
+            '红球': '01,02,03,04,05,06',
+            '蓝球': '07',
+        }])
+
+        with self.assertRaisesRegex(ValueError, '周二、周四或周日'):
+            normalize_draw_frame(frame)
+
 
 if __name__ == '__main__':
     unittest.main()

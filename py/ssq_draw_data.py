@@ -1,7 +1,13 @@
 """Shared validation and normalization for lottery draw tables."""
 
 import pandas as pd
-from ssq_core import DRAW_COLUMNS, parse_blue_ball, parse_issue, parse_red_balls
+from ssq_core import (
+    DRAW_COLUMNS,
+    DRAW_WEEKDAYS,
+    parse_blue_ball,
+    parse_issue,
+    parse_red_balls,
+)
 
 
 def normalize_draw_frame(frame):
@@ -33,6 +39,8 @@ def normalize_draw_frame(frame):
         raise ValueError('期号年份与开奖日期不一致')
     if not normalized['日期'].is_monotonic_increasing:
         raise ValueError('期号与开奖日期顺序不一致')
+    if not normalized['日期'].dt.weekday.isin(DRAW_WEEKDAYS).all():
+        raise ValueError('开奖日期必须为周二、周四或周日')
 
     normalized['日期'] = normalized['日期'].dt.strftime('%Y-%m-%d')
     return normalized
