@@ -51,7 +51,7 @@ RANDOM_SEED = 42
 
 # --- 回测与输出参数 ---
 # 执行历史回测时，使用最近的多少期数据进行验证。
-BACKTEST_PERIODS = 50       
+BACKTEST_PERIODS = 200
 
 # 当通过所有规则检验的组合数量超过此阈值时，程序会暂停并询问用户是否要全部显示。
 # 这是一个防止刷屏的机制。
@@ -124,6 +124,8 @@ class BacktestResult:
     evaluated_periods: int = 0
     pool_red_hits: int = 0
     ticket_red_hit_counts: Counter = field(default_factory=Counter)
+    candidate_tickets: int = 0
+    candidate_red_hit_counts: Counter = field(default_factory=Counter)
     blue_hit_periods: int = 0
     rank_band_hits: Counter = field(default_factory=Counter)
 
@@ -155,6 +157,32 @@ class BacktestResult:
         return self.three_plus_red_tickets / self.tickets if self.tickets else 0.0
 
     @property
+    def average_candidate_red_hits(self):
+        if not self.candidate_tickets:
+            return 0.0
+        total_hits = sum(
+            hits * count for hits, count in self.candidate_red_hit_counts.items()
+        )
+        return total_hits / self.candidate_tickets
+
+    @property
+    def candidate_three_plus_red_rate(self):
+        if not self.candidate_tickets:
+            return 0.0
+        three_plus = sum(
+            count for hits, count in self.candidate_red_hit_counts.items() if hits >= 3
+        )
+        return three_plus / self.candidate_tickets
+
+    @property
+    def ranking_red_hit_delta(self):
+        return self.average_ticket_red_hits - self.average_candidate_red_hits
+
+    @property
+    def ranking_three_plus_delta(self):
+        return self.three_plus_red_rate - self.candidate_three_plus_red_rate
+
+    @property
     def blue_hit_rate(self):
         return self.blue_hit_periods / self.evaluated_periods if self.evaluated_periods else 0.0
 
@@ -173,6 +201,8 @@ class RuleDefinition:
     name: str
     hard: bool
     evaluator: Callable[..., bool]
+    score_weight: float = 0.0
+    scorer: Callable[..., float] | None = None
 
 # --- 文件路径设置 ---
 # 获取当前脚本文件所在的目录的绝对路径
@@ -720,31 +750,78 @@ def filter_diagonal_consecutive(r, last_draw_set, last_2_draw_set):
     return True
 
 
+def score_zone_balance(combo):
+    counts = (
+        sum(n <= 11 for n in combo),
+        sum(12 <= n <= 22 for n in combo),
+        sum(n >= 23 for n in combo),
+    )
+    return 1.0 - (max(counts) - min(counts)) / 6
+
+
+def score_odd_even_balance(combo):
+    return 1.0 - abs(sum(n % 2 for n in combo) - 3) / 3
+
+
+def score_prime_balance(combo):
+    return 1.0 - abs(sum(is_prime(n) for n in combo) - 3) / 3
+
+
+def score_big_small_balance(combo):
+    return 1.0 - abs(sum(n <= 16 for n in combo) - 3) / 3
+
+
 RED_RULES = (
     RuleDefinition('highly_regular', True, lambda c, *_: filter_highly_regular(c)),
     RuleDefinition('sum_value', True, lambda c, *_: filter_sum_value(c)),
     RuleDefinition('span', True, lambda c, *_: filter_span(c)),
     RuleDefinition('consecutive_numbers', True, lambda c, *_: filter_consecutive_numbers(c)),
-    RuleDefinition('zones', True, lambda c, *_: filter_zones(c)),
-    RuleDefinition('ac_value', False, lambda c, *_: filter_ac_value(c)),
-    RuleDefinition('prime_composite_ratio', False, lambda c, *_: filter_prime_composite_ratio(c)),
-    RuleDefinition('big_small_ratio', False, lambda c, *_: filter_big_small_ratio(c)),
+    RuleDefinition(
+        'zones', True, lambda c, *_: filter_zones(c), 0.10,
+        lambda c, *_: score_zone_balance(c),
+    ),
+    RuleDefinition(
+        'ac_value', False, lambda c, *_: filter_ac_value(c), 0.05,
+        lambda c, *_: float(filter_ac_value(c)),
+    ),
+    RuleDefinition(
+        'prime_composite_ratio', False,
+        lambda c, *_: filter_prime_composite_ratio(c), 0.08,
+        lambda c, *_: score_prime_balance(c),
+    ),
+    RuleDefinition(
+        'big_small_ratio', False, lambda c, *_: filter_big_small_ratio(c), 0.08,
+        lambda c, *_: score_big_small_balance(c),
+    ),
     RuleDefinition('recent_overlap', True, lambda c, _o, recent, *_: filter_recent_overlap(c, recent)),
     RuleDefinition('all_cold', True, lambda c, omission, *_: filter_all_cold(c, omission)),
-    RuleDefinition('odd_even_ratio', False, lambda c, *_: filter_odd_even_ratio(c)),
-    RuleDefinition('modulo3_roads', False, lambda c, *_: filter_modulo3_roads(c)),
+    RuleDefinition(
+        'odd_even_ratio', False, lambda c, *_: filter_odd_even_ratio(c), 0.10,
+        lambda c, *_: score_odd_even_balance(c),
+    ),
+    RuleDefinition(
+        'modulo3_roads', False, lambda c, *_: filter_modulo3_roads(c), 0.04,
+        lambda c, *_: float(filter_modulo3_roads(c)),
+    ),
     RuleDefinition('ending_digits', True, lambda c, *_: filter_ending_digits(c)),
-    RuleDefinition('head_tail_range', False, lambda c, *_: filter_head_tail_range(c)),
+    RuleDefinition(
+        'head_tail_range', False, lambda c, *_: filter_head_tail_range(c), 0.03,
+        lambda c, *_: float(filter_head_tail_range(c)),
+    ),
     RuleDefinition('sum_of_tails', True, lambda c, *_: filter_sum_of_tails(c)),
     RuleDefinition('related_numbers', True, lambda c, _o, _r, last, *_: filter_related_numbers(c, last)),
     RuleDefinition(
         'diagonal_consecutive', False,
         lambda c, _o, _r, last, previous: filter_diagonal_consecutive(c, last, previous),
+        0.02,
+        lambda c, _o, _r, last, previous: 1.0 if last is None or previous is None
+        else float(filter_diagonal_consecutive(c, last, previous)),
     ),
 )
 FILTER_NAMES = tuple(rule.name for rule in RED_RULES)
 HARD_FILTER_NAMES = tuple(rule.name for rule in RED_RULES if rule.hard)
 SOFT_FILTER_NAMES = tuple(rule.name for rule in RED_RULES if not rule.hard)
+COMBINATION_SIGNAL_WEIGHT = 0.50
 
 
 def explain_filter_failures(combo, omission_values, last_10_draws_sets,
@@ -825,29 +902,12 @@ def score_red_combination(combo, red_scores, last_draw_set=None, last_2_draw_set
                           rank_center_scores=None):
     """Rank already-valid combinations using soft, explainable preferences."""
     signal = score_rank_center_preference(combo, red_scores, rank_center_scores)
-    odd_even_balance = 1.0 - abs(sum(n % 2 for n in combo) - 3) / 3
-    zone_counts = (
-        sum(n <= 11 for n in combo),
-        sum(12 <= n <= 22 for n in combo),
-        sum(n >= 23 for n in combo),
+    context = (None, None, last_draw_set, last_2_draw_set)
+    rule_score = sum(
+        rule.score_weight * rule.scorer(combo, *context)
+        for rule in RED_RULES if rule.scorer is not None
     )
-    zone_balance = 1.0 - (max(zone_counts) - min(zone_counts)) / 6
-    prime_balance = 1.0 - abs(sum(is_prime(n) for n in combo) - 3) / 3
-    small_count = sum(n <= 16 for n in combo)
-    big_small_balance = 1.0 - abs(small_count - 3) / 3
-    ac_score = 1.0 if filter_ac_value(combo) else 0.0
-    modulo_score = 1.0 if filter_modulo3_roads(combo) else 0.0
-    head_tail_score = 1.0 if filter_head_tail_range(combo) else 0.0
-    diagonal_score = 1.0
-    if last_draw_set is not None and last_2_draw_set is not None:
-        diagonal_score = 1.0 if filter_diagonal_consecutive(
-            combo, last_draw_set, last_2_draw_set
-        ) else 0.0
-    return (
-        0.50 * signal + 0.10 * odd_even_balance + 0.10 * zone_balance +
-        0.08 * prime_balance + 0.08 * big_small_balance + 0.05 * ac_score +
-        0.04 * modulo_score + 0.03 * head_tail_score + 0.02 * diagonal_score
-    )
+    return COMBINATION_SIGNAL_WEIGHT * signal + rule_score
 
 
 def select_recommendations(passed_combos, red_scores, last_draw_set=None,
@@ -982,6 +1042,7 @@ def run_full_backtest(full_df, params, feature_columns, num_periods, pool_modes=
         mode: {"prize_counts": Counter(), "cost": 0, "winnings": 0,
                "active_periods": 0, "evaluated_periods": 0, "tickets": 0,
                "pool_red_hits": 0, "ticket_red_hit_counts": Counter(),
+               "candidate_tickets": 0, "candidate_red_hit_counts": Counter(),
                "blue_hit_periods": 0, "rank_band_hits": Counter()}
         for mode in pool_modes
     }
@@ -1040,6 +1101,11 @@ def run_full_backtest(full_df, params, feature_columns, num_periods, pool_modes=
                 ]
                 if not passed_combos:
                     continue
+                red_hits_by_combo = {
+                    combo: len(set(combo) & actual_red_set) for combo in passed_combos
+                }
+                current["candidate_tickets"] += len(passed_combos)
+                current["candidate_red_hit_counts"].update(red_hits_by_combo.values())
                 selected_combos = select_recommendations(
                     passed_combos, red_scores, last_1, last_2
                 )
@@ -1047,7 +1113,7 @@ def run_full_backtest(full_df, params, feature_columns, num_periods, pool_modes=
                 current["tickets"] += len(selected_combos)
                 current["cost"] += len(selected_combos) * 2
                 for combo in selected_combos:
-                    red_hits = len(set(combo) & actual_red_set)
+                    red_hits = red_hits_by_combo[combo]
                     current["ticket_red_hit_counts"][red_hits] += 1
                     hit_key = (
                         red_hits,
@@ -1068,6 +1134,8 @@ def run_full_backtest(full_df, params, feature_columns, num_periods, pool_modes=
             evaluated_periods=value["evaluated_periods"],
             pool_red_hits=value["pool_red_hits"],
             ticket_red_hit_counts=value["ticket_red_hit_counts"],
+            candidate_tickets=value["candidate_tickets"],
+            candidate_red_hit_counts=value["candidate_red_hit_counts"],
             blue_hit_periods=value["blue_hit_periods"],
             rank_band_hits=value["rank_band_hits"],
         )
@@ -1237,8 +1305,16 @@ if __name__ == '__main__':
     report_lines.append(f"  - 候选池平均覆盖红球: {backtest.average_pool_red_hits:.2f}/6")
     report_lines.append(f"  - 单注平均命中红球: {backtest.average_ticket_red_hits:.3f}/6")
     report_lines.append(
+        f"  - 候选全集平均命中红球: {backtest.average_candidate_red_hits:.3f}/6，"
+        f"最终排序增益 {backtest.ranking_red_hit_delta:+.3f}"
+    )
+    report_lines.append(
         f"  - 命中至少3个红球: {backtest.three_plus_red_tickets} 注 "
         f"({backtest.three_plus_red_rate:.2%})"
+    )
+    report_lines.append(
+        f"  - 候选全集3+红比例: {backtest.candidate_three_plus_red_rate:.2%}，"
+        f"最终排序增益 {backtest.ranking_three_plus_delta:+.2%}"
     )
     report_lines.append(
         f"  - 最高分蓝球命中: {backtest.blue_hit_periods}/"
@@ -1255,7 +1331,10 @@ if __name__ == '__main__':
                 f"    {name:<6} 投入 {result.cost:>6.0f} 元，奖金 {result.winnings:>6.0f} 元，"
                 f"净收益 {result.profit:>7.0f} 元，回报率 {result.roi:>7.2%}，"
                 f"池覆盖 {result.average_pool_red_hits:.2f}/6，"
-                f"单注红球 {result.average_ticket_red_hits:.3f}/6，3+红 {result.three_plus_red_rate:.2%}"
+                f"单注红球 {result.average_ticket_red_hits:.3f}/6 "
+                f"({result.ranking_red_hit_delta:+.3f})，"
+                f"3+红 {result.three_plus_red_rate:.2%} "
+                f"({result.ranking_three_plus_delta:+.2%})"
             )
     report_lines.append("  - 实际红球在模型评分排名中的分布:")
     for band, label in (

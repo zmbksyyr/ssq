@@ -11,6 +11,9 @@ import ssq_analyzer as analyzer
 
 
 class AnalyzerTests(unittest.TestCase):
+  def test_default_backtest_uses_stable_window(self):
+    self.assertEqual(analyzer.BACKTEST_PERIODS, 200)
+
   def test_loader_rejects_issue_date_year_mismatch(self):
     content = (
       '期号,日期,红球,蓝球\n'
@@ -69,6 +72,13 @@ class AnalyzerTests(unittest.TestCase):
     self.assertEqual(tuple(names), analyzer.FILTER_NAMES)
     prime_rule = next(rule for rule in analyzer.RED_RULES if rule.name == 'prime_composite_ratio')
     self.assertFalse(prime_rule.hard)
+    self.assertTrue(all(rule.scorer is not None for rule in analyzer.RED_RULES if not rule.hard))
+    self.assertTrue(all(rule.score_weight > 0 for rule in analyzer.RED_RULES if not rule.hard))
+    self.assertAlmostEqual(
+        analyzer.COMBINATION_SIGNAL_WEIGHT
+        + sum(rule.score_weight for rule in analyzer.RED_RULES),
+        1.0,
+    )
 
   def test_soft_rule_failure_does_not_reject_combination(self):
     combo = (1, 4, 8, 16, 25, 30)
@@ -92,6 +102,30 @@ class AnalyzerTests(unittest.TestCase):
     first = analyzer.score_red_combination(combo, scores)
     second = analyzer.score_red_combination(combo, scores)
     self.assertEqual(first, second)
+
+  def test_rule_registry_preserves_combination_score(self):
+    scores = {n: n / 33 for n in range(1, 34)}
+    combo = (3, 8, 14, 21, 27, 32)
+    last_draw = {2, 7, 13, 20, 26, 31}
+    previous_draw = {1, 6, 12, 19, 25, 30}
+    signal = analyzer.score_rank_center_preference(combo, scores)
+    expected = (
+        0.50 * signal
+        + 0.10 * analyzer.score_odd_even_balance(combo)
+        + 0.10 * analyzer.score_zone_balance(combo)
+        + 0.08 * analyzer.score_prime_balance(combo)
+        + 0.08 * analyzer.score_big_small_balance(combo)
+        + 0.05 * float(analyzer.filter_ac_value(combo))
+        + 0.04 * float(analyzer.filter_modulo3_roads(combo))
+        + 0.03 * float(analyzer.filter_head_tail_range(combo))
+        + 0.02 * float(
+            analyzer.filter_diagonal_consecutive(combo, last_draw, previous_draw)
+        )
+    )
+    self.assertAlmostEqual(
+        analyzer.score_red_combination(combo, scores, last_draw, previous_draw),
+        expected,
+    )
 
   def test_rank_signal_prefers_center_over_both_extremes(self):
     scores = {n: float(34 - n) for n in range(1, 34)}
@@ -126,6 +160,8 @@ class AnalyzerTests(unittest.TestCase):
     result = analyzer.BacktestResult(
         50, 48, 480, 960, 280, {}, evaluated_periods=50,
         pool_red_hits=155, ticket_red_hit_counts=analyzer.Counter({2: 360, 3: 100, 4: 20}),
+        candidate_tickets=480,
+        candidate_red_hit_counts=analyzer.Counter({1: 100, 2: 280, 3: 80, 4: 20}),
         blue_hit_periods=4,
         rank_band_hits=analyzer.Counter({"high": 30, "middle": 100, "low": 20, "other": 150}),
     )
@@ -135,6 +171,10 @@ class AnalyzerTests(unittest.TestCase):
     self.assertAlmostEqual(result.average_ticket_red_hits, 2.2916666667)
     self.assertEqual(result.three_plus_red_tickets, 120)
     self.assertEqual(result.three_plus_red_rate, 0.25)
+    self.assertAlmostEqual(result.average_candidate_red_hits, 980 / 480)
+    self.assertAlmostEqual(result.candidate_three_plus_red_rate, 100 / 480)
+    self.assertAlmostEqual(result.ranking_red_hit_delta, 0.25)
+    self.assertAlmostEqual(result.ranking_three_plus_delta, 1 / 24)
     self.assertEqual(result.blue_hit_rate, 0.08)
     self.assertEqual(result.rank_band_rate("middle"), 1 / 3)
     self.assertAlmostEqual(result.rank_band_lift("middle"), 11 / 9)
@@ -178,6 +218,9 @@ class AnalyzerTests(unittest.TestCase):
     self.assertEqual(result.active_periods, 1)
     self.assertEqual(result.pool_red_hits, 2)
     self.assertEqual(result.ticket_red_hit_counts, {2: 1})
+    self.assertEqual(result.candidate_tickets, 1)
+    self.assertEqual(result.candidate_red_hit_counts, {2: 1})
+    self.assertEqual(result.ranking_red_hit_delta, 0)
     self.assertEqual(result.blue_hit_periods, 1)
     self.assertEqual(
         result.rank_band_hits,
