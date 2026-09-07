@@ -5,7 +5,7 @@ import platform
 import random
 from importlib.metadata import version
 
-import pandas as pd
+import ssq_history_preparation as _history_preparation
 import ssq_strategy_params as _strategy_params
 import ssq_workflow_models as _workflow_models
 from ssq_anti_crowding import make_rejection_set, rejection_seed_for_issue
@@ -37,7 +37,7 @@ from ssq_draw_data import (
     validate_draw_dates_not_future,
 )
 from ssq_duplex import rank_duplex_candidates
-from ssq_features import FEATURE_COLUMNS, feature_engineer
+from ssq_features import feature_engineer
 from ssq_rank_bands import build_rank_band_labels, build_rank_band_widths
 from ssq_report_builder import build_analysis_report
 from ssq_report_models import AnalysisReportData
@@ -82,20 +82,12 @@ def load_strategy_params(filepath=PARAMS_JSON_PATH):
 
 
 def load_and_preprocess_data(filepath=CSV_PATH):
-    """Load, validate, parse, and chronologically order draw history."""
-    try:
-        frame = pd.read_csv(filepath, header=0)
-    except (OSError, UnicodeError, ValueError, pd.errors.ParserError) as exc:
-        print(f"错误: 无法加载数据文件 '{filepath}': {exc}")
-        return None
-
-    try:
-        normalized = normalize_draw_frame(frame)
-        validate_draw_dates_not_future(normalized)
-        return normalized
-    except (TypeError, ValueError) as exc:
-        print(f"错误: 数据文件 '{filepath}' 校验失败: {exc}")
-        return None
+    """Compatibility wrapper using the analyzer's default history path."""
+    return _history_preparation.load_and_preprocess_data(
+        filepath,
+        normalize_draw_frame,
+        validate_draw_dates_not_future,
+    )
 
 
 def is_confirmation_input(value):
@@ -109,23 +101,16 @@ def get_user_input_with_timeout(timeout):
 
 
 def prepare_history():
-    """Load historical draws and derive the immutable inputs for one run."""
-    full_df = load_and_preprocess_data()
-    if full_df is None or len(full_df) < 50:
-        raise SystemExit('错误: 历史数据加载失败或数据量过少（至少需要50期），程序终止。')
-    history_sha256 = fingerprint_draw_frame(full_df)
-    full_df = feature_engineer(full_df)
-    latest_issue = str(full_df.iloc[-1]['期号'])
-    try:
-        target_issue = infer_next_issue(latest_issue, full_df.iloc[-1]['日期'])
-    except (TypeError, ValueError) as exc:
-        raise SystemExit(f'错误: 无法推导下一期期号: {exc}') from exc
-    return PreparedHistory(
-        frame=full_df,
-        feature_columns=FEATURE_COLUMNS,
-        latest_issue=latest_issue,
-        target_issue=target_issue,
-        sha256=history_sha256,
+    """Compatibility wrapper for preparing the default history file."""
+    dependencies = _history_preparation.HistoryPreparationDependencies(
+        load_data=load_and_preprocess_data,
+        fingerprint_history=fingerprint_draw_frame,
+        engineer_features=feature_engineer,
+        infer_target_issue=infer_next_issue,
+    )
+    return _history_preparation.prepare_history(
+        CSV_PATH,
+        dependencies,
     )
 
 
