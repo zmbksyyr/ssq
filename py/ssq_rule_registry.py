@@ -1,5 +1,6 @@
 """Red-ball rule definitions, registry validation, and filtering."""
 
+import ssq_rule_execution as _rule_execution
 import ssq_rule_functions as _rule_functions
 import ssq_rule_validation as _rule_validation
 from ssq_rule_models import RuleDefinition
@@ -123,41 +124,27 @@ SOFT_FILTER_NAMES = tuple(rule.name for rule in RED_RULES if not rule.hard)
 
 
 def passes_red_filters(combo, context, rejection_set=None):
-    passes_rules = all(
-        not rule.hard or rule.evaluator(combo, context)
-        for rule in RED_RULES
+    return _rule_execution.passes_red_filters(
+        combo,
+        context,
+        RED_RULES,
+        rejection_set,
     )
-    return passes_rules and (rejection_set is None or combo not in rejection_set)
 
 
 def explain_filter_failures(combo, context, rejection_set=None):
-    failures = [
-        rule.name for rule in RED_RULES
-        if not rule.evaluator(combo, context)
-    ]
-    if rejection_set is not None and combo in rejection_set:
-        failures.append('anti_crowding')
-    return failures
+    return _rule_execution.explain_filter_failures(
+        combo,
+        context,
+        RED_RULES,
+        rejection_set,
+    )
 
 
 def filter_pipeline_stats(combos, context, rejection_set=None):
-    checks = [
-        (rule.name, lambda combo, current=rule: current.evaluator(combo, context))
-        for rule in RED_RULES if rule.hard
-    ]
-    checks.append((
-        'anti_crowding',
-        lambda combo: rejection_set is None or combo not in rejection_set,
-    ))
-    remaining = list(combos)
-    stats = []
-    for name, check in checks:
-        before = len(remaining)
-        remaining = [combo for combo in remaining if check(combo)]
-        stats.append({
-            'rule': name,
-            'before': before,
-            'removed': before - len(remaining),
-            'remaining': len(remaining),
-        })
-    return stats
+    return _rule_execution.filter_pipeline_stats(
+        combos,
+        context,
+        RED_RULES,
+        rejection_set,
+    )
