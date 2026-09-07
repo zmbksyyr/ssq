@@ -861,6 +861,13 @@ def filter_pipeline_stats(combos, omission_values, last_10_draws_sets,
     return stats
 
 
+def historical_rule_context(full_df, index):
+    """Build rule inputs using only draws before the audited issue."""
+    history = full_df.iloc[:index]
+    recent = [set(draw) for draw in history.iloc[-10:]['红球']]
+    return get_omission(history), recent, recent[-1], recent[-2]
+
+
 def audit_historical_rule_coverage(full_df, periods=RULE_AUDIT_PERIODS):
     """Measure how often each strategy rule accepts actual historical draws."""
     if periods <= 0 or len(full_df) < 11:
@@ -869,11 +876,9 @@ def audit_historical_rule_coverage(full_df, periods=RULE_AUDIT_PERIODS):
     passed_counts = Counter()
     total = 0
     for index in range(start, len(full_df)):
-        history = full_df.iloc[:index]
         combo = tuple(full_df.iloc[index]['红球'])
-        last_10 = [set(draw) for draw in history.iloc[-10:]['红球']]
         failures = set(explain_filter_failures(
-            combo, get_omission(history), last_10, last_10[-1], last_10[-2], None
+            combo, *historical_rule_context(full_df, index), None
         ))
         for name in FILTER_NAMES:
             if name not in failures:
@@ -883,6 +888,50 @@ def audit_historical_rule_coverage(full_df, periods=RULE_AUDIT_PERIODS):
         name: {'passed': passed_counts[name], 'total': total,
                'rate': passed_counts[name] / total if total else 0.0}
         for name in FILTER_NAMES
+    }
+
+
+def audit_historical_hard_pipeline(full_df, periods=RULE_AUDIT_PERIODS):
+    """Measure cumulative survival of actual draws through ordered hard rules."""
+    hard_rules = [rule for rule in RED_RULES if rule.hard]
+    if periods <= 0 or len(full_df) < 11:
+        return {
+            'total': 0,
+            'passed': 0,
+            'rate': 0.0,
+            'stages': [
+                {'rule': rule.name, 'before': 0, 'removed': 0, 'remaining': 0}
+                for rule in hard_rules
+            ],
+        }
+
+    start = max(10, len(full_df) - periods)
+    total = len(full_df) - start
+    remaining_counts = Counter()
+    for index in range(start, len(full_df)):
+        combo = tuple(full_df.iloc[index]['红球'])
+        context = historical_rule_context(full_df, index)
+        for rule in hard_rules:
+            if not rule.evaluator(combo, *context):
+                break
+            remaining_counts[rule.name] += 1
+
+    stages = []
+    before = total
+    for rule in hard_rules:
+        remaining = remaining_counts[rule.name]
+        stages.append({
+            'rule': rule.name,
+            'before': before,
+            'removed': before - remaining,
+            'remaining': remaining,
+        })
+        before = remaining
+    return {
+        'total': total,
+        'passed': before,
+        'rate': before / total if total else 0.0,
+        'stages': stages,
     }
 
 
@@ -1190,6 +1239,9 @@ if __name__ == '__main__':
     full_df = feature_engineer(full_df)
     FEATURE_COLUMNS = [col for col in full_df.columns if col not in ['期号', '日期', '红球', '蓝球']]
     rule_coverage = audit_historical_rule_coverage(full_df, args.rule_audit_periods)
+    hard_pipeline_coverage = audit_historical_hard_pipeline(
+        full_df, args.rule_audit_periods
+    )
     latest_issue = str(full_df.iloc[-1]['期号'])
     try:
         target_issue = infer_next_issue(latest_issue, full_df.iloc[-1]['日期'])
@@ -1397,6 +1449,19 @@ if __name__ == '__main__':
         report_lines.append(
             f"  - [{rule_type}] {name:<22}: {result['passed']}/{result['total']} ({result['rate']:.2%})"
         )
+
+    report_lines.append(
+        f"\n真实开奖硬规则累计覆盖率 (最近 {args.rule_audit_periods} 期，不含随机撞号):"
+    )
+    for item in hard_pipeline_coverage['stages']:
+        report_lines.append(
+            f"  - {item['rule']:<22}: {item['before']} -> {item['remaining']} "
+            f"(新增排除 {item['removed']} 期)"
+        )
+    report_lines.append(
+        f"  - 合计保留: {hard_pipeline_coverage['passed']}/"
+        f"{hard_pipeline_coverage['total']} ({hard_pipeline_coverage['rate']:.2%})"
+    )
 
     report_lines.append("\n--- 2. 推荐组合 ---")
     top_blue = recommended_blues[0] if recommended_blues else "N/A"

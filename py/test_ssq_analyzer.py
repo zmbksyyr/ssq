@@ -272,6 +272,30 @@ class AnalyzerTests(unittest.TestCase):
     self.assertEqual(set(result), set(analyzer.FILTER_NAMES))
     self.assertTrue(all(item['total'] == 2 for item in result.values()))
 
+  def test_historical_hard_pipeline_reports_incremental_losses(self):
+    frame = pd.DataFrame({
+        '红球': [[3, 4, 5, 6, 7, 8] for _ in range(10)] + [
+            [1, 2, 3, 4, 5, 6],
+            [2, 3, 4, 5, 6, 7],
+            [3, 4, 5, 6, 7, 8],
+        ],
+    })
+    rules = (
+        analyzer.RuleDefinition('first', True, lambda combo, *_: combo[0] >= 2),
+        analyzer.RuleDefinition('second', True, lambda combo, *_: combo[-1] % 2 == 0),
+        analyzer.RuleDefinition('soft', False, lambda combo, *_: False),
+    )
+    with patch.object(analyzer, 'RED_RULES', rules):
+      result = analyzer.audit_historical_hard_pipeline(frame, periods=3)
+
+    self.assertEqual(result['total'], 3)
+    self.assertEqual(result['passed'], 1)
+    self.assertAlmostEqual(result['rate'], 1 / 3)
+    self.assertEqual(result['stages'], [
+        {'rule': 'first', 'before': 3, 'removed': 1, 'remaining': 2},
+        {'rule': 'second', 'before': 2, 'removed': 1, 'remaining': 1},
+    ])
+
 
 if __name__ == "__main__":
     unittest.main()
