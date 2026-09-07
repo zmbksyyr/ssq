@@ -43,6 +43,7 @@ from ssq_config import (  # noqa: F401 - compatibility exports
 )
 from ssq_modeling import (  # noqa: F401 - compatibility exports
     FEATURE_COLUMNS,
+    BallModelSpec,
     apply_red_score_adjustments,
     feature_engineer,
     get_omission,
@@ -50,6 +51,7 @@ from ssq_modeling import (  # noqa: F401 - compatibility exports
     predict_positive_probability,
     run_strategy_and_get_scores,
     train_ball_models,
+    train_models_for_spec,
     train_prediction_models,
     validate_feature_columns,
     validate_model_sets,

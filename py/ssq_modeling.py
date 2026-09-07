@@ -1,6 +1,8 @@
 """Feature engineering, model training, and ball score calculation."""
 
 from collections import Counter
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from itertools import combinations, pairwise
 
 import lightgbm as lgb
@@ -35,6 +37,14 @@ FEATURE_COLUMNS = (
     'odd_count_ma5',
     'blue_ma5',
 )
+
+
+@dataclass(frozen=True)
+class BallModelSpec:
+    candidates: Sequence[int]
+    outcome_column: str
+    contains_candidate: Callable[[object, int], bool]
+    description: str | None = None
 
 
 def _count_consecutive_groups(numbers):
@@ -167,24 +177,20 @@ def apply_red_score_adjustments(red_scores, df_history, params):
     return adjusted
 
 
-def train_ball_models(
-    training_df,
-    feature_columns,
-    candidates,
-    outcome_column,
-    contains_candidate,
-    description=None,
-):
+def train_models_for_spec(training_df, feature_columns, spec):
     """Train one binary next-draw model per candidate."""
+    if not isinstance(spec, BallModelSpec):
+        raise TypeError('spec 必须为 BallModelSpec')
     models = {}
     iterator = (
-        tqdm(candidates, desc=description, ncols=80) if description else candidates
+        tqdm(spec.candidates, desc=spec.description, ncols=80)
+        if spec.description else spec.candidates
     )
     features = training_df[list(feature_columns)]
     for candidate in iterator:
-        target = training_df[outcome_column].apply(
+        target = training_df[spec.outcome_column].apply(
             lambda outcome, current=candidate: int(
-                contains_candidate(outcome, current)
+                spec.contains_candidate(outcome, current)
             )
         ).shift(-1)
         valid_rows = target.notna() & features.notna().all(axis=1)
@@ -201,24 +207,49 @@ def train_ball_models(
     return models
 
 
+def train_ball_models(
+    training_df,
+    feature_columns,
+    candidates,
+    outcome_column,
+    contains_candidate,
+    description=None,
+):
+    """Compatibility wrapper for the specification-based training API."""
+    return train_models_for_spec(
+        training_df,
+        feature_columns,
+        BallModelSpec(
+            candidates=candidates,
+            outcome_column=outcome_column,
+            contains_candidate=contains_candidate,
+            description=description,
+        ),
+    )
+
+
 def train_prediction_models(training_df, feature_columns, show_progress=False):
     """Train the complete red and blue model sets."""
     feature_columns = validate_feature_columns(training_df, feature_columns)
-    red_models = train_ball_models(
+    red_models = train_models_for_spec(
         training_df,
         feature_columns,
-        RED_BALLS,
-        '红球',
-        lambda draw, ball: ball in draw,
-        '训练红球模型' if show_progress else None,
+        BallModelSpec(
+            candidates=RED_BALLS,
+            outcome_column='红球',
+            contains_candidate=lambda draw, ball: ball in draw,
+            description='训练红球模型' if show_progress else None,
+        ),
     )
-    blue_models = train_ball_models(
+    blue_models = train_models_for_spec(
         training_df,
         feature_columns,
-        BLUE_BALLS,
-        '蓝球',
-        lambda drawn, ball: drawn == ball,
-        '训练蓝球模型' if show_progress else None,
+        BallModelSpec(
+            candidates=BLUE_BALLS,
+            outcome_column='蓝球',
+            contains_candidate=lambda drawn, ball: drawn == ball,
+            description='训练蓝球模型' if show_progress else None,
+        ),
     )
     return red_models, blue_models
 

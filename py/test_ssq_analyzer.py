@@ -81,11 +81,13 @@ class AnalyzerTests(unittest.TestCase):
     )
 
   def test_analyzer_reexports_modeling_functions(self):
+    self.assertIs(analyzer.BallModelSpec, modeling.BallModelSpec)
     self.assertIs(analyzer.feature_engineer, modeling.feature_engineer)
     self.assertIs(
         analyzer.run_strategy_and_get_scores,
         modeling.run_strategy_and_get_scores,
     )
+    self.assertIs(analyzer.train_models_for_spec, modeling.train_models_for_spec)
 
   def test_analyzer_reexports_selection_functions(self):
     self.assertIs(analyzer.build_red_pool, selection.build_red_pool)
