@@ -9,8 +9,6 @@ from dataclasses import dataclass, field
 from itertools import combinations
 from math import comb
 
-import lightgbm as lgb
-import numpy as np
 import pandas as pd
 from ssq_config import (  # noqa: F401 - compatibility exports
     BACKTEST_PERIODS,
@@ -45,6 +43,17 @@ from ssq_core import (
     parse_blue_ball,
     parse_issue,
     parse_red_balls,
+)
+from ssq_modeling import (  # noqa: F401 - compatibility exports
+    apply_red_score_adjustments,
+    feature_engineer,
+    get_omission,
+    get_weighted_frequency,
+    predict_positive_probability,
+    run_strategy_and_get_scores,
+    train_ball_models,
+    train_prediction_models,
+    validate_model_sets,
 )
 from ssq_reporting import AnalysisReportData, build_analysis_report
 from ssq_rules import (
@@ -258,279 +267,6 @@ def load_and_preprocess_data(filepath=CSV_PATH):
         print(f"错误: 数据文件 '{filepath}' 校验失败: 期号与开奖日期顺序不一致")
         return None
     return df.drop(columns=['_parsed_date'])
-
-def feature_engineer(df):
-    """
-    为数据集进行特征工程，基于历史数据计算出各种可能影响下一期结果的统计指标。
-    这些指标将作为机器学习模型的输入特征。
-
-    Args:
-        df (DataFrame): 输入的包含'红球'和'蓝球'列的数据。
-
-    Returns:
-        DataFrame: 增加了18个新特征列的数据。
-    """
-    df = df.copy()
-    # 特征1: 和值 - 6个红球号码之和
-    df['red_sum'] = df['红球'].apply(sum)
-    # 特征2: 跨度 - 6个红球中最大号码与最小号码的差
-    df['red_span'] = df['红球'].apply(lambda x: max(x) - min(x))
-    # 特征3: 奇数个数 - 6个红球中奇数的数量
-    df['odd_count'] = df['红球'].apply(lambda x: sum(1 for i in x if i % 2 != 0))
-    # 特征4: 蓝球滞后1期 - 上一期的蓝球号码
-    df['blue_lag1'] = df['蓝球'].shift(1)
-    # 特征5: 小区(1-11)号码个数
-    df['red_zone_small'] = df['红球'].apply(lambda x: sum(1 for i in x if 1 <= i <= 11))
-    # 特征6: 中区(12-22)号码个数
-    df['red_zone_medium'] = df['红球'].apply(lambda x: sum(1 for i in x if 12 <= i <= 22))
-    # 特征7: 大区(23-33)号码个数
-    df['red_zone_large'] = df['红球'].apply(lambda x: sum(1 for i in x if 23 <= i <= 33))
-    # 特征8: 大数(>16)个数
-    df['red_big_count'] = df['红球'].apply(lambda x: sum(1 for i in x if i > 16))
-    # 预先定义 1-33 中的所有质数，提高计算效率；1 不是质数。
-    RED_PRIME_NUMBERS = {2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31}
-    # 特征9: 质数个数
-    df['red_prime_count'] = df['红球'].apply(lambda x: sum(1 for i in x if i in RED_PRIME_NUMBERS))
-    # 特征10: 和尾 - 和值的个位数
-    df['red_sum_tail'] = df['red_sum'].apply(lambda x: x % 10)
-    
-    def count_consecutive_groups(nums):
-        """计算一组号码中的连号组数 (例如 [1,2, 4,5] 有2组连号)"""
-        groups = 0
-        in_group = False
-        for i in range(len(nums) - 1):
-            if nums[i+1] - nums[i] == 1:
-                if not in_group:
-                    groups = groups + 1
-                    in_group = True
-            else:
-                in_group = False
-        return groups
-    # 特征11: 连号组数
-    df['red_consecutive_groups'] = df['红球'].apply(count_consecutive_groups)
-    # 特征12: AC值 - 号码间两两之差的绝对值的唯一数量，反映号码的离散程度
-    df['red_ac_value'] = df['红球'].apply(
-        lambda nums: len({abs(n1 - n2) for n1, n2 in combinations(nums, 2)})
-    )
-    # 特征13: 尾数唯一值个数 - 6个号码的个位数有多少种不同的值
-    df['red_tail_uniques'] = df['红球'].apply(
-        lambda numbers: len({number % 10 for number in numbers})
-    )
-    
-    # --- 涉及多期数据的移动平均(MA)和滞后(Lag)特征 ---
-    window_size = 5 # 定义移动平均的窗口大小为5期
-    # 特征14: 和值滞后1期 - 上一期的和值
-    df['red_sum_lag1'] = df['red_sum'].shift(1)
-    # 特征15: 奇数个数滞后1期 - 上一期的奇数个数
-    df['odd_count_lag1'] = df['odd_count'].shift(1)
-    # 特征16: 和值5期移动平均 - (不包含当期)过去5期的和值平均数
-    df['red_sum_ma5'] = df['red_sum'].shift(1).rolling(window=window_size).mean()
-    # 特征17: 奇数个数5期移动平均
-    df['odd_count_ma5'] = df['odd_count'].shift(1).rolling(window=window_size).mean()
-    # 特征18: 蓝球5期移动平均
-    df['blue_ma5'] = df['蓝球'].shift(1).rolling(window=window_size).mean()
-    
-    return df
-
-def get_omission(df):
-    """
-    计算截至当前最新一期，每个红球号码的遗漏值。
-    遗漏值指一个号码距离上次开出所隔的期数。
-
-    Args:
-        df (DataFrame): 包含历史开奖数据的DataFrame。
-
-    Returns:
-        dict: 一个字典，键为红球号码(1-33)，值为其对应的遗漏值。
-    """
-    total_draws = len(df)
-    last_positions = {}
-    for position, draw in enumerate(df['红球']):
-        for ball in draw:
-            last_positions[ball] = position
-    return {
-        ball: total_draws - last_positions[ball] - 1
-        if ball in last_positions else total_draws
-        for ball in range(1, 34)
-    }
-
-def get_weighted_frequency(series, decay_factor):
-    """
-    计算时间衰减加权频率。越近的期数权重越高，越远的期数权重越低。
-    这比简单的频率统计更能反映号码的近期热度。
-
-    Args:
-        series (pd.Series): 一个包含号码列表的Series (例如df['红球'])。
-        decay_factor (float): 衰减因子，越接近1，时间权重衰减越慢 (建议0.99-0.999)。
-
-    Returns:
-        pd.Series: 每个号码的加权频率。
-    """
-    N = len(series)
-    # 创建一个权重数组，最近的期数权重最高 (decay_factor^0=1)，最远的最低
-    weights = np.array([decay_factor ** (N - i - 1) for i in range(N)])
-    weighted_counts = {}
-    # 遍历每一期的号码列表
-    for i, sublist in enumerate(series):
-        # 为该期的每个号码，累加上其对应的权重
-        for ball in sublist:
-            weighted_counts[ball] = weighted_counts.get(ball, 0) + weights[i]
-    return pd.Series(weighted_counts)
-
-
-def apply_red_score_adjustments(red_scores, df_history, params):
-    """Apply the hot, cold, and previous-draw bonuses from the original strategy."""
-    adjusted = dict(red_scores)
-    hot_lookback = int(params.get('hot_lookback', 0))
-    hot_threshold = int(params.get('hot_threshold', 0))
-    if hot_lookback > 0 and hot_threshold > 0:
-        recent = df_history.tail(hot_lookback)['红球']
-        hot_counts = Counter(ball for draw in recent for ball in draw)
-        for ball, count in hot_counts.items():
-            if count >= hot_threshold:
-                adjusted[ball] *= params.get('hot_bonus', 1.0)
-
-    cold_lookback = int(params.get('cold_lookback', 0))
-    if cold_lookback > 0:
-        recent_numbers = {
-            ball for draw in df_history.tail(cold_lookback)['红球'] for ball in draw
-        }
-        for ball in set(range(1, 34)) - recent_numbers:
-            adjusted[ball] *= params.get('cold_bonus', 1.0)
-
-    if not df_history.empty:
-        for ball in df_history.iloc[-1]['红球']:
-            adjusted[ball] *= params.get('repeat_bonus', 1.0)
-    return adjusted
-
-
-def train_ball_models(training_df, feature_columns, candidates, outcome_column,
-                      contains_candidate, description=None):
-    """Train one binary next-draw model per candidate without mutating the frame."""
-    models = {}
-    iterator = tqdm(candidates, desc=description, ncols=80) if description else candidates
-    features = training_df[feature_columns]
-    for candidate in iterator:
-        target = training_df[outcome_column].apply(
-            lambda outcome, current=candidate: int(
-                contains_candidate(outcome, current)
-            )
-        ).shift(-1)
-        valid_rows = target.notna() & features.notna().all(axis=1)
-        if not valid_rows.any():
-            continue
-        model = lgb.LGBMClassifier(random_state=42, verbose=-1)
-        model.fit(features.loc[valid_rows], target.loc[valid_rows])
-        models[candidate] = model
-    return models
-
-
-def train_prediction_models(training_df, feature_columns, show_progress=False):
-    """Train the complete red and blue model sets used by both run modes."""
-    red_models = train_ball_models(
-        training_df, feature_columns, range(1, 34), '红球',
-        lambda draw, ball: ball in draw,
-        '训练红球模型' if show_progress else None,
-    )
-    blue_models = train_ball_models(
-        training_df, feature_columns, range(1, 17), '蓝球',
-        lambda drawn, ball: drawn == ball,
-        '训练蓝球模型' if show_progress else None,
-    )
-    return red_models, blue_models
-
-
-def validate_model_sets(red_models, blue_models):
-    missing_red = sorted(set(range(1, 34)) - set(red_models))
-    missing_blue = sorted(set(range(1, 17)) - set(blue_models))
-    if missing_red or missing_blue:
-        raise ValueError(f"模型训练不完整: 红球缺失 {missing_red}, 蓝球缺失 {missing_blue}")
-
-
-def predict_positive_probability(model, features):
-    """Return P(class=1), including correct behavior for one-class models."""
-    classes = np.asarray(model.classes_)
-    if len(classes) == 1:
-        return np.full(len(features), float(classes[0] == 1))
-    positive_columns = np.flatnonzero(classes == 1)
-    if len(positive_columns) != 1:
-        raise ValueError(f"模型类别缺少唯一正类 1: {classes.tolist()}")
-    probabilities = np.asarray(model.predict_proba(features))
-    return probabilities[:, int(positive_columns[0])]
-
-
-def run_strategy_and_get_scores(df_history, params, ml_models_red, ml_models_blue, feature_columns):
-    """
-    核心评分函数：结合时间加权频率、遗漏值和机器学习预测概率，为所有号码生成综合评分。
-
-    Args:
-        df_history (DataFrame): 用于计算指标的历史数据。
-        params (dict): 包含各种权重的参数字典。
-        ml_models_red (dict): 预训练好的红球模型。
-        ml_models_blue (dict): 预训练好的蓝球模型。
-        feature_columns (list): 用于机器学习预测的特征列名。
-
-    Returns:
-        tuple: (red_scores, blue_scores) 两个字典，分别包含红球和蓝球的综合评分。
-    """
-    validate_model_sets(ml_models_red, ml_models_blue)
-
-    # 1. 准备用于ML预测的最新一行特征数据
-    # .iloc[[-1]] 确保返回的是DataFrame而不是Series，以适配模型输入
-    last_features = df_history.iloc[[-1]][feature_columns].copy()
-    # 如果最新特征中有空值（通常是由于移动平均窗口不足），用历史均值填充
-    for col in last_features.columns:
-        if last_features[col].isnull().any():
-            last_features[col] = last_features[col].fillna(df_history[col].mean())
-    
-    # 2. 红球评分
-    # 计算红球的时间衰减加权频率
-    red_weighted_freq = get_weighted_frequency(df_history['红球'], params['decay_factor'])
-    # 计算红球的当前遗漏值
-    red_omission = get_omission(df_history)
-    # 使用ML模型预测每个红球下一期出现的概率
-    red_ml_probs = {
-        ball: predict_positive_probability(ml_models_red[ball], last_features)[0]
-        for ball in range(1, 34)
-    }
-    
-    red_scores = {}
-    # 为了避免不同指标量纲差异过大，先进行归一化处理
-    max_red_freq = red_weighted_freq.max() or 1 # or 1 防止数据为空时除以0
-    max_red_omission = max(red_omission.values()) or 1
-    
-    for ball in range(1, 34):
-        # 归一化频率 (0-1之间)
-        norm_freq = red_weighted_freq.get(ball, 0) / max_red_freq
-        # 归一化遗漏值 (0-1之间)
-        norm_omission = red_omission.get(ball, 0) / max_red_omission
-        # 综合评分 = 频率分 * 权重 + 遗漏分 * 权重 + ML预测分 * 权重
-        red_scores[ball] = (norm_freq * params['weight_freq'] + 
-                            norm_omission * params['weight_omission'] + 
-                            red_ml_probs[ball] * params['weight_ml'])
-    red_scores = apply_red_score_adjustments(red_scores, df_history, params)
-    
-    # 3. 蓝球评分
-    # 计算蓝球的时间衰减加权频率 (注意蓝球每期只有一个，所以用apply将其包装成列表)
-    blue_weighted_freq = get_weighted_frequency(df_history['蓝球'].apply(lambda x: [x]), params['decay_factor'])
-    # 使用ML模型预测每个蓝球下一期出现的概率
-    blue_ml_probs = {
-        ball: predict_positive_probability(ml_models_blue[ball], last_features)[0]
-        for ball in range(1, 17)
-    }
-    
-    blue_scores = {}
-    max_blue_freq = blue_weighted_freq.max() or 1
-    
-    for ball in range(1, 17):
-        # 归一化蓝球频率
-        norm_blue_freq = blue_weighted_freq.get(ball, 0) / max_blue_freq
-        # 蓝球综合评分 (简单结合频率和ML预测)
-        blue_scores[ball] = (norm_blue_freq * params['weight_blue_freq'] + 
-                             blue_ml_probs[ball] * params['weight_blue_ml'])
-        
-    return red_scores, blue_scores
-
 
 # --- 规则过滤函数库 (每个函数都是一条独立的过滤规则) ---
 # r: 代表一个已排序的6红球组合元组, e.g., (1, 5, 10, 12, 23, 31)

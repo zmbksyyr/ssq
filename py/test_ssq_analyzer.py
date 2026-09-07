@@ -8,11 +8,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
+import lightgbm as lgb
+import numpy as np
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent))
 import ssq_analyzer as analyzer
 import ssq_config as config
+import ssq_modeling as modeling
 import ssq_rules as rules
 
 
@@ -62,6 +65,13 @@ class AnalyzerTests(unittest.TestCase):
     self.assertIs(analyzer.StrategyConfig, config.StrategyConfig)
     self.assertIs(analyzer.parse_cli_options, config.parse_cli_options)
     self.assertEqual(analyzer.DEFAULT_PARAMS, config.DEFAULT_PARAMS)
+
+  def test_analyzer_reexports_modeling_functions(self):
+    self.assertIs(analyzer.feature_engineer, modeling.feature_engineer)
+    self.assertIs(
+        analyzer.run_strategy_and_get_scores,
+        modeling.run_strategy_and_get_scores,
+    )
 
   def test_strategy_param_loader_distinguishes_file_states(self):
     with tempfile.TemporaryDirectory() as directory:
@@ -177,7 +187,7 @@ class AnalyzerTests(unittest.TestCase):
         '红球': [[1, 2, 3, 4, 5, 6]],
         '蓝球': [7],
     })
-    result = analyzer.feature_engineer(source)
+    result = modeling.feature_engineer(source)
     self.assertEqual(list(source.columns), ['红球', '蓝球'])
     self.assertIn('red_sum', result.columns)
 
@@ -186,7 +196,7 @@ class AnalyzerTests(unittest.TestCase):
         {'红球': [[1, 2, 3, 4, 5, 6], [2, 7, 8, 9, 10, 11]]},
         index=[100, 500],
     )
-    omission = analyzer.get_omission(history)
+    omission = modeling.get_omission(history)
     self.assertEqual(omission[2], 0)
     self.assertEqual(omission[1], 1)
     self.assertEqual(omission[33], 2)
@@ -342,31 +352,31 @@ class AnalyzerTests(unittest.TestCase):
     features = pd.DataFrame({'value': range(10)})
     prediction_rows = features.iloc[:2]
     for target, expected in (([0] * 10, 0.0), ([1] * 10, 1.0)):
-      model = analyzer.lgb.LGBMClassifier(random_state=42, verbose=-1)
+      model = lgb.LGBMClassifier(random_state=42, verbose=-1)
       model.fit(features, target)
-      probabilities = analyzer.predict_positive_probability(model, prediction_rows)
+      probabilities = modeling.predict_positive_probability(model, prediction_rows)
       self.assertEqual(probabilities.tolist(), [expected, expected])
 
   def test_positive_probability_uses_the_positive_class_column(self):
-    model = analyzer.lgb.LGBMClassifier(random_state=42, verbose=-1)
+    model = lgb.LGBMClassifier(random_state=42, verbose=-1)
     features = pd.DataFrame({'value': range(20)})
     model.fit(features, [0, 1] * 10)
     expected = model.predict_proba(features.iloc[:2])[:, 1]
-    actual = analyzer.predict_positive_probability(model, features.iloc[:2])
-    self.assertTrue(analyzer.np.array_equal(actual, expected))
+    actual = modeling.predict_positive_probability(model, features.iloc[:2])
+    self.assertTrue(np.array_equal(actual, expected))
 
   def test_strategy_scores_with_single_class_training_history(self):
-    history = analyzer.feature_engineer(pd.DataFrame({
+    history = modeling.feature_engineer(pd.DataFrame({
         '红球': [[1, 2, 3, 4, 5, 6] for _ in range(12)],
         '蓝球': [1 for _ in range(12)],
     }))
     feature_columns = [
         column for column in history.columns if column not in ('红球', '蓝球')
     ]
-    red_models, blue_models = analyzer.train_prediction_models(
+    red_models, blue_models = modeling.train_prediction_models(
         history.iloc[5:], feature_columns
     )
-    red_scores, blue_scores = analyzer.run_strategy_and_get_scores(
+    red_scores, blue_scores = modeling.run_strategy_and_get_scores(
         history, analyzer.DEFAULT_PARAMS, red_models, blue_models, feature_columns
     )
     self.assertGreater(red_scores[1], red_scores[7])
@@ -524,7 +534,7 @@ class AnalyzerTests(unittest.TestCase):
         'hot_lookback': 2, 'hot_threshold': 2, 'hot_bonus': 2.0,
         'cold_lookback': 2, 'cold_bonus': 3.0, 'repeat_bonus': 5.0,
     }
-    adjusted = analyzer.apply_red_score_adjustments(
+    adjusted = modeling.apply_red_score_adjustments(
         {ball: 1.0 for ball in range(1, 34)}, history, params
     )
     self.assertEqual(adjusted[1], 10.0)  # hot and repeated
