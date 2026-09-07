@@ -82,6 +82,7 @@ NUM_RECOMMENDATIONS = 10
 MAX_SHARED_RED_BALLS = 4
 RULE_AUDIT_PERIODS = 200
 TOTAL_RED_COMBINATIONS = 1_107_568
+RED_POOL_MODES = ('mixed', 'high', 'middle', 'low')
 
 DEFAULT_PARAMS = {
     'decay_factor': 0.999,
@@ -188,6 +189,44 @@ class StrategyConfig:
 
 
 DEFAULT_STRATEGY_CONFIG = StrategyConfig()
+
+
+@dataclass(frozen=True)
+class AnalyzerOptions:
+    backtest_periods: int = BACKTEST_PERIODS
+    rejection_size: int = REJECTION_LIB_SIZE
+    seed: int = RANDOM_SEED
+    pool_mode: str = 'mixed'
+    compare_pools: bool = False
+    non_interactive: bool = False
+    rule_audit_periods: int = RULE_AUDIT_PERIODS
+
+    def __post_init__(self):
+        if self.backtest_periods < 0 or self.rule_audit_periods < 0:
+            raise ValueError('backtest-periods 和 rule-audit-periods 不能为负数')
+        if not 0 <= self.rejection_size <= TOTAL_RED_COMBINATIONS:
+            raise ValueError(
+                f'rejection-size 必须在 0 到 {TOTAL_RED_COMBINATIONS} 之间'
+            )
+        if self.pool_mode not in RED_POOL_MODES:
+            raise ValueError(f'未知候选池模式: {self.pool_mode}')
+
+    @property
+    def strategy_config(self):
+        return StrategyConfig(
+            rejection_lib_size=self.rejection_size,
+            random_seed=self.seed,
+        )
+
+    @property
+    def backtest_pool_modes(self):
+        return RED_POOL_MODES if self.compare_pools else (self.pool_mode,)
+
+
+@dataclass(frozen=True)
+class LoadedStrategyParams:
+    values: dict
+    loaded_from_file: bool
 
 
 @dataclass(frozen=True)
@@ -314,6 +353,48 @@ class BacktestAccumulator:
         )
 
 
+def build_argument_parser():
+    parser = argparse.ArgumentParser(description='双色球策略分析与推荐')
+    parser.add_argument(
+        '--backtest-periods', type=int, default=BACKTEST_PERIODS,
+        help='回测期数，默认 %(default)s',
+    )
+    parser.add_argument(
+        '--rejection-size', type=int, default=REJECTION_LIB_SIZE,
+        help='反撞号随机库大小，默认 %(default)s',
+    )
+    parser.add_argument(
+        '--seed', type=int, default=RANDOM_SEED,
+        help='随机种子，默认 %(default)s',
+    )
+    parser.add_argument(
+        '--pool-mode', choices=RED_POOL_MODES, default='mixed',
+        help='红球候选池模式，默认 %(default)s',
+    )
+    parser.add_argument(
+        '--compare-pools', action='store_true',
+        help='在一次回测中对比四种候选池模式',
+    )
+    parser.add_argument(
+        '--non-interactive', action='store_true',
+        help='不等待键盘输入，适用于自动化运行',
+    )
+    parser.add_argument(
+        '--rule-audit-periods', type=int, default=RULE_AUDIT_PERIODS,
+        help='统计规则对真实开奖覆盖率的期数，默认 %(default)s',
+    )
+    return parser
+
+
+def parse_cli_options(argv=None):
+    parser = build_argument_parser()
+    namespace = parser.parse_args(argv)
+    try:
+        return AnalyzerOptions(**vars(namespace))
+    except ValueError as exc:
+        parser.error(str(exc))
+
+
 # --- 文件路径设置 ---
 # 获取当前脚本文件所在的目录的绝对路径
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -327,6 +408,18 @@ PARAMS_JSON_PATH = os.path.join(root_dir, 'best_params.json')
 REPORT_DIR = os.path.join(root_dir, 'report')
 
 # --- 2. 辅助函数库 ---
+
+
+def load_strategy_params(filepath=PARAMS_JSON_PATH):
+    try:
+        with open(filepath, encoding='utf-8') as handle:
+            values = validate_strategy_params(json.load(handle))
+    except FileNotFoundError:
+        return LoadedStrategyParams(validate_strategy_params({}), False)
+    except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
+        raise ValueError(f"参数文件 {filepath} 无效: {exc}") from exc
+    return LoadedStrategyParams(values, True)
+
 
 def load_and_preprocess_data(filepath=CSV_PATH):
     """
@@ -1009,30 +1102,8 @@ def run_full_backtest(full_df, params, feature_columns, num_periods,
 
 # --- 5. 主执行逻辑 ---
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='双色球策略分析与推荐')
-    parser.add_argument('--backtest-periods', type=int, default=BACKTEST_PERIODS,
-                        help='回测期数，默认 %(default)s')
-    parser.add_argument('--rejection-size', type=int, default=REJECTION_LIB_SIZE,
-                        help='反撞号随机库大小，默认 %(default)s')
-    parser.add_argument('--seed', type=int, default=RANDOM_SEED,
-                        help='随机种子，默认 %(default)s')
-    parser.add_argument('--pool-mode', choices=('mixed', 'high', 'middle', 'low'),
-                        default='mixed', help='红球候选池模式，默认 %(default)s')
-    parser.add_argument('--compare-pools', action='store_true',
-                        help='在一次回测中对比四种候选池模式')
-    parser.add_argument('--non-interactive', action='store_true',
-                        help='不等待键盘输入，适用于自动化运行')
-    parser.add_argument('--rule-audit-periods', type=int, default=RULE_AUDIT_PERIODS,
-                        help='统计规则对真实开奖覆盖率的期数，默认 %(default)s')
-    args = parser.parse_args()
-    if args.backtest_periods < 0 or args.rule_audit_periods < 0:
-        parser.error('backtest-periods 和 rule-audit-periods 不能为负数')
-    if not 0 <= args.rejection_size <= TOTAL_RED_COMBINATIONS:
-        parser.error(f'rejection-size 必须在 0 到 {TOTAL_RED_COMBINATIONS} 之间')
-    config = StrategyConfig(
-        rejection_lib_size=args.rejection_size,
-        random_seed=args.seed,
-    )
+    options = parse_cli_options()
+    config = options.strategy_config
 
     print("="*70)
     print("         双色球策略分析器 v7.0")
@@ -1044,10 +1115,12 @@ if __name__ == '__main__':
     if full_df is None or len(full_df) < 50:
         raise SystemExit("错误: 历史数据加载失败或数据量过少（至少需要50期），程序终止。")
     full_df = feature_engineer(full_df)
-    FEATURE_COLUMNS = [col for col in full_df.columns if col not in ['期号', '日期', '红球', '蓝球']]
-    rule_coverage = audit_historical_rule_coverage(full_df, args.rule_audit_periods)
+    feature_columns = [col for col in full_df.columns if col not in ['期号', '日期', '红球', '蓝球']]
+    rule_coverage = audit_historical_rule_coverage(
+        full_df, options.rule_audit_periods
+    )
     hard_pipeline_coverage = audit_historical_hard_pipeline(
-        full_df, args.rule_audit_periods
+        full_df, options.rule_audit_periods
     )
     latest_issue = str(full_df.iloc[-1]['期号'])
     try:
@@ -1057,29 +1130,26 @@ if __name__ == '__main__':
     print("数据加载与特征工程完成。")
 
     # --- [阶段 2/8] 执行严谨的历史回测 ---
-    params_loaded = True
     try:
-        with open(PARAMS_JSON_PATH, 'r') as f: 
-            params = validate_strategy_params(json.load(f))
-    except FileNotFoundError:
-        params_loaded = False
+        loaded_params = load_strategy_params()
+    except ValueError as exc:
+        raise SystemExit(f"错误: {exc}") from exc
+    params = loaded_params.values
+    params_loaded = loaded_params.loaded_from_file
+    if not params_loaded:
         print(f"警告: 未找到参数文件 {PARAMS_JSON_PATH}，将使用内置的默认参数。")
-        params = validate_strategy_params({})
-    except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
-        raise SystemExit(f"错误: 参数文件 {PARAMS_JSON_PATH} 无效: {exc}")
     # 执行回测并捕获其返回的统计结果
-    pool_modes = ('mixed', 'high', 'middle', 'low') if args.compare_pools else (args.pool_mode,)
     backtests = run_full_backtest(
-        full_df, params, FEATURE_COLUMNS, args.backtest_periods,
-        pool_modes=pool_modes, config=config,
+        full_df, params, feature_columns, options.backtest_periods,
+        pool_modes=options.backtest_pool_modes, config=config,
     )
-    backtest = backtests[args.pool_mode]
+    backtest = backtests[options.pool_mode]
     
     # --- [阶段 3/8] 训练最终预测模型 ---
     print("\n[阶段 3/8] 正在使用全部历史数据，训练用于最终预测的模型...")
     ml_training_df = full_df.iloc[5:].copy()
     final_ml_models_red, final_ml_models_blue = train_prediction_models(
-        ml_training_df, FEATURE_COLUMNS, show_progress=True
+        ml_training_df, feature_columns, show_progress=True
     )
     try:
         validate_model_sets(final_ml_models_red, final_ml_models_blue)
@@ -1088,7 +1158,10 @@ if __name__ == '__main__':
     
     # --- [阶段 4/8] 执行对下一期的预测 ---
     print("\n[阶段 4/8] 正在为下一期号码进行机器学习评分...")
-    red_scores, blue_scores = run_strategy_and_get_scores(full_df, params, final_ml_models_red, final_ml_models_blue, FEATURE_COLUMNS)
+    red_scores, blue_scores = run_strategy_and_get_scores(
+        full_df, params, final_ml_models_red, final_ml_models_blue,
+        feature_columns,
+    )
     recommended_blues = sorted(
         blue_scores, key=blue_scores.get, reverse=True
     )[:config.blue_count]
@@ -1119,7 +1192,7 @@ if __name__ == '__main__':
         context,
         rejection_set,
         config=config,
-        mode=args.pool_mode,
+        mode=options.pool_mode,
         show_progress=True,
     )
     red_pool = selection.red_pool
@@ -1138,7 +1211,10 @@ if __name__ == '__main__':
         print(f"\n通过检验的组合数量为 {len(passed_combos_tuples)} (低于{INTERACTIVE_THRESHOLD})，全部输出如下：")
         for i, combo in enumerate(passed_combos_tuples, 1): 
             print(f"  组合 {i:>2}: {' '.join(f'{n:02d}' for n in combo)}")
-    elif len(passed_combos_tuples) >= INTERACTIVE_THRESHOLD and not args.non_interactive:
+    elif (
+        len(passed_combos_tuples) >= INTERACTIVE_THRESHOLD
+        and not options.non_interactive
+    ):
         if get_user_input_with_timeout(COUNTDOWN_SECONDS):
             print("\n根据您的确认，输出所有通过检验的组合：")
             for i, combo in enumerate(passed_combos_tuples, 1): 
@@ -1175,7 +1251,7 @@ if __name__ == '__main__':
         f"\n单式策略滚动回测 ({backtest.periods}期，每期最多"
         f"{config.recommendation_count}注，不含复式):"
     )
-    report_lines.append(f"  - 候选池模式: {args.pool_mode}")
+    report_lines.append(f"  - 候选池模式: {options.pool_mode}")
     report_lines.append(f"  - 成功建模评估期数: {backtest.evaluated_periods}")
     report_lines.append(f"  - 实际投注期数: {backtest.active_periods}")
     report_lines.append(f"  - 投注注数: {backtest.tickets}")
@@ -1255,7 +1331,9 @@ if __name__ == '__main__':
     if aggressive_rules:
         report_lines.append(f"  提示：淘汰比例达到或超过50%的规则: {', '.join(aggressive_rules)}")
 
-    report_lines.append(f"\n真实开奖规则覆盖率 (最近 {args.rule_audit_periods} 期，逐条独立统计):")
+    report_lines.append(
+        f"\n真实开奖规则覆盖率 (最近 {options.rule_audit_periods} 期，逐条独立统计):"
+    )
     for name in FILTER_NAMES:
         result = rule_coverage[name]
         rule_type = '硬' if name in HARD_FILTER_NAMES else '软'
@@ -1264,7 +1342,7 @@ if __name__ == '__main__':
         )
 
     report_lines.append(
-        f"\n真实开奖硬规则累计覆盖率 (最近 {args.rule_audit_periods} 期，不含随机撞号):"
+        f"\n真实开奖硬规则累计覆盖率 (最近 {options.rule_audit_periods} 期，不含随机撞号):"
     )
     for item in hard_pipeline_coverage['stages']:
         report_lines.append(
