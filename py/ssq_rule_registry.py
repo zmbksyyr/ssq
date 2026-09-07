@@ -1,9 +1,15 @@
-"""Red-ball rule definitions, registry validation, and filtering."""
+"""Compatibility facade for red-ball rule definitions and execution."""
 
 import ssq_rule_execution as _rule_execution
 import ssq_rule_functions as _rule_functions
 import ssq_rule_validation as _rule_validation
-from ssq_rule_models import RuleDefinition
+from ssq_rule_definitions import (
+    COMBINATION_SIGNAL_WEIGHT,
+    FILTER_NAMES,
+    HARD_FILTER_NAMES,
+    RED_RULES,
+    SOFT_FILTER_NAMES,
+)
 from ssq_rule_scoring import (
     score_big_small_balance,
     score_odd_even_balance,
@@ -11,8 +17,17 @@ from ssq_rule_scoring import (
     score_zone_balance,
 )
 
-COMBINATION_SIGNAL_WEIGHT = 0.50
-
+__all__ = [
+    'COMBINATION_SIGNAL_WEIGHT',
+    'FILTER_NAMES',
+    'HARD_FILTER_NAMES',
+    'RED_RULES',
+    'SOFT_FILTER_NAMES',
+    'score_big_small_balance',
+    'score_odd_even_balance',
+    'score_prime_balance',
+    'score_zone_balance',
+]
 
 is_prime = _rule_functions.is_prime
 calculate_ac_value = _rule_functions.calculate_ac_value
@@ -34,79 +49,6 @@ filter_sum_of_tails = _rule_functions.filter_sum_of_tails
 filter_related_numbers = _rule_functions.filter_related_numbers
 filter_diagonal_consecutive = _rule_functions.filter_diagonal_consecutive
 
-
-RED_RULES = (
-    RuleDefinition('highly_regular', True, lambda c, _: filter_highly_regular(c)),
-    RuleDefinition('sum_value', True, lambda c, _: filter_sum_value(c)),
-    RuleDefinition('span', True, lambda c, _: filter_span(c)),
-    RuleDefinition(
-        'consecutive_numbers', True,
-        lambda c, _: filter_consecutive_numbers(c),
-    ),
-    RuleDefinition(
-        'zones', True, lambda c, _: filter_zones(c), 0.10,
-        lambda c, _: score_zone_balance(c),
-    ),
-    RuleDefinition(
-        'ac_value', False, lambda c, _: filter_ac_value(c), 0.05,
-        lambda c, _: float(filter_ac_value(c)),
-    ),
-    RuleDefinition(
-        'prime_composite_ratio', False,
-        lambda c, _: filter_prime_composite_ratio(c), 0.08,
-        lambda c, _: score_prime_balance(c),
-    ),
-    RuleDefinition(
-        'big_small_ratio', False,
-        lambda c, _: filter_big_small_ratio(c), 0.08,
-        lambda c, _: score_big_small_balance(c),
-    ),
-    RuleDefinition(
-        'recent_overlap', True,
-        lambda c, context: filter_recent_overlap(c, context.recent_draws),
-    ),
-    RuleDefinition(
-        'all_cold', True,
-        lambda c, context: filter_all_cold(c, context.omission_values),
-    ),
-    RuleDefinition(
-        'odd_even_ratio', False, lambda c, _: filter_odd_even_ratio(c), 0.10,
-        lambda c, _: score_odd_even_balance(c),
-    ),
-    RuleDefinition(
-        'modulo3_roads', False,
-        lambda c, _: filter_modulo3_roads(c), 0.04,
-        lambda c, _: float(filter_modulo3_roads(c)),
-    ),
-    RuleDefinition('ending_digits', True, lambda c, _: filter_ending_digits(c)),
-    RuleDefinition(
-        'head_tail_range', False,
-        lambda c, _: filter_head_tail_range(c), 0.03,
-        lambda c, _: float(filter_head_tail_range(c)),
-    ),
-    RuleDefinition('sum_of_tails', True, lambda c, _: filter_sum_of_tails(c)),
-    RuleDefinition(
-        'related_numbers', True,
-        lambda c, context: filter_related_numbers(
-            c, context.last_draw or frozenset()
-        ),
-    ),
-    RuleDefinition(
-        'diagonal_consecutive', False,
-        lambda c, context: filter_diagonal_consecutive(
-            c, context.last_draw or (), context.previous_draw or ()
-        ),
-        0.02,
-        lambda c, context: (
-            1.0 if context.last_draw is None or context.previous_draw is None
-            else float(filter_diagonal_consecutive(
-                c, context.last_draw, context.previous_draw
-            ))
-        ),
-    ),
-)
-
-
 validate_signal_weight = _rule_validation.validate_signal_weight
 validate_rule_names = _rule_validation.validate_rule_names
 validate_rule_definition = _rule_validation.validate_rule_definition
@@ -117,12 +59,6 @@ def validate_rule_registry(
     signal_weight=COMBINATION_SIGNAL_WEIGHT,
 ):
     return _rule_validation.validate_rule_registry(rule_definitions, signal_weight)
-
-
-validate_rule_registry(RED_RULES)
-FILTER_NAMES = tuple(rule.name for rule in RED_RULES)
-HARD_FILTER_NAMES = tuple(rule.name for rule in RED_RULES if rule.hard)
-SOFT_FILTER_NAMES = tuple(rule.name for rule in RED_RULES if not rule.hard)
 
 
 def passes_red_filters(combo, context, rejection_set=None):
