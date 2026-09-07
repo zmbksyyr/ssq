@@ -110,8 +110,25 @@ class StrategyConfig:
     high_count: int = RED_HIGH_COUNT
     low_count: int = RED_LOW_COUNT
     blue_count: int = NUM_BLUE_BALLS
+    recommendation_count: int = NUM_RECOMMENDATIONS
     rejection_lib_size: int = REJECTION_LIB_SIZE
     random_seed: int = RANDOM_SEED
+
+    def __post_init__(self):
+        if not 6 <= self.pool_size_red <= 33:
+            raise ValueError('pool_size_red must be between 6 and 33')
+        if min(self.high_count, self.low_count) < 0:
+            raise ValueError('high_count and low_count cannot be negative')
+        if self.high_count + self.low_count > self.pool_size_red:
+            raise ValueError('high_count and low_count exceed pool_size_red')
+        if not 1 <= self.blue_count <= 16:
+            raise ValueError('blue_count must be between 1 and 16')
+        if self.recommendation_count < 1:
+            raise ValueError('recommendation_count must be positive')
+        if not 0 <= self.rejection_lib_size <= TOTAL_RED_COMBINATIONS:
+            raise ValueError(
+                f'rejection_lib_size must be between 0 and {TOTAL_RED_COMBINATIONS}'
+            )
 
 
 @dataclass(frozen=True)
@@ -195,6 +212,39 @@ class BacktestResult:
         band_width = len(RANK_BANDS[band]) if band in RANK_BANDS else RANK_OTHER_WIDTH
         expected_rate = band_width / 33
         return self.rank_band_rate(band) / expected_rate if expected_rate else 0.0
+
+
+@dataclass
+class BacktestAccumulator:
+    prize_counts: Counter = field(default_factory=Counter)
+    cost: int = 0
+    winnings: int = 0
+    active_periods: int = 0
+    evaluated_periods: int = 0
+    tickets: int = 0
+    pool_red_hits: int = 0
+    ticket_red_hit_counts: Counter = field(default_factory=Counter)
+    candidate_tickets: int = 0
+    candidate_red_hit_counts: Counter = field(default_factory=Counter)
+    blue_hit_periods: int = 0
+    rank_band_hits: Counter = field(default_factory=Counter)
+
+    def to_result(self, periods):
+        return BacktestResult(
+            periods=periods,
+            active_periods=self.active_periods,
+            tickets=self.tickets,
+            cost=self.cost,
+            winnings=self.winnings,
+            prize_counts=self.prize_counts,
+            evaluated_periods=self.evaluated_periods,
+            pool_red_hits=self.pool_red_hits,
+            ticket_red_hit_counts=self.ticket_red_hit_counts,
+            candidate_tickets=self.candidate_tickets,
+            candidate_red_hit_counts=self.candidate_red_hit_counts,
+            blue_hit_periods=self.blue_hit_periods,
+            rank_band_hits=self.rank_band_hits,
+        )
 
 
 @dataclass(frozen=True)
@@ -1096,7 +1146,52 @@ def get_user_input_with_timeout(timeout):
 
 # --- 4. 核心功能模块 (回测与预测) ---
 
-def run_full_backtest(full_df, params, feature_columns, num_periods, pool_modes=("mixed",)):
+def evaluate_backtest_mode(mode, current, actual_red_set, actual_blue,
+                           recommended_blue, rank_band_hits, red_scores,
+                           omission, last_10, last_1, last_2, rejection_set,
+                           config):
+    """Evaluate one pool mode for one historical issue."""
+    red_pool = build_red_pool(red_scores, config=config, mode=mode)
+    current.evaluated_periods += 1
+    current.pool_red_hits += len(set(red_pool) & actual_red_set)
+    current.rank_band_hits.update(rank_band_hits)
+    if recommended_blue == actual_blue:
+        current.blue_hit_periods += 1
+
+    passed_combos = [
+        combo for combo in combinations(sorted(red_pool), 6)
+        if passes_red_filters(
+            combo, omission, last_10, last_1, last_2, rejection_set
+        )
+    ]
+    if not passed_combos:
+        return
+
+    red_hits_by_combo = {
+        combo: len(set(combo) & actual_red_set) for combo in passed_combos
+    }
+    current.candidate_tickets += len(passed_combos)
+    current.candidate_red_hit_counts.update(red_hits_by_combo.values())
+    selected_combos = select_recommendations(
+        passed_combos, red_scores, last_1, last_2,
+        limit=config.recommendation_count,
+    )
+    current.active_periods += 1
+    current.tickets += len(selected_combos)
+    current.cost += len(selected_combos) * 2
+    blue_hits = int(recommended_blue == actual_blue)
+    for combo in selected_combos:
+        red_hits = red_hits_by_combo[combo]
+        current.ticket_red_hit_counts[red_hits] += 1
+        hit_key = (red_hits, blue_hits)
+        prize = PRIZE_RULES.get(hit_key, 0)
+        if prize > 0:
+            current.winnings += prize
+            current.prize_counts[hit_key] += 1
+
+
+def run_full_backtest(full_df, params, feature_columns, num_periods,
+                      pool_modes=("mixed",), config=StrategyConfig()):
     """
     对最近 N 期执行滚动策略回测。
     每一步仅使用当前期之前的数据重新训练模型，避免未来数据泄露。
@@ -1111,15 +1206,7 @@ def run_full_backtest(full_df, params, feature_columns, num_periods, pool_modes=
         print(f"历史数据不足 {num_periods + 50} 期，无法执行回测。跳过此步骤。")
         return {mode: BacktestResult(0, 0, 0, 0, 0, Counter()) for mode in pool_modes}
 
-    # 初始化统计变量
-    metrics = {
-        mode: {"prize_counts": Counter(), "cost": 0, "winnings": 0,
-               "active_periods": 0, "evaluated_periods": 0, "tickets": 0,
-               "pool_red_hits": 0, "ticket_red_hit_counts": Counter(),
-               "candidate_tickets": 0, "candidate_red_hit_counts": Counter(),
-               "blue_hit_periods": 0, "rank_band_hits": Counter()}
-        for mode in pool_modes
-    }
+    metrics = {mode: BacktestAccumulator() for mode in pool_modes}
     
     # 定义回测的时间范围，从倒数第N期到倒数第1期
     backtest_range = range(len(full_df) - num_periods, len(full_df))
@@ -1156,66 +1243,27 @@ def run_full_backtest(full_df, params, feature_columns, num_periods, pool_modes=
             rank_band_hits = count_actual_reds_by_rank_band(red_scores, actual_red_set)
             
             # --- 在回测的每一步都重新应用完整的过滤流程 ---
-            rejection_seed = rejection_seed_for_issue(RANDOM_SEED, actual_draw['期号'])
+            rejection_seed = rejection_seed_for_issue(
+                config.random_seed, actual_draw['期号']
+            )
             rejection_set = make_rejection_set(
-                REJECTION_LIB_SIZE, random.Random(rejection_seed)
+                config.rejection_lib_size, random.Random(rejection_seed)
             )
             omission = get_omission(history_df_for_step)
             last_10 = [set(d) for d in history_df_for_step.iloc[-10:]['红球'].tolist()]
             last_1 = last_10[-1]; last_2 = last_10[-2]
             
             for mode in pool_modes:
-                red_pool = build_red_pool(red_scores, mode=mode)
-                current = metrics[mode]
-                current["evaluated_periods"] += 1
-                current["pool_red_hits"] += len(set(red_pool) & actual_red_set)
-                current["rank_band_hits"].update(rank_band_hits)
-                if recommended_blue == actual_blue:
-                    current["blue_hit_periods"] += 1
-                passed_combos = [
-                    combo for combo in combinations(sorted(red_pool), 6)
-                    if passes_red_filters(combo, omission, last_10, last_1, last_2, rejection_set)
-                ]
-                if not passed_combos:
-                    continue
-                red_hits_by_combo = {
-                    combo: len(set(combo) & actual_red_set) for combo in passed_combos
-                }
-                current["candidate_tickets"] += len(passed_combos)
-                current["candidate_red_hit_counts"].update(red_hits_by_combo.values())
-                selected_combos = select_recommendations(
-                    passed_combos, red_scores, last_1, last_2
+                evaluate_backtest_mode(
+                    mode, metrics[mode], actual_red_set, actual_blue,
+                    recommended_blue, rank_band_hits, red_scores, omission,
+                    last_10, last_1, last_2, rejection_set, config,
                 )
-                current["active_periods"] += 1
-                current["tickets"] += len(selected_combos)
-                current["cost"] += len(selected_combos) * 2
-                for combo in selected_combos:
-                    red_hits = red_hits_by_combo[combo]
-                    current["ticket_red_hit_counts"][red_hits] += 1
-                    hit_key = (
-                        red_hits,
-                        1 if recommended_blue == actual_blue else 0,
-                    )
-                    prize = PRIZE_RULES.get(hit_key, 0)
-                    if prize > 0:
-                        current["winnings"] += prize
-                        current["prize_counts"][hit_key] += 1
             pbar.update(1)
 
     print("回测完成。\n")
     return {
-        mode: BacktestResult(
-            periods=len(backtest_range), active_periods=value["active_periods"],
-            tickets=value["tickets"], cost=value["cost"], winnings=value["winnings"],
-            prize_counts=value["prize_counts"],
-            evaluated_periods=value["evaluated_periods"],
-            pool_red_hits=value["pool_red_hits"],
-            ticket_red_hit_counts=value["ticket_red_hit_counts"],
-            candidate_tickets=value["candidate_tickets"],
-            candidate_red_hit_counts=value["candidate_red_hit_counts"],
-            blue_hit_periods=value["blue_hit_periods"],
-            rank_band_hits=value["rank_band_hits"],
-        )
+        mode: value.to_result(len(backtest_range))
         for mode, value in metrics.items()
     }
 
@@ -1242,9 +1290,10 @@ if __name__ == '__main__':
         parser.error('backtest-periods 和 rule-audit-periods 不能为负数')
     if not 0 <= args.rejection_size <= TOTAL_RED_COMBINATIONS:
         parser.error(f'rejection-size 必须在 0 到 {TOTAL_RED_COMBINATIONS} 之间')
-    BACKTEST_PERIODS = args.backtest_periods
-    REJECTION_LIB_SIZE = args.rejection_size
-    RANDOM_SEED = args.seed
+    config = StrategyConfig(
+        rejection_lib_size=args.rejection_size,
+        random_seed=args.seed,
+    )
 
     print("="*70)
     print("         双色球策略分析器 v7.0")
@@ -1282,7 +1331,8 @@ if __name__ == '__main__':
     # 执行回测并捕获其返回的统计结果
     pool_modes = ('mixed', 'high', 'middle', 'low') if args.compare_pools else (args.pool_mode,)
     backtests = run_full_backtest(
-        full_df, params, FEATURE_COLUMNS, BACKTEST_PERIODS, pool_modes=pool_modes
+        full_df, params, FEATURE_COLUMNS, args.backtest_periods,
+        pool_modes=pool_modes, config=config,
     )
     backtest = backtests[args.pool_mode]
     
@@ -1300,17 +1350,19 @@ if __name__ == '__main__':
     # --- [阶段 4/8] 执行对下一期的预测 ---
     print("\n[阶段 4/8] 正在为下一期号码进行机器学习评分...")
     red_scores, blue_scores = run_strategy_and_get_scores(full_df, params, final_ml_models_red, final_ml_models_blue, FEATURE_COLUMNS)
-    red_pool = build_red_pool(red_scores, mode=args.pool_mode)
-    recommended_blues = sorted(blue_scores, key=blue_scores.get, reverse=True)[:NUM_BLUE_BALLS]
-    print(f"已根据ML评分选出 {POOL_SIZE_RED} 个红球大底: {sorted(red_pool)}")
+    red_pool = build_red_pool(red_scores, config=config, mode=args.pool_mode)
+    recommended_blues = sorted(
+        blue_scores, key=blue_scores.get, reverse=True
+    )[:config.blue_count]
+    print(f"已根据ML评分选出 {config.pool_size_red} 个红球大底: {sorted(red_pool)}")
 
     # --- [阶段 5/8] 规则过滤 ---
     print("\n[阶段 5/8] 正在从大底中生成组合并应用硬规则过滤...")
     
     # 同一期可复现，不同期变化；与滚动回测采用完全相同的派生规则。
-    rejection_seed = rejection_seed_for_issue(RANDOM_SEED, target_issue)
+    rejection_seed = rejection_seed_for_issue(config.random_seed, target_issue)
     rejection_set = make_rejection_set(
-        REJECTION_LIB_SIZE, random.Random(rejection_seed)
+        config.rejection_lib_size, random.Random(rejection_seed)
     )
 
     # 提前计算过滤所需的历史数据
@@ -1373,13 +1425,17 @@ if __name__ == '__main__':
     report_lines.append("\n--- 1. 策略参数与回测 ---")
     mode_desc = "加载已固化的参数" if params_loaded else "使用内置的默认参数"
     report_lines.append(f"模式: {mode_desc}")
-    report_lines.append(f"  - anti_crowding_size  : {REJECTION_LIB_SIZE}")
-    report_lines.append(f"  - anti_crowding_seed  : {RANDOM_SEED} -> {rejection_seed} (目标期派生)")
+    report_lines.append(f"  - anti_crowding_size  : {config.rejection_lib_size}")
+    report_lines.append(
+        f"  - anti_crowding_seed  : {config.random_seed} -> "
+        f"{rejection_seed} (目标期派生)"
+    )
     for key, val in params.items(): 
         report_lines.append(f"  - {key:<20}: {val}")
     
     report_lines.append(
-        f"\n单式策略滚动回测 ({backtest.periods}期，每期最多{NUM_RECOMMENDATIONS}注，不含复式):"
+        f"\n单式策略滚动回测 ({backtest.periods}期，每期最多"
+        f"{config.recommendation_count}注，不含复式):"
     )
     report_lines.append(f"  - 候选池模式: {args.pool_mode}")
     report_lines.append(f"  - 成功建模评估期数: {backtest.evaluated_periods}")
@@ -1485,10 +1541,13 @@ if __name__ == '__main__':
     report_lines.append("\n--- 2. 推荐组合 ---")
     top_blue = recommended_blues[0] if recommended_blues else "N/A"
     
-    report_lines.append("\n【单式推荐 (10组)】")
+    report_lines.append(
+        f"\n【单式推荐 ({config.recommendation_count}组)】"
+    )
     if passed_combos_tuples:
         final_selection = select_recommendations(
-            passed_combos_tuples, red_scores, last_draw_set, last_2_draw_set
+            passed_combos_tuples, red_scores, last_draw_set, last_2_draw_set,
+            limit=config.recommendation_count,
         )
         for i, combo in enumerate(final_selection, 1):
             report_lines.append(f"  组合 {i:>2}: 红球 {str(list(combo)):<24} 蓝球 [{top_blue:02d}]")

@@ -50,6 +50,18 @@ class AnalyzerTests(unittest.TestCase):
     with self.assertRaises(ValueError):
       analyzer.build_red_pool(scores, mode="invalid")
 
+  def test_strategy_config_rejects_incoherent_selection_limits(self):
+    with self.assertRaises(ValueError):
+      analyzer.StrategyConfig(pool_size_red=5)
+    with self.assertRaises(ValueError):
+      analyzer.StrategyConfig(pool_size_red=8, high_count=5, low_count=4)
+    with self.assertRaises(ValueError):
+      analyzer.StrategyConfig(blue_count=17)
+    with self.assertRaises(ValueError):
+      analyzer.StrategyConfig(recommendation_count=0)
+    with self.assertRaises(ValueError):
+      analyzer.StrategyConfig(rejection_lib_size=-1)
+
 
   def test_rejection_set_is_reproducible(self):
     first = analyzer.make_rejection_set(100, random.Random(7))
@@ -240,6 +252,14 @@ class AnalyzerTests(unittest.TestCase):
     blue_scores = {ball: float(ball == 7) for ball in range(1, 17)}
     red_models = {ball: object() for ball in range(1, 34)}
     blue_models = {ball: object() for ball in range(1, 17)}
+    config = analyzer.StrategyConfig(
+        pool_size_red=6,
+        high_count=2,
+        low_count=2,
+        recommendation_count=3,
+        rejection_lib_size=1234,
+        random_seed=99,
+    )
 
     with (
         patch.object(analyzer, "train_prediction_models", return_value=(red_models, blue_models)),
@@ -247,16 +267,24 @@ class AnalyzerTests(unittest.TestCase):
             analyzer, "run_strategy_and_get_scores", return_value=(red_scores, blue_scores)
         ),
         patch.object(analyzer, "rejection_seed_for_issue", return_value=123) as seed_mock,
-        patch.object(analyzer, "make_rejection_set", return_value=set()),
+        patch.object(analyzer, "make_rejection_set", return_value=set()) as rejection_mock,
         patch.object(analyzer, "get_omission", return_value={}),
-        patch.object(analyzer, "build_red_pool", return_value=[1, 2, 3, 4, 13, 14]),
+        patch.object(
+            analyzer, "build_red_pool", return_value=[1, 2, 3, 4, 13, 14]
+        ) as pool_mock,
         patch.object(analyzer, "passes_red_filters", return_value=True),
+        patch.object(
+            analyzer, "select_recommendations", return_value=[(1, 2, 3, 4, 13, 14)]
+        ) as selection_mock,
     ):
       result = analyzer.run_full_backtest(
-          frame, analyzer.DEFAULT_PARAMS, [], 1
+          frame, analyzer.DEFAULT_PARAMS, [], 1, config=config
       )["mixed"]
 
-    seed_mock.assert_called_once_with(analyzer.RANDOM_SEED, 2025051)
+    seed_mock.assert_called_once_with(99, 2025051)
+    self.assertEqual(rejection_mock.call_args.args[0], 1234)
+    pool_mock.assert_called_once_with(red_scores, config=config, mode="mixed")
+    self.assertEqual(selection_mock.call_args.kwargs['limit'], 3)
     self.assertEqual(result.periods, 1)
     self.assertEqual(result.evaluated_periods, 1)
     self.assertEqual(result.active_periods, 1)
