@@ -47,17 +47,10 @@ from ssq_features import (  # noqa: F401 - compatibility exports
     validate_feature_columns,
 )
 from ssq_modeling import (  # noqa: F401 - compatibility exports
-    MODEL_TRAINING_PARAMS,
-    BallModelSpec,
     apply_red_score_adjustments,
     get_omission,
     get_weighted_frequency,
-    predict_positive_probability,
     run_strategy_and_get_scores,
-    train_ball_models,
-    train_models_for_spec,
-    train_prediction_models,
-    validate_model_sets,
 )
 from ssq_rank_bands import (  # noqa: F401 - compatibility exports
     RANK_BAND_WIDTHS,
@@ -97,6 +90,15 @@ from ssq_selection import (  # noqa: F401 - compatibility exports
     rejection_seed_for_issue,
     validate_candidate_generation_request,
     validate_duplex_selection_request,
+)
+from ssq_training import (  # noqa: F401 - compatibility exports
+    MODEL_TRAINING_PARAMS,
+    BallModelSpec,
+    predict_positive_probability,
+    train_ball_models,
+    train_models_for_spec,
+    train_prediction_models,
+    validate_model_sets,
 )
 from ssq_workflow import (  # noqa: F401 - compatibility exports
     CSV_PATH,

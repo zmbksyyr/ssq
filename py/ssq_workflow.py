@@ -39,11 +39,8 @@ from ssq_draw_data import (
 )
 from ssq_features import FEATURE_COLUMNS, feature_engineer
 from ssq_modeling import (
-    MODEL_TRAINING_PARAMS,
     get_omission,
     run_strategy_and_get_scores,
-    train_prediction_models,
-    validate_model_sets,
 )
 from ssq_rank_bands import build_rank_band_labels, build_rank_band_widths
 from ssq_reporting import AnalysisReportData, build_analysis_report
@@ -60,6 +57,11 @@ from ssq_selection import (
     make_rejection_set,
     rank_duplex_candidates,
     rejection_seed_for_issue,
+)
+from ssq_training import (
+    MODEL_TRAINING_PARAMS,
+    train_prediction_models,
+    validate_model_sets,
 )
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))

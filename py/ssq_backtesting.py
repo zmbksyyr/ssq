@@ -17,8 +17,6 @@ from ssq_config import (
 from ssq_core import PRIZE_RULES
 from ssq_modeling import (
     run_strategy_and_get_scores,
-    train_prediction_models,
-    validate_model_sets,
 )
 from ssq_rank_bands import build_rank_band_widths
 from ssq_rule_auditing import FILTER_NAMES as _FILTER_NAMES
@@ -37,6 +35,7 @@ from ssq_selection import (
     make_rejection_set,
     rejection_seed_for_issue,
 )
+from ssq_training import train_prediction_models, validate_model_sets
 from tqdm import tqdm
 
 FILTER_NAMES = _FILTER_NAMES
