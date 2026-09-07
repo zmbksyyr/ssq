@@ -658,6 +658,40 @@ class AnalyzerTests(unittest.TestCase):
     self.assertTrue(classifier.call_args.kwargs['force_col_wise'])
     self.assertEqual(classifier.call_args.kwargs['random_state'], 42)
 
+  def test_repeated_model_training_produces_identical_ball_scores(self):
+    draws = [
+        sorted({((index * 5 + offset * 4) % 33) + 1 for offset in range(6)})
+        for index in range(40)
+    ]
+    history = modeling.feature_engineer(pd.DataFrame({
+        '红球': draws,
+        '蓝球': [(index % 16) + 1 for index in range(40)],
+    }))
+    training = history.iloc[5:]
+
+    first_models = modeling.train_prediction_models(
+        training,
+        modeling.FEATURE_COLUMNS,
+    )
+    second_models = modeling.train_prediction_models(
+        training,
+        modeling.FEATURE_COLUMNS,
+    )
+    first_scores = modeling.run_strategy_and_get_scores(
+        history,
+        analyzer.DEFAULT_PARAMS,
+        *first_models,
+        modeling.FEATURE_COLUMNS,
+    )
+    second_scores = modeling.run_strategy_and_get_scores(
+        history,
+        analyzer.DEFAULT_PARAMS,
+        *second_models,
+        modeling.FEATURE_COLUMNS,
+    )
+
+    self.assertEqual(first_scores, second_scores)
+
   def test_positive_probability_uses_the_positive_class_column(self):
     model = lgb.LGBMClassifier(random_state=42, verbose=-1)
     features = pd.DataFrame({'value': range(20)})
