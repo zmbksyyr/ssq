@@ -1,6 +1,7 @@
 import sys
 import unittest
 import tempfile
+from datetime import date, timedelta
 from pathlib import Path
 import pandas as pd
 
@@ -75,6 +76,49 @@ class DataProcessorTests(unittest.TestCase):
         ])
         with self.assertRaises(ValueError):
             processor.normalize_lottery_frame(frame)
+
+    def test_normalize_frame_rejects_date_order_mismatch(self):
+        frame = pd.DataFrame([
+            {'期号': '2026001', '日期': '2026-01-04', '红球': '1,2,3,4,5,6', '蓝球': '07'},
+            {'期号': '2026002', '日期': '2026-01-01', '红球': '1,2,3,4,5,8', '蓝球': '09'},
+        ])
+        with self.assertRaisesRegex(ValueError, '日期顺序'):
+            processor.normalize_lottery_frame(frame)
+
+    def test_strict_snapshot_preserves_csv_when_download_is_truncated(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'draws.csv'
+            original = (
+                '期号,日期,红球,蓝球\n'
+                '2026001,2026-01-01,"01,02,03,04,05,06",07\n'
+            )
+            path.write_text(original, encoding='utf-8')
+            updated = processor.update_csv_file(
+                path,
+                [{
+                    '期号': '2026001', '日期': '2026-01-01',
+                    '红球': '1,2,3,4,5,6', '蓝球': '07',
+                }],
+                require_full_snapshot=True,
+            )
+            self.assertFalse(updated)
+            self.assertEqual(path.read_text(encoding='utf-8'), original)
+
+    def test_complete_authoritative_snapshot_is_accepted(self):
+        start = date(2026, 1, 1)
+        records = pd.DataFrame([
+            {
+                '期号': 2026001 + index,
+                '日期': (start + timedelta(days=index)).isoformat(),
+                '红球': '01,02,03,04,05,06',
+                '蓝球': '07',
+            }
+            for index in range(processor.MIN_FULL_SNAPSHOT_RECORDS)
+        ])
+        normalized = processor.normalize_lottery_frame(records)
+        processor.validate_authoritative_snapshot(
+            normalized, normalized.iloc[:-1], today=date(2026, 12, 31)
+        )
 
 
 if __name__ == '__main__':

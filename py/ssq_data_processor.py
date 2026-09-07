@@ -21,7 +21,7 @@ from bs4 import BeautifulSoup
 import logging
 import csv
 import tempfile
-from datetime import datetime
+from datetime import date, datetime
 from urllib3.util.retry import Retry
 from ssq_core import parse_blue_ball, parse_issue, parse_red_balls
 
@@ -38,6 +38,7 @@ CSV_FILE_PATH = os.path.join(root_dir, 'shuangseqiu.csv')
 TXT_DATA_URL = 'https://data.17500.cn/ssq_asc.txt'
 # HTML源：提供最新的开奖数据，通常用于快速更新（但不含日期）
 HTML_DATA_URL = "https://www.17500.cn/chart/ssq-tjb.html"
+MIN_FULL_SNAPSHOT_RECORDS = 100
 
 # 配置日志系统，用于跟踪脚本运行状态和错误信息
 logging.basicConfig(
@@ -226,6 +227,9 @@ def normalize_lottery_frame(frame):
     issue_years = normalized['期号'] // 1000
     if (issue_years != parsed_dates.dt.year).any():
         raise ValueError("期号年份与开奖日期不一致")
+    issue_order = normalized['期号'].sort_values().index
+    if not parsed_dates.loc[issue_order].is_monotonic_increasing:
+        raise ValueError("期号与开奖日期顺序不一致")
     normalized['日期'] = parsed_dates.dt.strftime('%Y-%m-%d')
     normalized['红球'] = normalized['红球'].apply(
         lambda value: ','.join(f'{number:02d}' for number in parse_red_balls(value))
@@ -234,6 +238,28 @@ def normalize_lottery_frame(frame):
         lambda value: f'{parse_blue_ball(value):02d}'
     )
     return normalized
+
+
+def validate_authoritative_snapshot(new_data, existing_data, today=None):
+    """Ensure the advertised full snapshot cannot truncate local history."""
+    if len(new_data) < MIN_FULL_SNAPSHOT_RECORDS:
+        raise ValueError(
+            f"权威全量快照仅有 {len(new_data)} 条，少于最低要求 "
+            f"{MIN_FULL_SNAPSHOT_RECORDS} 条"
+        )
+    today = today or date.today()
+    latest_date = pd.to_datetime(new_data['日期'], format='%Y-%m-%d').max().date()
+    if latest_date > today:
+        raise ValueError(f"权威全量快照包含未来开奖日期: {latest_date}")
+    if existing_data.empty:
+        return
+    missing_issues = sorted(set(existing_data['期号']) - set(new_data['期号']))
+    if missing_issues:
+        preview = ', '.join(str(issue) for issue in missing_issues[:5])
+        suffix = ' ...' if len(missing_issues) > 5 else ''
+        raise ValueError(
+            f"权威全量快照缺少本地已有期号: {preview}{suffix}"
+        )
 
 
 def cross_check_sources(primary_records, secondary_records):
@@ -257,7 +283,46 @@ def cross_check_sources(primary_records, secondary_records):
     return mismatches
 
 
-def update_csv_file(csv_path: str, all_new_data: list):
+def read_existing_csv(csv_path):
+    if not os.path.exists(csv_path) or os.path.getsize(csv_path) == 0:
+        logger.info("CSV文件不存在或为空，将创建新文件。")
+        return pd.DataFrame()
+    logger.info(f"正在读取现有CSV文件: {csv_path}")
+    try:
+        return pd.read_csv(
+            csv_path, dtype={'期号': str}, encoding='utf-8'
+        )
+    except (UnicodeDecodeError, pd.errors.ParserError):
+        logger.warning("UTF-8编码读取失败，尝试GBK编码...")
+        return pd.read_csv(
+            csv_path, dtype={'期号': str}, encoding='gbk'
+        )
+    except pd.errors.EmptyDataError:
+        logger.warning("现有CSV文件为空。")
+        return pd.DataFrame()
+
+
+def atomic_write_csv(frame, csv_path):
+    target_directory = os.path.dirname(os.path.abspath(csv_path))
+    os.makedirs(target_directory, exist_ok=True)
+    temporary_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode='w', encoding='utf-8', newline='', dir=target_directory,
+            prefix='.ssq-', suffix='.tmp', delete=False,
+        ) as temporary_file:
+            temporary_path = temporary_file.name
+            frame.to_csv(
+                temporary_file, index=False, quoting=csv.QUOTE_MINIMAL
+            )
+        os.replace(temporary_path, csv_path)
+        temporary_path = None
+    finally:
+        if temporary_path and os.path.exists(temporary_path):
+            os.unlink(temporary_path)
+
+
+def update_csv_file(csv_path: str, all_new_data: list, require_full_snapshot=False):
     """
     使用新获取的数据更新或创建CSV文件。
 
@@ -275,32 +340,14 @@ def update_csv_file(csv_path: str, all_new_data: list):
         logger.info("没有新的数据可供更新，CSV文件保持不变。")
         return False
 
-    temporary_path = None
     try:
-        # 将新数据列表转换为DataFrame
         new_data_df = normalize_lottery_frame(pd.DataFrame(all_new_data))
-
-        # 读取现有CSV文件
-        existing_df = pd.DataFrame()
-        if os.path.exists(csv_path) and os.path.getsize(csv_path) > 0:
-            logger.info(f"正在读取现有CSV文件: {csv_path}")
-            try:
-                # 尝试用多种编码读取，增加兼容性
-                existing_df = pd.read_csv(csv_path, dtype={'期号': str}, encoding='utf-8')
-            except (UnicodeDecodeError, pd.errors.ParserError):
-                try:
-                    logger.warning("UTF-8编码读取失败，尝试GBK编码...")
-                    existing_df = pd.read_csv(csv_path, dtype={'期号': str}, encoding='gbk')
-                except Exception as e:
-                    logger.error(f"使用多种编码读取CSV文件均失败: {e}")
-                    return False
-            except pd.errors.EmptyDataError:
-                logger.warning("现有CSV文件为空。")
-        else:
-            logger.info("CSV文件不存在或为空，将创建新文件。")
-
+        existing_df = read_existing_csv(csv_path)
         if not existing_df.empty:
             existing_df = normalize_lottery_frame(existing_df)
+
+        if require_full_snapshot:
+            validate_authoritative_snapshot(new_data_df, existing_df)
 
         # 合并新旧数据
         # 使用 concat 和 drop_duplicates 来实现“保留后者（新数据）”的更新策略
@@ -314,28 +361,13 @@ def update_csv_file(csv_path: str, all_new_data: list):
             combined_df.drop_duplicates(subset=['期号'], keep='last')
         ).sort_values(by='期号', ascending=True).reset_index(drop=True)
 
-        # 同目录写临时文件，再原子替换，避免中断时留下半个 CSV。
-        target_directory = os.path.dirname(os.path.abspath(csv_path))
-        os.makedirs(target_directory, exist_ok=True)
-        with tempfile.NamedTemporaryFile(
-            mode='w', encoding='utf-8', newline='', dir=target_directory,
-            prefix='.ssq-', suffix='.tmp', delete=False,
-        ) as temporary_file:
-            temporary_path = temporary_file.name
-            final_df.to_csv(
-                temporary_file, index=False, quoting=csv.QUOTE_MINIMAL
-            )
-        os.replace(temporary_path, csv_path)
-        temporary_path = None
+        atomic_write_csv(final_df, csv_path)
         logger.info(f"CSV文件已成功更新并保存至: {csv_path}。总计 {len(final_df)} 条记录。")
         return True
 
     except Exception as e:
         logger.error(f"更新CSV文件时发生严重错误: {e}")
         return False
-    finally:
-        if temporary_path and os.path.exists(temporary_path):
-            os.unlink(temporary_path)
 
 
 # ==============================================================================
@@ -360,7 +392,9 @@ if __name__ == "__main__":
         cross_check_sources(txt_data_dicts, html_data_dicts)
     
     # 步骤 3: 仅使用含完整日期的 TXT 权威数据更新主 CSV。
-    if not update_csv_file(CSV_FILE_PATH, txt_data_dicts):
+    if not update_csv_file(
+        CSV_FILE_PATH, txt_data_dicts, require_full_snapshot=True
+    ):
         raise SystemExit(1)
 
     logger.info("--- 双色球数据处理任务完成 ---")
