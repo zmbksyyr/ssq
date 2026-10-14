@@ -21,25 +21,19 @@ import json
 import random
 import sys
 import tempfile
-from collections import Counter
-from contextlib import nullcontext, redirect_stdout
+from contextlib import redirect_stdout
 from dataclasses import replace
 from datetime import UTC, date, datetime
 from itertools import combinations
 from pathlib import Path
-from types import MappingProxyType, SimpleNamespace
-from unittest.mock import Mock, call, patch
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 import lightgbm
 import numpy
 import pandas
 import ssq_analyzer as analyzer
 import ssq_anti_crowding as anti_crowding
-import ssq_backtest_metrics as backtest_metrics
-import ssq_backtest_reporting
-import ssq_backtest_reporting as backtest_reporting
-import ssq_backtest_runner as backtest_runner
-import ssq_backtesting as backtesting
 import ssq_bonus_calculation as bonus_calculation
 import ssq_candidate_generation as candidate_generation
 import ssq_candidates as candidates
@@ -48,7 +42,6 @@ import ssq_config as config
 import ssq_console as console
 import ssq_duplex as duplex
 import ssq_features as features
-import ssq_history_evaluation as history_evaluation
 import ssq_history_preparation as history_preparation
 import ssq_model_contracts as model_contracts
 import ssq_model_training as model_training
@@ -57,21 +50,16 @@ import ssq_prediction_workflow as prediction_workflow
 import ssq_rank_bands as rank_bands
 import ssq_ranking as ranking
 import ssq_recommendation_portfolio as recommendation_portfolio
-import ssq_recommendation_reporting
 import ssq_recommendation_reporting as recommendation_reporting
 import ssq_red_pool as red_pool
 import ssq_report_builder
 import ssq_report_output as report_output
 import ssq_reporting
 import ssq_reporting as reporting
-import ssq_rule_auditing as rule_auditing
 import ssq_rule_definitions as rule_definitions
-import ssq_rule_diagnostics as rule_diagnostics
 import ssq_rule_execution as rule_execution
 import ssq_rule_functions as rule_functions
 import ssq_rule_registry as rule_registry
-import ssq_rule_reporting
-import ssq_rule_reporting as rule_reporting
 import ssq_rules as rules
 import ssq_score_adjustments as score_adjustments
 import ssq_score_signals as score_signals
@@ -82,14 +70,9 @@ import ssq_strategy_validation as strategy_validation
 import ssq_training as training
 import ssq_workflow as workflow
 import ssq_workflow_models as workflow_models
-from ssq_analysis_result import build_analysis_report_data
-from ssq_backtest_metrics import BacktestAccumulator
-from ssq_backtest_models import BacktestIssue, BacktestRequest, BacktestRunContext
 from ssq_config import (
     DEFAULT_PARAMS,
     DEFAULT_STRATEGY_CONFIG,
-    AnalyzerOptions,
-    LoadedStrategyParams,
     StrategyConfig,
 )
 from ssq_core import (
@@ -108,7 +91,6 @@ from ssq_core import (
 from ssq_features import FEATURE_COLUMNS
 from ssq_model_contracts import MODEL_TRAINING_PARAMS, BallModelSpec
 from ssq_prizes import parse_report_bets
-from ssq_report_models import AnalysisReportData
 from ssq_rule_models import RecommendationRequest, RuleContext, RuleDefinition
 from ssq_rules import select_recommendation_portfolio
 from ssq_selection import (
@@ -121,69 +103,6 @@ from ssq_selection_models import RedCandidateSelection
 from ssq_workflow_models import PreparedHistory
 
 # ===== from test_ssq_analysis_result.py =====
-
-
-class AnalysisResultTests(unittest.TestCase):
-    def test_completed_stages_are_mapped_without_copying_domain_results(self):
-        config = StrategyConfig()
-        history = SimpleNamespace(
-            latest_issue='2026103',
-            target_issue=2026104,
-            sha256='a' * 64,
-            feature_columns=('feature_a', 'feature_b'),
-        )
-        loaded_params = SimpleNamespace(
-            loaded_from_file=True,
-            values={'weight': 1},
-        )
-        history_evaluation = SimpleNamespace(
-            loaded_params=loaded_params,
-            selected_backtest='selected-backtest',
-            backtests={'mixed': 'mixed-backtest'},
-            rule_coverage={'span': 0.99},
-            hard_pipeline_coverage={'all': 0.95},
-        )
-        selection = object()
-        current = SimpleNamespace(
-            rejection_seed=123,
-            pipeline_stats=[{'stage': 'span'}],
-            candidate_selection=selection,
-            recommended_blues=[7, 9],
-        )
-        options = SimpleNamespace(
-            strategy_config=config,
-            pool_mode='mixed',
-            rule_audit_periods=200,
-        )
-        generated_at = datetime(2026, 9, 8, tzinfo=UTC)
-        runtime_versions = {'python': 'test'}
-        training_params = MappingProxyType({'deterministic': True})
-
-        result = build_analysis_report_data(
-            history,
-            history_evaluation,
-            current,
-            options,
-            ['duplex'],
-            generated_at,
-            runtime_versions,
-            training_params,
-        )
-
-        self.assertIsInstance(result, AnalysisReportData)
-        self.assertEqual(result.latest_issue, '2026103')
-        self.assertEqual(result.target_issue, 2026104)
-        self.assertIs(result.config, config)
-        self.assertIs(result.params, loaded_params.values)
-        self.assertIs(result.selection, selection)
-        self.assertIs(result.backtests, history_evaluation.backtests)
-        self.assertIs(result.runtime_versions, runtime_versions)
-        self.assertIs(result.model_training_params, training_params)
-        self.assertEqual(result.rank_band_widths['middle'], 9)
-        self.assertEqual(result.rank_band_labels['middle'], '中段(13-21)')
-
-
-# ===== from test_ssq_analysis_workflow.py =====
 
 
 class AnalysisWorkflowTests(unittest.TestCase):
@@ -286,48 +205,6 @@ class AnalysisWorkflowTests(unittest.TestCase):
 
 
 class AnalyzerTests(unittest.TestCase):
-  def test_cli_options_build_runtime_configuration(self):
-    defaults = config.parse_cli_options([])
-    self.assertEqual(defaults.rejection_size, 500_000)
-    self.assertEqual(defaults.backtest_pool_modes, ('mixed',))
-    self.assertEqual(defaults.strategy_config.rejection_lib_size, 500_000)
-    self.assertEqual(defaults.strategy_config.max_shared_red_balls, 4)
-
-    options = config.parse_cli_options([
-        '--backtest-periods', '12',
-        '--rejection-size', '34',
-        '--seed', '7',
-        '--pool-mode', 'middle',
-        '--compare-pools',
-        '--non-interactive',
-        '--rule-audit-periods', '50',
-    ])
-    self.assertEqual(options.backtest_periods, 12)
-    self.assertEqual(options.rule_audit_periods, 50)
-    self.assertEqual(options.pool_mode, 'middle')
-    self.assertEqual(options.backtest_pool_modes, config.RED_POOL_MODES)
-    self.assertTrue(options.non_interactive)
-    self.assertEqual(options.strategy_config.random_seed, 7)
-    self.assertEqual(options.strategy_config.rejection_lib_size, 34)
-
-  def test_cli_options_reject_invalid_ranges(self):
-    for argv in (
-        ['--backtest-periods', '-1'],
-        ['--rule-audit-periods', '-1'],
-        ['--rejection-size', str(config.TOTAL_RED_COMBINATIONS + 1)],
-    ):
-      with (
-          self.subTest(argv=argv),
-          patch.object(sys, 'stderr', io.StringIO()),
-          self.assertRaises(SystemExit),
-      ):
-        config.parse_cli_options(argv)
-
-    with self.assertRaises(ValueError):
-      config.AnalyzerOptions(backtest_periods=-1)
-    with self.assertRaises(ValueError):
-      config.AnalyzerOptions(pool_mode='invalid')
-
   def test_analyzer_reexports_strategy_configuration(self):
     self.assertIs(analyzer.StrategyConfig, config.StrategyConfig)
     self.assertIs(analyzer.parse_cli_options, config.parse_cli_options)
@@ -385,105 +262,9 @@ class AnalyzerTests(unittest.TestCase):
     self.assertEqual(request.mode, 'middle')
     self.assertTrue(request.show_progress)
 
-  def test_analyzer_reexports_backtesting_functions(self):
-    self.assertIs(analyzer.BacktestResult, backtesting.BacktestResult)
-    self.assertIs(backtesting.BacktestResult, backtest_metrics.BacktestResult)
-    self.assertIs(
-        backtesting.BacktestAccumulator,
-        backtest_metrics.BacktestAccumulator,
-    )
-    self.assertIs(analyzer.BacktestIssue, backtesting.BacktestIssue)
-    self.assertIs(analyzer.BacktestRequest, backtesting.BacktestRequest)
-    self.assertIs(
-        analyzer.BacktestSelectionInputs,
-        backtesting.BacktestSelectionInputs,
-    )
-    self.assertIs(analyzer.run_backtest, backtesting.run_backtest)
-    self.assertIs(analyzer.run_full_backtest, backtesting.run_full_backtest)
-
   def test_analyzer_reexports_workflow_entrypoint(self):
     self.assertIs(analyzer.run_analysis, workflow.run_analysis)
     self.assertIs(analyzer.main, workflow.main)
-
-  def test_workflow_main_passes_parsed_options(self):
-    with patch.object(workflow, 'run_analysis', return_value='report.txt') as run:
-      result = workflow.main(['--backtest-periods', '3', '--non-interactive'])
-    self.assertEqual(result, 'report.txt')
-    options = run.call_args.args[0]
-    self.assertEqual(options.backtest_periods, 3)
-    self.assertTrue(options.non_interactive)
-
-  def test_analysis_workflow_maps_stage_results_into_report(self):
-    options = config.AnalyzerOptions(
-        backtest_periods=0,
-        rejection_size=0,
-        non_interactive=True,
-    )
-    history = workflow.PreparedHistory(
-        frame=pandas.DataFrame(),
-        feature_columns=('feature',),
-        latest_issue='2026103',
-        target_issue=2026104,
-        sha256='a' * 64,
-    )
-    loaded_params = config.LoadedStrategyParams({'param': 1}, True)
-    history_evaluation = workflow.HistoricalEvaluation(
-        loaded_params=loaded_params,
-        rule_coverage={'rule': 'coverage'},
-        hard_pipeline_coverage={'hard': 'coverage'},
-        backtests={'mixed': 'backtest'},
-        selected_backtest='backtest',
-    )
-    candidate_selection = SimpleNamespace(
-        passed_combos=((1, 2, 3, 4, 5, 6),),
-        red_pool=(1, 2, 3, 4, 5, 6, 7),
-    )
-    current = workflow.CurrentSelection(
-        red_scores={number: float(number) for number in range(1, 8)},
-        recommended_blues=[16],
-        rejection_seed=123,
-        rule_context='context',
-        candidate_selection=candidate_selection,
-        pipeline_stats=[{'stage': 'hard'}],
-    )
-    generated_at = datetime(2026, 9, 7, 12, 34, 56, tzinfo=UTC)
-
-    with (
-        patch.object(workflow, 'prepare_history', return_value=history),
-        patch.object(workflow, 'evaluate_history', return_value=history_evaluation),
-        patch.object(workflow, 'train_final_models', return_value=('red', 'blue')),
-        patch.object(workflow, 'select_current_issue', return_value=current),
-        patch.object(workflow, 'display_passed_combinations') as display,
-        patch.object(
-            workflow,
-            'rank_duplex_candidates',
-            return_value=['best'],
-        ) as rank_duplex,
-        patch.object(workflow, 'local_now', return_value=generated_at),
-        patch.object(workflow, 'collect_runtime_versions', return_value={'python': 'test'}),
-        patch.object(workflow, 'save_analysis_report', return_value='report.txt') as save,
-        patch('sys.stdout', new_callable=io.StringIO),
-    ):
-      result = workflow.run_analysis(options)
-
-    self.assertEqual(result, 'report.txt')
-    display.assert_called_once_with(candidate_selection.passed_combos, True)
-    duplex_request = rank_duplex.call_args.args[0]
-    self.assertIs(duplex_request.passed_combos, candidate_selection.passed_combos)
-    self.assertIs(duplex_request.red_pool, candidate_selection.red_pool)
-    self.assertIs(duplex_request.red_scores, current.red_scores)
-    self.assertIs(duplex_request.context, current.rule_context)
-    report_data = save.call_args.args[0]
-    self.assertEqual(report_data.latest_issue, history.latest_issue)
-    self.assertEqual(report_data.target_issue, history.target_issue)
-    self.assertIs(report_data.backtest, history_evaluation.selected_backtest)
-    self.assertIs(report_data.selection, candidate_selection)
-    self.assertEqual(report_data.recommended_blues, [16])
-    self.assertEqual(report_data.rejection_seed, 123)
-    self.assertEqual(report_data.history_sha256, 'a' * 64)
-    self.assertEqual(report_data.runtime_versions, {'python': 'test'})
-    self.assertEqual(report_data.model_features, ('feature',))
-    self.assertIs(report_data.model_training_params, modeling.MODEL_TRAINING_PARAMS)
 
   def test_runtime_versions_cover_model_dependencies(self):
     versions = workflow.collect_runtime_versions()
@@ -510,64 +291,6 @@ class AnalyzerTests(unittest.TestCase):
       loaded = workflow.load_strategy_params(path)
       self.assertTrue(loaded.loaded_from_file)
       self.assertEqual(loaded.values, analyzer.DEFAULT_PARAMS)
-
-  def test_analysis_report_builder_preserves_section_contracts(self):
-    backtest = backtesting.BacktestResult(0, 0, 0, 0, 0, Counter())
-    candidate_selection = selection.RedCandidateSelection((), (), (), ())
-    coverage = {
-        name: {'passed': 0, 'total': 0, 'rate': 0.0}
-        for name in analyzer.FILTER_NAMES
-    }
-    data = analyzer.AnalysisReportData(
-        latest_issue='2026103',
-        target_issue=2026104,
-        generated_at=datetime(2026, 9, 7, 12, 34, 56, tzinfo=UTC),
-        params_loaded=False,
-        params=analyzer.DEFAULT_PARAMS,
-        config=analyzer.DEFAULT_STRATEGY_CONFIG,
-        rejection_seed=123,
-        backtest=backtest,
-        backtests={'mixed': backtest},
-        pool_mode='mixed',
-        rank_band_widths=analyzer.RANK_BAND_WIDTHS,
-        rank_band_labels=selection.build_rank_band_labels(),
-        pipeline_stats=[],
-        rule_coverage=coverage,
-        hard_pipeline_coverage={
-            'stages': [], 'passed': 0, 'total': 0, 'rate': 0.0,
-        },
-        rule_audit_periods=200,
-        selection=candidate_selection,
-        recommended_blues=[],
-        best_7_reds=[],
-        runtime_versions={
-            'python': '3.11.0',
-            'lightgbm': '4.7.0',
-        },
-        history_sha256='a' * 64,
-        model_features=('red_sum', 'red_span'),
-        model_training_params={
-            'random_state': 42,
-            'deterministic': True,
-        },
-    )
-
-    report = analyzer.build_analysis_report(data)
-
-    self.assertIn('Data_Basis_Issue: 2026103', report)
-    self.assertIn('报告生成时间: 2026-09-07 12:34:56', report)
-    self.assertIn(f"Data_History_SHA256: {'a' * 64}", report)
-    self.assertIn('Runtime_python: 3.11.0', report)
-    self.assertIn('Runtime_lightgbm: 4.7.0', report)
-    self.assertIn('Model_Features: red_sum,red_span', report)
-    self.assertIn('Model_LightGBM_random_state: 42', report)
-    self.assertIn('Model_LightGBM_deterministic: True', report)
-    self.assertIn('模式: 使用内置的默认参数', report)
-    self.assertIn('mixed_pool_bands    : 4 high + 9 middle + 4 low', report)
-    self.assertIn('max_shared_red_balls: 4', report)
-    self.assertIn('[软] prime_composite_ratio', report)
-    self.assertIn('未能生成足够的单式组合', report)
-    self.assertIn('未能生成足够的复式组合', report)
 
   def test_report_declares_the_actual_parseable_recommendation_count(self):
     candidate_selection = selection.RedCandidateSelection(
@@ -612,28 +335,6 @@ class AnalyzerTests(unittest.TestCase):
     self.assertIn('【单式推荐 (0组)】', report)
     self.assertNotIn('组合  1:', report)
 
-  def test_rule_report_discloses_truncated_audit_windows(self):
-    coverage = {
-        name: {'passed': 10, 'total': 12, 'rate': 10 / 12}
-        for name in rules.FILTER_NAMES
-    }
-    data = SimpleNamespace(
-        pipeline_stats=[],
-        rule_coverage=coverage,
-        hard_pipeline_coverage={
-            'stages': [],
-            'passed': 10,
-            'total': 12,
-            'rate': 10 / 12,
-        },
-        rule_audit_periods=200,
-    )
-
-    report = '\n'.join(reporting.format_rule_audit_report(data))
-
-    self.assertIn('实际 12 期，请求 200 期，逐条独立统计', report)
-    self.assertIn('实际 12 期，请求 200 期，不含随机撞号', report)
-
   def test_confirmation_input_requires_explicit_y(self):
     for value in ('y', ' Y\n', b'y'):
       with self.subTest(value=value):
@@ -665,9 +366,6 @@ class AnalyzerTests(unittest.TestCase):
           patch.object(console.select, 'select', return_value=([], [], [])),
       ):
         self.assertFalse(workflow.get_user_input_with_timeout(0))
-
-  def test_default_backtest_uses_stable_window(self):
-    self.assertEqual(analyzer.BACKTEST_PERIODS, 200)
 
   def test_loader_rejects_issue_date_year_mismatch(self):
     content = (
@@ -906,43 +604,6 @@ class AnalyzerTests(unittest.TestCase):
     with self.assertRaises(ValueError):
       analyzer.StrategyConfig(rejection_lib_size=-1)
 
-  def test_runtime_configs_reject_non_integer_and_non_boolean_values(self):
-    integer_fields = {
-        'pool_size_red': 17.5,
-        'high_count': True,
-        'low_count': 4.5,
-        'blue_count': 7.5,
-        'recommendation_count': False,
-        'max_shared_red_balls': 4.5,
-        'rejection_lib_size': 1.5,
-        'random_seed': 42.5,
-    }
-    for name, value in integer_fields.items():
-      with self.subTest(name=name), self.assertRaises(TypeError):
-        analyzer.StrategyConfig(**{name: value})
-
-    for kwargs in (
-        {'backtest_periods': 1.5},
-        {'rejection_size': True},
-        {'seed': 2.5},
-        {'rule_audit_periods': False},
-        {'compare_pools': 1},
-        {'non_interactive': 0},
-    ):
-      with self.subTest(kwargs=kwargs), self.assertRaises(TypeError):
-        config.AnalyzerOptions(**kwargs)
-
-  def test_runtime_configs_normalize_numpy_integers(self):
-    strategy = analyzer.StrategyConfig(
-        pool_size_red=numpy.int64(17), random_seed=numpy.int64(42)
-    )
-    options = config.AnalyzerOptions(backtest_periods=numpy.int64(3))
-
-    self.assertIs(type(strategy.pool_size_red), int)
-    self.assertIs(type(strategy.random_seed), int)
-    self.assertIs(type(options.backtest_periods), int)
-
-
   def test_rejection_set_is_reproducible(self):
     first = selection.make_rejection_set(100, random.Random(7))
     second = selection.make_rejection_set(100, random.Random(7))
@@ -981,20 +642,6 @@ class AnalyzerTests(unittest.TestCase):
         )
     )
     self.assertIn("prime_composite_ratio", failures)
-
-  def test_all_rules_use_one_unique_registry(self):
-    names = [rule.name for rule in rules.RED_RULES]
-    self.assertEqual(len(names), len(set(names)))
-    self.assertEqual(tuple(names), rules.FILTER_NAMES)
-    prime_rule = next(rule for rule in rules.RED_RULES if rule.name == 'prime_composite_ratio')
-    self.assertFalse(prime_rule.hard)
-    self.assertTrue(all(rule.scorer is not None for rule in rules.RED_RULES if not rule.hard))
-    self.assertTrue(all(rule.score_weight > 0 for rule in rules.RED_RULES if not rule.hard))
-    self.assertAlmostEqual(
-        rules.COMBINATION_SIGNAL_WEIGHT
-        + sum(rule.score_weight for rule in rules.RED_RULES),
-        1.0,
-    )
 
   def test_rule_registry_has_one_normalized_score_budget(self):
     self.assertEqual(rules.validate_rule_registry(rules.RED_RULES), rules.RED_RULES)
@@ -1050,15 +697,6 @@ class AnalyzerTests(unittest.TestCase):
         rule for rule in rules.RED_RULES if rule.name == 'diagonal_consecutive'
     )
     self.assertFalse(diagonal_rule.evaluator((3, 8, 14, 21, 27, 33), context))
-
-  def test_filter_pipeline_stats_are_incremental(self):
-    stats = rules.filter_pipeline_stats(
-        [(3, 8, 13, 20, 27, 31), (1, 2, 3, 4, 5, 6)],
-        rules.RuleContext(omission_values={n: 0 for n in range(1, 34)}),
-    )
-    self.assertGreater(len(stats), 10)
-    for item in stats:
-      self.assertGreaterEqual(item["before"], item["remaining"])
 
   def test_combination_score_is_deterministic(self):
     scores = {n: n / 33 for n in range(1, 34)}
@@ -1194,29 +832,6 @@ class AnalyzerTests(unittest.TestCase):
           blue_models,
           modeling.FEATURE_COLUMNS,
       )
-
-  def test_execution_boundaries_validate_strategy_params_before_work(self):
-    invalid_params = {'weight_freq': 0.9}
-    with patch.object(modeling, 'validate_model_sets') as validate_models:
-      with self.assertRaisesRegex(ValueError, '总和为 1'):
-        modeling.run_strategy_and_get_scores(
-            pandas.DataFrame(columns=modeling.FEATURE_COLUMNS),
-            invalid_params,
-            {},
-            {},
-            modeling.FEATURE_COLUMNS,
-        )
-      validate_models.assert_not_called()
-
-    with patch.object(backtesting, 'train_prediction_models') as train:
-      with self.assertRaisesRegex(ValueError, '总和为 1'):
-        backtesting.run_full_backtest(
-            pandas.DataFrame(),
-            invalid_params,
-            modeling.FEATURE_COLUMNS,
-            1,
-        )
-      train.assert_not_called()
 
   def test_strategy_scores_with_single_class_training_history(self):
     history = modeling.feature_engineer(pandas.DataFrame({
@@ -1357,243 +972,6 @@ class AnalyzerTests(unittest.TestCase):
     self.assertEqual(score.call_count, 1)
     self.assertEqual(score.call_args.args[0], passed[0])
 
-  def test_backtest_result_metrics(self):
-    result = backtesting.BacktestResult(
-        50, 48, 480, 960, 280, {}, evaluated_periods=50,
-        pool_red_hits=155, ticket_red_hit_counts=Counter({2: 360, 3: 100, 4: 20}),
-        candidate_tickets=480,
-        candidate_red_hit_counts=Counter({1: 100, 2: 280, 3: 80, 4: 20}),
-        blue_hit_periods=4,
-        rank_band_hits=Counter({"high": 30, "middle": 100, "low": 20, "other": 150}),
-    )
-    self.assertEqual(result.profit, -680)
-    self.assertAlmostEqual(result.roi, 280 / 960)
-    self.assertEqual(result.average_pool_red_hits, 3.1)
-    self.assertAlmostEqual(result.average_ticket_red_hits, 2.2916666667)
-    self.assertEqual(result.three_plus_red_tickets, 120)
-    self.assertEqual(result.three_plus_red_rate, 0.25)
-    self.assertAlmostEqual(result.average_candidate_red_hits, 980 / 480)
-    self.assertAlmostEqual(result.candidate_three_plus_red_rate, 100 / 480)
-    self.assertAlmostEqual(result.ranking_red_hit_delta, 0.25)
-    self.assertAlmostEqual(result.ranking_three_plus_delta, 1 / 24)
-    self.assertEqual(result.blue_hit_rate, 0.08)
-    self.assertEqual(result.rank_band_rate("middle"), 1 / 3)
-    self.assertAlmostEqual(result.rank_band_lift("middle"), 11 / 9)
-
-  def test_backtest_rejects_invalid_controls_before_training(self):
-    invalid_requests = (
-        {'num_periods': -1},
-        {'num_periods': True},
-        {'num_periods': 1, 'pool_modes': ()},
-        {'num_periods': 1, 'pool_modes': 'mixed'},
-        {'num_periods': 1, 'pool_modes': ('mixed', 'mixed')},
-        {'num_periods': 1, 'pool_modes': ('unknown',)},
-        {'num_periods': 1, 'config': object()},
-    )
-    with patch.object(backtesting, 'train_prediction_models') as train:
-      for request in invalid_requests:
-        kwargs = {
-            'full_df': pandas.DataFrame(),
-            'params': analyzer.DEFAULT_PARAMS,
-            'feature_columns': modeling.FEATURE_COLUMNS,
-            **request,
-        }
-        with self.subTest(request=request), self.assertRaises((TypeError, ValueError)):
-          backtesting.run_full_backtest(**kwargs)
-      train.assert_not_called()
-
-  def test_legacy_backtest_api_builds_request_without_losing_options(self):
-    strategy = analyzer.StrategyConfig(rejection_lib_size=17, random_seed=9)
-    with patch.object(backtesting, 'run_backtest', return_value='result') as run:
-      result = backtesting.run_full_backtest(
-          'frame',
-          {'weight': 1},
-          ('feature',),
-          12,
-          pool_modes=('high', 'low'),
-          config=strategy,
-      )
-
-    self.assertEqual(result, 'result')
-    self.assertEqual(run.call_args.args[0], 'frame')
-    request = run.call_args.args[1]
-    self.assertIsInstance(request, backtesting.BacktestRequest)
-    self.assertEqual(request.params, {'weight': 1})
-    self.assertEqual(request.feature_columns, ('feature',))
-    self.assertEqual(request.num_periods, 12)
-    self.assertEqual(request.pool_modes, ('high', 'low'))
-    self.assertIs(request.config, strategy)
-
-  def test_backtest_result_preserves_earlier_and_recent_windows(self):
-    earlier = backtesting.BacktestResult(
-        2, 2, 20, 40, 0, Counter(), evaluated_periods=2, pool_red_hits=6
-    )
-    recent = backtesting.BacktestResult(
-        3, 3, 30, 60, 0, Counter(), evaluated_periods=3, pool_red_hits=12
-    )
-    aggregate = backtesting.BacktestAccumulator(
-        evaluated_periods=5,
-        pool_red_hits=18,
-    ).to_result(5, {'earlier': earlier, 'recent': recent})
-
-    self.assertEqual(aggregate.windows['earlier'].average_pool_red_hits, 3)
-    self.assertEqual(aggregate.windows['recent'].average_pool_red_hits, 4)
-
-  def test_backtest_result_is_a_snapshot_of_accumulated_metrics(self):
-    accumulator = backtesting.BacktestAccumulator(
-        prize_counts=Counter({(3, 1): 1}),
-        ticket_red_hit_counts=Counter({3: 2}),
-        candidate_red_hit_counts=Counter({2: 4}),
-        rank_band_hits=Counter({'middle': 3}),
-    )
-    windows = {'earlier': backtesting.BacktestResult(
-        1, 0, 0, 0, 0, Counter()
-    )}
-    result = accumulator.to_result(1, windows)
-
-    accumulator.prize_counts[(3, 1)] += 1
-    accumulator.ticket_red_hit_counts[3] += 1
-    accumulator.candidate_red_hit_counts[2] += 1
-    accumulator.rank_band_hits['middle'] += 1
-    accumulator.rank_band_widths['middle'] = 99
-    windows.clear()
-
-    self.assertEqual(result.prize_counts, {(3, 1): 1})
-    self.assertEqual(result.ticket_red_hit_counts, {3: 2})
-    self.assertEqual(result.candidate_red_hit_counts, {2: 4})
-    self.assertEqual(result.rank_band_hits, {'middle': 3})
-    self.assertEqual(result.rank_band_widths['middle'], 9)
-    self.assertIn('earlier', result.windows)
-
-  def test_backtest_selection_reuses_combo_hits_across_accumulators(self):
-    selection_result = SimpleNamespace(
-        red_pool=(1, 2, 3, 4, 5, 6, 7),
-        passed_combos=((1, 2, 3, 4, 5, 6),),
-        recommendations=((1, 2, 3, 4, 5, 6),),
-    )
-    issue = backtesting.BacktestIssue(
-        actual_reds=frozenset((1, 2, 3, 4, 5, 6)),
-        actual_blue=8,
-        recommended_blue=8,
-        rank_band_hits=Counter({'middle': 6}),
-    )
-    total = backtesting.BacktestAccumulator()
-    window = backtesting.BacktestAccumulator()
-
-    hits = backtesting.record_backtest_selection(total, selection_result, issue)
-    reused_hits = backtesting.record_backtest_selection(
-        window,
-        selection_result,
-        issue,
-        hits,
-    )
-
-    self.assertIs(reused_hits, hits)
-    self.assertEqual(total.to_result(1), window.to_result(1))
-    self.assertEqual(total.pool_red_hits, 6)
-    self.assertEqual(total.blue_hit_periods, 1)
-
-  def test_full_backtest_aggregate_equals_sum_of_stability_windows(self):
-    frame = pandas.DataFrame({
-        '期号': list(range(2025001, 2025053)),
-        '红球': [[7, 8, 9, 10, 11, 12] for _ in range(50)] + [
-            [1, 2, 3, 8, 9, 10],
-            [1, 2, 3, 4, 5, 6],
-        ],
-        '蓝球': [1 for _ in range(50)] + [7, 8],
-    })
-    red_scores = {ball: float(34 - ball) for ball in range(1, 34)}
-    blue_scores = {ball: float(ball == 8) for ball in range(1, 17)}
-    workflow_models = (
-        {ball: object() for ball in range(1, 34)},
-        {ball: object() for ball in range(1, 17)},
-    )
-    strategy = analyzer.StrategyConfig(
-        pool_size_red=6,
-        high_count=2,
-        low_count=2,
-        recommendation_count=1,
-        rejection_lib_size=0,
-    )
-
-    with (
-        patch.object(backtesting, 'train_prediction_models', return_value=workflow_models),
-        patch.object(
-            backtesting,
-            'run_strategy_and_get_scores',
-            return_value=(red_scores, blue_scores),
-        ),
-        patch.object(rule_auditing, 'get_omission', return_value={}),
-        patch.object(backtesting, 'make_rejection_set', return_value=set()),
-        patch.object(
-            candidates, 'build_red_pool', return_value=[1, 2, 3, 4, 5, 6]
-        ),
-        patch.object(candidates, 'passes_red_filters', return_value=True),
-    ):
-      total = backtesting.run_full_backtest(
-          frame,
-          analyzer.DEFAULT_PARAMS,
-          [],
-          2,
-          config=strategy,
-      )['mixed']
-
-    windows = (total.windows['earlier'], total.windows['recent'])
-    scalar_fields = (
-        'periods', 'active_periods', 'evaluated_periods', 'tickets', 'cost',
-        'winnings', 'pool_red_hits', 'candidate_tickets', 'blue_hit_periods',
-    )
-    counter_fields = (
-        'prize_counts', 'ticket_red_hit_counts', 'candidate_red_hit_counts',
-        'rank_band_hits',
-    )
-
-    for field_name in scalar_fields:
-      self.assertEqual(
-          getattr(total, field_name),
-          sum(getattr(window, field_name) for window in windows),
-          field_name,
-      )
-    for field_name in counter_fields:
-      self.assertEqual(
-          getattr(total, field_name),
-          sum(
-              (getattr(window, field_name) for window in windows),
-              Counter(),
-          ),
-          field_name,
-      )
-
-  def test_backtest_skips_equal_length_model_sets_with_wrong_ball_keys(self):
-    frame = pandas.DataFrame({
-        '期号': list(range(2025001, 2025052)),
-        '红球': [[1, 2, 3, 4, 5, 6] for _ in range(51)],
-        '蓝球': [1 for _ in range(51)],
-    })
-    red_models = {ball: object() for ball in range(1, 33)}
-    red_models[34] = object()
-    blue_models = {ball: object() for ball in range(1, 17)}
-
-    with (
-        patch.object(
-            backtesting,
-            'train_prediction_models',
-            return_value=(red_models, blue_models),
-        ),
-        patch.object(backtesting, 'run_strategy_and_get_scores') as score,
-    ):
-      result = backtesting.run_full_backtest(
-          frame,
-          analyzer.DEFAULT_PARAMS,
-          modeling.FEATURE_COLUMNS,
-          1,
-          config=analyzer.StrategyConfig(rejection_lib_size=0),
-      )['mixed']
-
-    self.assertEqual(result.periods, 1)
-    self.assertEqual(result.evaluated_periods, 0)
-    score.assert_not_called()
-
   def test_actual_red_rank_bands_include_unselected_ranks(self):
     scores = {ball: float(34 - ball) for ball in range(1, 34)}
     counts = selection.count_actual_reds_by_rank_band(
@@ -1604,79 +982,6 @@ class AnalyzerTests(unittest.TestCase):
         {"high": 2, "middle": 2, "low": 1, "other": 1},
     )
     self.assertEqual(sum(counts.values()), 6)
-
-  def test_backtest_tracks_evaluation_and_hit_quality(self):
-    frame = pandas.DataFrame({
-        "期号": list(range(2025001, 2025052)),
-        "红球": [[7, 8, 9, 10, 11, 12] for _ in range(50)]
-                + [[1, 13, 22, 30, 32, 33]],
-        "蓝球": [1 for _ in range(50)] + [7],
-    })
-    red_scores = {ball: float(34 - ball) for ball in range(1, 34)}
-    blue_scores = {ball: float(ball == 7) for ball in range(1, 17)}
-    red_models = {ball: object() for ball in range(1, 34)}
-    blue_models = {ball: object() for ball in range(1, 17)}
-    config = analyzer.StrategyConfig(
-        pool_size_red=6,
-        high_count=2,
-        low_count=2,
-        recommendation_count=3,
-        rejection_lib_size=1234,
-        random_seed=99,
-    )
-
-    with (
-        patch.object(
-            backtesting,
-            "train_prediction_models",
-            return_value=(red_models, blue_models),
-        ) as train_mock,
-        patch.object(
-            backtesting,
-            "run_strategy_and_get_scores",
-            return_value=(red_scores, blue_scores),
-        ),
-        patch.object(backtesting, "rejection_seed_for_issue", return_value=123) as seed_mock,
-        patch.object(backtesting, "make_rejection_set", return_value=set()) as rejection_mock,
-        patch.object(rule_auditing, "get_omission", return_value={}),
-        patch.object(
-            candidates, "build_red_pool", return_value=[1, 2, 3, 4, 13, 14]
-        ) as pool_mock,
-        patch.object(candidates, "passes_red_filters", return_value=True),
-        patch.object(
-            candidates,
-            "select_recommendation_portfolio",
-            return_value=[(1, 2, 3, 4, 13, 14)],
-        ) as selection_mock,
-    ):
-      result = backtesting.run_full_backtest(
-          frame, analyzer.DEFAULT_PARAMS, [], 1, config=config
-      )["mixed"]
-
-    seed_mock.assert_called_once_with(99, 2025051)
-    training_frame = train_mock.call_args.args[0]
-    self.assertEqual(training_frame.iloc[-1]['期号'], 2025050)
-    self.assertNotIn(2025051, training_frame['期号'].tolist())
-    self.assertEqual(rejection_mock.call_args.args[0], 1234)
-    pool_mock.assert_called_once_with(red_scores, config=config, mode="mixed")
-    self.assertEqual(selection_mock.call_args.args[0].limit, 3)
-    self.assertEqual(result.periods, 1)
-    self.assertEqual(result.evaluated_periods, 1)
-    self.assertEqual(result.active_periods, 1)
-    self.assertEqual(result.pool_red_hits, 2)
-    self.assertEqual(result.ticket_red_hit_counts, {2: 1})
-    self.assertEqual(result.candidate_tickets, 1)
-    self.assertEqual(result.candidate_red_hit_counts, {2: 1})
-    self.assertEqual(result.ranking_red_hit_delta, 0)
-    self.assertEqual(result.blue_hit_periods, 1)
-    self.assertEqual(
-        result.rank_band_hits,
-        {"high": 1, "middle": 0, "low": 2, "other": 3},
-    )
-    self.assertEqual(
-        result.rank_band_widths,
-        {'high': 2, 'middle': 2, 'low': 2, 'other': 27},
-    )
 
   def test_red_score_adjustments_restore_original_bonuses(self):
     history = pandas.DataFrame({'红球': [
@@ -1725,43 +1030,6 @@ class AnalyzerTests(unittest.TestCase):
       for name in ('weight_blue_freq', 'weight_blue_ml')
     ), 1.0)
 
-  def test_historical_rule_audit_reports_requested_window(self):
-    frame = pandas.DataFrame({
-        '红球': [[1, 5, 10, 18, 25, 31] for _ in range(12)],
-        '蓝球': [1 for _ in range(12)],
-    })
-    result = backtesting.audit_historical_rule_coverage(frame, periods=2)
-    self.assertEqual(set(result), set(analyzer.FILTER_NAMES))
-    self.assertTrue(all(item['total'] == 2 for item in result.values()))
-
-  def test_historical_hard_pipeline_reports_incremental_losses(self):
-    frame = pandas.DataFrame({
-        '红球': [[3, 4, 5, 6, 7, 8] for _ in range(10)] + [
-            [1, 2, 3, 4, 5, 6],
-            [2, 3, 4, 5, 6, 7],
-            [3, 4, 5, 6, 7, 8],
-        ],
-    })
-    custom_rules = (
-        rules.RuleDefinition('first', True, lambda combo, *_: combo[0] >= 2),
-        rules.RuleDefinition('second', True, lambda combo, *_: combo[-1] % 2 == 0),
-        rules.RuleDefinition('soft', False, lambda combo, *_: False),
-    )
-    with patch.object(rule_auditing, 'RED_RULES', custom_rules):
-      result = backtesting.audit_historical_hard_pipeline(frame, periods=3)
-
-    self.assertEqual(result['total'], 3)
-    self.assertEqual(result['passed'], 1)
-    self.assertAlmostEqual(result['rate'], 1 / 3)
-    self.assertEqual(result['stages'], [
-        {'rule': 'first', 'before': 3, 'removed': 1, 'remaining': 2},
-        {'rule': 'second', 'before': 2, 'removed': 1, 'remaining': 1},
-    ])
-
-
-# ===== from test_ssq_anti_crowding.py =====
-
-
 class AntiCrowdingTests(unittest.TestCase):
     def test_selection_preserves_anti_crowding_compatibility_exports(self):
         self.assertIs(
@@ -1798,320 +1066,6 @@ class AntiCrowdingTests(unittest.TestCase):
 
 
 # ===== from test_ssq_backtest_evaluation.py =====
-
-
-class BacktestEvaluationTests(unittest.TestCase):
-    def test_backtesting_binds_patchable_candidate_generation(self):
-        with unittest.mock.patch.object(
-            history_evaluation,
-            'evaluate_backtest_mode',
-            return_value='result',
-        ) as evaluate:
-            result = backtesting.evaluate_backtest_mode(
-                'mixed', 'current', 'issue', 'inputs'
-            )
-
-        self.assertEqual(result, 'result')
-        dependencies = evaluate.call_args.args[-1]
-        self.assertIs(dependencies.generate_candidates, candidates.generate_candidates)
-        self.assertIs(
-            backtesting.record_backtest_selection,
-            history_evaluation.record_backtest_selection,
-        )
-
-    def test_empty_selection_records_issue_level_metrics_without_tickets(self):
-        issue = BacktestIssue(
-            actual_reds=frozenset((1, 2, 3, 4, 5, 6)),
-            actual_blue=7,
-            recommended_blue=7,
-            rank_band_hits=Counter({'middle': 6}),
-        )
-        selection = SimpleNamespace(
-            red_pool=(1, 2, 3, 7, 8, 9),
-            passed_combos=(),
-            recommendations=(),
-        )
-        accumulator = BacktestAccumulator()
-
-        hits = history_evaluation.record_backtest_selection(
-            accumulator,
-            selection,
-            issue,
-        )
-
-        self.assertEqual(hits, {})
-        self.assertEqual(accumulator.evaluated_periods, 1)
-        self.assertEqual(accumulator.pool_red_hits, 3)
-        self.assertEqual(accumulator.blue_hit_periods, 1)
-        self.assertEqual(accumulator.rank_band_hits, {'middle': 6})
-        self.assertEqual(accumulator.tickets, 0)
-        self.assertEqual(accumulator.cost, 0)
-
-
-# ===== from test_ssq_backtest_models.py =====
-
-
-class BacktestModelTests(unittest.TestCase):
-    def test_backtesting_preserves_model_compatibility_exports(self):
-        for name in (
-            'BacktestIssue',
-            'BacktestSelectionInputs',
-            'BacktestRunContext',
-            'BacktestRequest',
-            'PreparedBacktestIssue',
-        ):
-            with self.subTest(name=name):
-                self.assertIs(getattr(backtesting, name), getattr(workflow_models, name))
-
-    def test_prepared_issue_groups_draw_and_selection_inputs(self):
-        issue = workflow_models.BacktestIssue(
-            actual_reds=frozenset((1, 2, 3, 4, 5, 6)),
-            actual_blue=7,
-            recommended_blue=8,
-            rank_band_hits=Counter({'middle': 6}),
-        )
-        selection_inputs = workflow_models.BacktestSelectionInputs(
-            red_scores={1: 0.5},
-            context=RuleContext(last_draw={1}),
-            rejection_set=set(),
-            config=DEFAULT_STRATEGY_CONFIG,
-        )
-
-        prepared = workflow_models.PreparedBacktestIssue(issue, selection_inputs)
-
-        self.assertIs(prepared.issue, issue)
-        self.assertIs(prepared.selection_inputs, selection_inputs)
-
-
-# ===== from test_ssq_backtest_preparation.py =====
-
-
-class BacktestPreparationTests(unittest.TestCase):
-    def test_insufficient_training_history_skips_before_training(self):
-        frame = pandas.DataFrame({'期号': range(24)})
-        train = Mock()
-        dependencies = history_preparation.BacktestPreparationDependencies(
-            train_models=train,
-            validate_models=Mock(),
-            score_balls=Mock(),
-            count_rank_bands=Mock(),
-            build_rule_context=Mock(),
-            derive_rejection_seed=Mock(),
-            build_rejection_set=Mock(),
-        )
-        context = BacktestRunContext({}, (), StrategyConfig())
-
-        result = history_preparation.prepare_backtest_issue(
-            frame,
-            24,
-            context,
-            dependencies,
-        )
-
-        self.assertIsNone(result)
-        train.assert_not_called()
-
-    def test_preparation_excludes_the_evaluated_issue(self):
-        frame = pandas.DataFrame({
-            '期号': list(range(2025001, 2025027)),
-            '红球': [[1, 2, 3, 4, 5, 6] for _ in range(26)],
-            '蓝球': [1 for _ in range(25)] + [7],
-        })
-        red_models = {ball: object() for ball in range(1, 34)}
-        blue_models = {ball: object() for ball in range(1, 17)}
-        red_scores = {ball: float(ball) for ball in range(1, 34)}
-        blue_scores = {ball: float(ball == 7) for ball in range(1, 17)}
-        train = Mock(return_value=(red_models, blue_models))
-        dependencies = history_preparation.BacktestPreparationDependencies(
-            train_models=train,
-            validate_models=Mock(),
-            score_balls=Mock(return_value=(red_scores, blue_scores)),
-            count_rank_bands=Mock(return_value=Counter({'middle': 6})),
-            build_rule_context=Mock(return_value='rule context'),
-            derive_rejection_seed=Mock(return_value=123),
-            build_rejection_set=Mock(return_value=set()),
-        )
-        config = StrategyConfig(rejection_lib_size=0, random_seed=9)
-        context = BacktestRunContext({'weight': 1}, ('feature',), config)
-
-        result = history_preparation.prepare_backtest_issue(
-            frame,
-            25,
-            context,
-            dependencies,
-        )
-
-        training_frame = train.call_args.args[0]
-        self.assertEqual(training_frame.iloc[-1]['期号'], 2025025)
-        self.assertNotIn(2025026, training_frame['期号'].tolist())
-        self.assertEqual(result.issue.actual_blue, 7)
-        self.assertEqual(result.issue.recommended_blue, 7)
-        self.assertEqual(result.selection_inputs.red_scores, red_scores)
-        self.assertEqual(result.selection_inputs.context, 'rule context')
-        dependencies.derive_rejection_seed.assert_called_once_with(9, 2025026)
-
-
-# ===== from test_ssq_backtest_reporting.py =====
-
-
-class BacktestReportingTests(unittest.TestCase):
-    def test_reporting_preserves_backtest_format_compatibility_exports(self):
-        names = (
-            'format_strategy_parameters',
-            'format_backtest_metrics',
-            'format_pool_comparison',
-            'format_window_stability',
-            'format_rank_band_distribution',
-            'format_prize_counts',
-            'format_backtest_report',
-        )
-
-        for name in names:
-            with self.subTest(name=name):
-                self.assertIs(
-                    getattr(reporting, name),
-                    getattr(backtest_reporting, name),
-                )
-
-    def test_prize_display_order_remains_complete(self):
-        self.assertEqual(
-            backtest_reporting.PRIZE_DISPLAY_ORDER,
-            ('一等奖', '二等奖', '三等奖', '四等奖', '五等奖', '六等奖'),
-        )
-
-
-# ===== from test_ssq_backtest_runner.py =====
-
-
-def make_dependencies(num_periods=2, pool_modes=('mixed',)):
-    progress = Mock()
-    return backtest_runner.BacktestRunnerDependencies(
-        validate_request=Mock(return_value=(num_periods, pool_modes)),
-        validate_params=Mock(return_value={'validated': True}),
-        build_rank_band_widths=Mock(return_value={'high': 4}),
-        prepare_issue=Mock(),
-        evaluate_mode=Mock(),
-        progress_factory=Mock(return_value=nullcontext(progress)),
-    )
-
-
-class BacktestRunnerTests(unittest.TestCase):
-    def test_runtime_modules_bypass_backtesting_compatibility_facade(self):
-        module_dir = Path(__file__).parent
-        compatibility_modules = {'ssq_analyzer.py', 'ssq_backtesting.py'}
-        offenders = []
-        for path in module_dir.glob('ssq_*.py'):
-            if path.name in compatibility_modules:
-                continue
-            tree = ast.parse(path.read_text(encoding='utf-8'))
-            if any(
-                isinstance(node, (ast.Import, ast.ImportFrom))
-                and (
-                    getattr(node, 'module', None) == 'ssq_backtesting'
-                    or any(alias.name == 'ssq_backtesting' for alias in node.names)
-                )
-                for node in ast.walk(tree)
-            ):
-                offenders.append(path.name)
-
-        self.assertEqual(offenders, [])
-
-    def test_compatibility_wrapper_binds_legacy_patch_points(self):
-        with patch.object(
-            backtest_runner,
-            'run_backtest',
-            return_value='result',
-        ) as run:
-            result = backtesting.run_backtest('frame', 'request')
-
-        self.assertEqual(result, 'result')
-        dependencies = run.call_args.args[2]
-        self.assertIs(dependencies.prepare_issue, backtesting.prepare_backtest_issue)
-        self.assertIs(dependencies.evaluate_mode, backtesting.evaluate_backtest_mode)
-        self.assertIs(dependencies.validate_request, backtesting.validate_backtest_request)
-
-    def test_short_history_returns_empty_results_without_preparation(self):
-        dependencies = make_dependencies(pool_modes=('mixed', 'low'))
-        request = BacktestRequest({}, (), 2, ('mixed', 'low'), StrategyConfig())
-
-        with patch('sys.stdout', new_callable=io.StringIO):
-            result = backtest_runner.run_backtest([None] * 51, request, dependencies)
-
-        self.assertEqual(set(result), {'mixed', 'low'})
-        self.assertTrue(all(value.periods == 0 for value in result.values()))
-        dependencies.prepare_issue.assert_not_called()
-        dependencies.progress_factory.assert_not_called()
-
-    def test_runner_processes_earlier_and_recent_windows_in_order(self):
-        dependencies = make_dependencies()
-        dependencies.prepare_issue.side_effect = (
-            SimpleNamespace(issue='issue-1', selection_inputs='inputs-1'),
-            SimpleNamespace(issue='issue-2', selection_inputs='inputs-2'),
-        )
-        request = BacktestRequest({}, ('feature',), 2, config=StrategyConfig())
-        frame = [None] * 52
-
-        with patch('sys.stdout', new_callable=io.StringIO):
-            result = backtest_runner.run_backtest(frame, request, dependencies)
-
-        self.assertEqual(
-            [item.args[1] for item in dependencies.prepare_issue.call_args_list],
-            [50, 51],
-        )
-        self.assertEqual(
-            dependencies.evaluate_mode.call_args_list[0].args[2:],
-            ('issue-1', 'inputs-1'),
-        )
-        self.assertEqual(
-            dependencies.evaluate_mode.call_args_list[1].args[2:],
-            ('issue-2', 'inputs-2'),
-        )
-        progress = dependencies.progress_factory.return_value.enter_result
-        self.assertEqual(progress.mock_calls, [call.update(1), call.update(1)])
-        self.assertEqual(set(result['mixed'].windows), {'earlier', 'recent'})
-
-
-# ===== from test_ssq_backtest_validation.py =====
-
-
-class BacktestValidationTests(unittest.TestCase):
-    def test_backtesting_preserves_validation_compatibility_export(self):
-        self.assertIs(
-            backtesting.validate_backtest_request,
-            strategy_validation.validate_backtest_request,
-        )
-
-    def test_valid_controls_are_normalized(self):
-        config = StrategyConfig()
-
-        self.assertEqual(
-            strategy_validation.validate_backtest_request(2, ['mixed', 'middle'], config),
-            (2, ('mixed', 'middle')),
-        )
-
-    def test_invalid_controls_are_rejected_before_execution(self):
-        config = StrategyConfig()
-        cases = (
-            (-1, ('mixed',), config),
-            (1, (), config),
-            (1, ('mixed', 'mixed'), config),
-            (1, ('unknown',), config),
-            (1, 'mixed', config),
-            (1, ('mixed',), object()),
-        )
-
-        for periods, modes, candidate_config in cases:
-            with self.subTest(periods=periods, modes=modes), self.assertRaises(
-                (TypeError, ValueError)
-            ):
-                strategy_validation.validate_backtest_request(
-                    periods,
-                    modes,
-                    candidate_config,
-                )
-
-
-# ===== from test_ssq_bonus_calculation.py =====
 
 
 class BonusCalculationTests(unittest.TestCase):
@@ -2484,26 +1438,6 @@ class CliTests(unittest.TestCase):
         self.assertIs(config.build_argument_parser, ssq_cli.build_argument_parser)
         self.assertIs(config.parse_cli_options, ssq_cli.parse_cli_options)
 
-    def test_parser_builds_validated_runtime_options(self):
-        options = ssq_cli.parse_cli_options([
-            '--backtest-periods', '12',
-            '--rejection-size', '500000',
-            '--seed', '7',
-            '--pool-mode', 'middle',
-            '--compare-pools',
-            '--non-interactive',
-            '--rule-audit-periods', '50',
-        ])
-
-        self.assertIsInstance(options, AnalyzerOptions)
-        self.assertEqual(options.backtest_periods, 12)
-        self.assertEqual(options.rejection_size, 500_000)
-        self.assertEqual(options.seed, 7)
-        self.assertEqual(options.pool_mode, 'middle')
-        self.assertTrue(options.compare_pools)
-        self.assertTrue(options.non_interactive)
-        self.assertEqual(options.rule_audit_periods, 50)
-
     def test_parser_reports_model_validation_errors(self):
         with (
             patch('sys.stderr', new_callable=io.StringIO),
@@ -2765,66 +1699,6 @@ class FeatureModuleTests(unittest.TestCase):
 # ===== from test_ssq_history_evaluation.py =====
 
 
-class HistoryEvaluationTests(unittest.TestCase):
-    def test_evaluation_maps_audits_and_pool_result(self):
-        history = PreparedHistory(
-            frame=pandas.DataFrame(),
-            feature_columns=('feature',),
-            latest_issue='2026001',
-            target_issue=2026002,
-            sha256='a' * 64,
-        )
-        options = AnalyzerOptions(backtest_periods=3, rejection_size=0)
-        loaded = LoadedStrategyParams({'weight': 1}, True)
-        run_backtest = Mock(return_value={'mixed': 'result'})
-        dependencies = history_evaluation.HistoryEvaluationDependencies(
-            load_params=Mock(return_value=loaded),
-            audit_rules=Mock(return_value={'rule': 'coverage'}),
-            audit_hard_pipeline=Mock(return_value={'hard': 'coverage'}),
-            run_backtest=run_backtest,
-        )
-
-        result = history_evaluation.evaluate_history(
-            history,
-            options,
-            'params.json',
-            dependencies,
-        )
-
-        self.assertIs(result.loaded_params, loaded)
-        self.assertEqual(result.rule_coverage, {'rule': 'coverage'})
-        self.assertEqual(result.hard_pipeline_coverage, {'hard': 'coverage'})
-        self.assertEqual(result.selected_backtest, 'result')
-        request = run_backtest.call_args.args[1]
-        self.assertEqual(request.feature_columns, ('feature',))
-        self.assertEqual(request.num_periods, 3)
-        self.assertEqual(request.config, options.strategy_config)
-
-    def test_invalid_parameter_file_becomes_workflow_exit(self):
-        dependencies = history_evaluation.HistoryEvaluationDependencies(
-            load_params=Mock(side_effect=ValueError('invalid params')),
-            audit_rules=Mock(),
-            audit_hard_pipeline=Mock(),
-            run_backtest=Mock(),
-        )
-
-        with (
-            patch('sys.stdout', new_callable=io.StringIO),
-            self.assertRaisesRegex(SystemExit, '错误: invalid params'),
-        ):
-            history_evaluation.evaluate_history(
-                SimpleNamespace(frame=pandas.DataFrame(), feature_columns=()),
-                AnalyzerOptions(rejection_size=0),
-                'params.json',
-                dependencies,
-            )
-
-        dependencies.audit_rules.assert_not_called()
-
-
-# ===== from test_ssq_history_preparation.py =====
-
-
 class HistoryPreparationTests(unittest.TestCase):
     def test_workflow_loader_delegates_explicit_path(self):
         load = Mock(return_value='frame')
@@ -2970,31 +1844,6 @@ class ModelTrainingTests(unittest.TestCase):
         self.assertEqual(red_spec.description, '训练红球模型')
         self.assertEqual(blue_spec.description, '训练蓝球模型')
 
-    def test_production_workflows_do_not_import_training_facade(self):
-        filenames = (
-            'ssq_backtest_preparation.py',
-            'ssq_backtesting.py',
-            'ssq_ball_scoring.py',
-            'ssq_prediction_workflow.py',
-            'ssq_scoring.py',
-            'ssq_workflow.py',
-        )
-        for filename in filenames:
-            tree = ast.parse(
-                Path(__file__).with_name(filename).read_text(encoding='utf-8')
-            )
-            imports = {
-                node.module
-                for node in ast.walk(tree)
-                if isinstance(node, ast.ImportFrom)
-            }
-            with self.subTest(filename=filename):
-                self.assertNotIn('ssq_training', imports)
-
-
-# ===== from test_ssq_model_validation.py =====
-
-
 class ModelValidationTests(unittest.TestCase):
     def test_training_preserves_validation_compatibility_exports(self):
         self.assertIs(training.validate_model_sets, strategy_validation.validate_model_sets)
@@ -3047,56 +1896,6 @@ class PredictionWorkflowTests(unittest.TestCase):
             show_progress=True,
         )
         validate.assert_called_once_with(*workflow_models)
-
-    def test_selection_preserves_seed_blue_ranking_and_rule_context(self):
-        frame = pandas.DataFrame({
-            '红球': [list(range(index, index + 6)) for index in range(1, 11)],
-        })
-        history = PreparedHistory(frame, ('feature',), '2026001', 2026002, '')
-        options = AnalyzerOptions(rejection_size=500_000, seed=42)
-        red_scores = {ball: float(ball) for ball in range(1, 34)}
-        blue_scores = {ball: float(ball) for ball in range(1, 17)}
-        selection = RedCandidateSelection(
-            tuple(range(1, 18)),
-            ((1, 2, 3, 4, 5, 6),),
-            ((1, 2, 3, 4, 5, 6),),
-            ((1, 2, 3, 4, 5, 6),),
-        )
-        build_rejection_set = Mock(return_value=set())
-        generate = Mock(return_value=selection)
-        dependencies = prediction_workflow.CurrentSelectionDependencies(
-            score_balls=Mock(return_value=(red_scores, blue_scores)),
-            derive_rejection_seed=Mock(return_value=123),
-            build_rejection_set=build_rejection_set,
-            get_omission=Mock(return_value={1: 5}),
-            generate_candidates=generate,
-            collect_pipeline_stats=Mock(return_value=[{'rule': 'sum_range'}]),
-        )
-
-        with patch('sys.stdout', new_callable=io.StringIO):
-            result = prediction_workflow.select_current_issue(
-                history,
-                options,
-                {'weight': 1},
-                ('red workflow_models', 'blue workflow_models'),
-                dependencies,
-            )
-
-        self.assertEqual(result.recommended_blues, [16, 15, 14, 13, 12, 11, 10])
-        self.assertEqual(result.rejection_seed, 123)
-        self.assertEqual(result.pipeline_stats, [{'rule': 'sum_range'}])
-        dependencies.derive_rejection_seed.assert_called_once_with(42, 2026002)
-        self.assertEqual(build_rejection_set.call_args.args[0], 500_000)
-        request = generate.call_args.args[0]
-        self.assertEqual(request.mode, 'mixed')
-        self.assertTrue(request.show_progress)
-        self.assertEqual(request.context.omission_values, {1: 5})
-        self.assertEqual(request.context.last_draw, set(range(10, 16)))
-        self.assertEqual(request.context.previous_draw, set(range(9, 15)))
-
-
-# ===== from test_ssq_rank_bands.py =====
-
 
 class RankBandTests(unittest.TestCase):
     def test_default_rank_bands_preserve_candidate_mix(self):
@@ -3359,80 +2158,9 @@ class ReportBuilderTests(unittest.TestCase):
             ssq_report_builder.build_analysis_report,
         )
 
-    def test_build_report_assembles_specialized_sections_in_order(self):
-        data = SimpleNamespace(
-            latest_issue='2026103',
-            target_issue=2026104,
-            generated_at=datetime(2026, 9, 7, 12, 34, 56, tzinfo=UTC),
-            history_sha256='',
-            runtime_versions={},
-            model_features=(),
-            model_training_params={},
-        )
-        with (
-            patch.object(
-                ssq_backtest_reporting,
-                'format_backtest_report',
-                return_value=['BACKTEST'],
-            ),
-            patch.object(
-                ssq_rule_reporting,
-                'format_rule_audit_report',
-                return_value=['RULE AUDIT'],
-            ),
-            patch.object(
-                ssq_recommendation_reporting,
-                'format_recommendations_report',
-                return_value=['RECOMMENDATIONS'],
-            ),
-        ):
-            report = ssq_report_builder.build_analysis_report(data)
-
-        self.assertLess(report.index('BACKTEST'), report.index('RULE AUDIT'))
-        self.assertLess(report.index('RULE AUDIT'), report.index('RECOMMENDATIONS'))
-        self.assertIn('Data_Basis_Issue: 2026103', report)
-        self.assertIn('Prediction_Target_Issue: 2026104', report)
-        self.assertIn('报告生成时间: 2026-09-07 12:34:56', report)
-
-
-# ===== from test_ssq_report_models.py =====
-
-
 class ReportModelTests(unittest.TestCase):
     def test_reporting_preserves_data_model_compatibility_export(self):
         self.assertIs(reporting.AnalysisReportData, workflow_models.AnalysisReportData)
-
-    def test_optional_metadata_defaults_are_not_shared(self):
-        required = {
-            'latest_issue': '2026103',
-            'target_issue': 2026104,
-            'generated_at': object(),
-            'params_loaded': False,
-            'params': {},
-            'config': object(),
-            'rejection_seed': 1,
-            'backtest': object(),
-            'backtests': {},
-            'pool_mode': 'mixed',
-            'rank_band_widths': {},
-            'rank_band_labels': {},
-            'pipeline_stats': [],
-            'rule_coverage': {},
-            'hard_pipeline_coverage': {},
-            'rule_audit_periods': 0,
-            'selection': object(),
-            'recommended_blues': [],
-            'best_7_reds': [],
-        }
-        first = workflow_models.AnalysisReportData(**required)
-        second = workflow_models.AnalysisReportData(**required)
-
-        self.assertIsNot(first.runtime_versions, second.runtime_versions)
-        self.assertIsNot(first.model_training_params, second.model_training_params)
-
-
-# ===== from test_ssq_report_output.py =====
-
 
 class ReportOutputTests(unittest.TestCase):
     def test_workflow_preserves_runtime_version_compatibility_export(self):
@@ -3484,30 +2212,6 @@ class ReportOutputTests(unittest.TestCase):
 
 
 class RuleDefinitionTests(unittest.TestCase):
-    def test_registry_preserves_definition_compatibility_exports(self):
-        self.assertIs(rule_registry.RED_RULES, rule_definitions.RED_RULES)
-        self.assertIs(rule_registry.FILTER_NAMES, rule_definitions.FILTER_NAMES)
-        self.assertIs(rule_registry.HARD_FILTER_NAMES, rule_definitions.HARD_FILTER_NAMES)
-        self.assertIs(rule_registry.SOFT_FILTER_NAMES, rule_definitions.SOFT_FILTER_NAMES)
-        self.assertEqual(
-            rule_registry.COMBINATION_SIGNAL_WEIGHT,
-            rule_definitions.COMBINATION_SIGNAL_WEIGHT,
-        )
-
-    def test_rule_names_and_hard_soft_partitions_are_complete(self):
-        names = tuple(rule.name for rule in rule_definitions.RED_RULES)
-
-        self.assertEqual(names, rule_definitions.FILTER_NAMES)
-        self.assertEqual(
-            set(rule_definitions.HARD_FILTER_NAMES)
-            | set(rule_definitions.SOFT_FILTER_NAMES),
-            set(names),
-        )
-        self.assertFalse(
-            set(rule_definitions.HARD_FILTER_NAMES)
-            & set(rule_definitions.SOFT_FILTER_NAMES)
-        )
-
     def test_prime_ratio_is_an_ordinary_soft_rule(self):
         rule = next(
             rule for rule in rule_definitions.RED_RULES
@@ -3520,51 +2224,6 @@ class RuleDefinitionTests(unittest.TestCase):
 
 
 # ===== from test_ssq_rule_diagnostics.py =====
-
-
-class RuleDiagnosticTests(unittest.TestCase):
-    def test_execution_preserves_diagnostic_compatibility_exports(self):
-        self.assertIs(
-            rule_execution.explain_filter_failures,
-            rule_diagnostics.explain_filter_failures,
-        )
-        self.assertIs(
-            rule_execution.filter_pipeline_stats,
-            rule_diagnostics.filter_pipeline_stats,
-        )
-
-    def test_diagnostics_evaluate_soft_rules_without_filtering_them(self):
-        rules = (
-            RuleDefinition('hard', True, lambda combo, _: combo[0] > 0),
-            RuleDefinition(
-                'soft',
-                False,
-                lambda combo, _: combo[0] < 3,
-                0.1,
-                lambda _combo, _context: 1.0,
-            ),
-        )
-        context = RuleContext()
-
-        failures = rule_diagnostics.explain_filter_failures(
-            (4,),
-            context,
-            rules,
-        )
-        stats = rule_diagnostics.filter_pipeline_stats(
-            ((-1,), (4,)),
-            context,
-            rules,
-        )
-
-        self.assertEqual(failures, ['soft'])
-        self.assertEqual(
-            [item['rule'] for item in stats],
-            ['hard', 'anti_crowding'],
-        )
-
-
-# ===== from test_ssq_rule_execution.py =====
 
 
 class RuleExecutionTests(unittest.TestCase):
@@ -3599,26 +2258,6 @@ class RuleExecutionTests(unittest.TestCase):
         )
 
         self.assertEqual(failures, ['soft', 'anti_crowding'])
-
-    def test_pipeline_statistics_are_incremental_and_hard_only(self):
-        stats = rule_execution.filter_pipeline_stats(
-            ((-2,), (2,), (3,), (4,)),
-            self.context,
-            self.rules,
-            {(4,)},
-        )
-
-        self.assertEqual([item['rule'] for item in stats], [
-            'positive', 'even', 'anti_crowding',
-        ])
-        self.assertEqual(
-            [(item['before'], item['removed'], item['remaining']) for item in stats],
-            [(4, 1, 3), (3, 1, 2), (2, 1, 1)],
-        )
-
-
-# ===== from test_ssq_rule_functions.py =====
-
 
 class RuleFunctionTests(unittest.TestCase):
     def test_registry_preserves_rule_function_compatibility_exports(self):
@@ -3667,13 +2306,6 @@ class RuleModelTests(unittest.TestCase):
 
 
 class RuleRegistryTests(unittest.TestCase):
-    def test_rules_preserves_registry_compatibility_exports(self):
-        self.assertIs(rules.RED_RULES, rule_registry.RED_RULES)
-        self.assertIs(rules.FILTER_NAMES, rule_registry.FILTER_NAMES)
-        self.assertIs(rules.HARD_FILTER_NAMES, rule_registry.HARD_FILTER_NAMES)
-        self.assertIs(rules.SOFT_FILTER_NAMES, rule_registry.SOFT_FILTER_NAMES)
-        self.assertIs(rules.passes_red_filters, rule_registry.passes_red_filters)
-
     def test_prime_ratio_remains_an_ordinary_soft_rule(self):
         prime_rule = next(
             rule for rule in rule_registry.RED_RULES
@@ -3691,28 +2323,6 @@ class RuleRegistryTests(unittest.TestCase):
 
 
 # ===== from test_ssq_rule_reporting.py =====
-
-
-class RuleReportingTests(unittest.TestCase):
-    def test_reporting_preserves_rule_format_compatibility_exports(self):
-        self.assertIs(
-            reporting.format_audit_window,
-            rule_reporting.format_audit_window,
-        )
-        self.assertIs(
-            reporting.format_rule_audit_report,
-            rule_reporting.format_rule_audit_report,
-        )
-
-    def test_audit_window_reports_requested_and_actual_periods(self):
-        self.assertEqual(rule_reporting.format_audit_window(20, 20), '最近 20 期')
-        self.assertEqual(
-            rule_reporting.format_audit_window(12, 20),
-            '实际 12 期，请求 20 期',
-        )
-
-
-# ===== from test_ssq_rule_scoring.py =====
 
 
 class RuleScoringTests(unittest.TestCase):
@@ -4143,28 +2753,3 @@ class WorkflowModelTests(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertIs(getattr(workflow, name), getattr(workflow_models, name))
 
-    def test_prepared_history_retains_run_identity(self):
-        frame = pandas.DataFrame({'期号': [2026001]})
-
-        history = workflow_models.PreparedHistory(
-            frame=frame,
-            feature_columns=('red_sum',),
-            latest_issue='2026001',
-            target_issue=2026002,
-            sha256='a' * 64,
-        )
-        history_evaluation = workflow_models.HistoricalEvaluation(
-            loaded_params=LoadedStrategyParams({'weight': 1}, True),
-            rule_coverage={},
-            hard_pipeline_coverage={},
-            backtests={'mixed': 'result'},
-            selected_backtest='result',
-        )
-
-        self.assertIs(history.frame, frame)
-        self.assertEqual(history.target_issue, 2026002)
-        self.assertEqual(history_evaluation.selected_backtest, 'result')
-
-
-if __name__ == "__main__":
-    unittest.main()

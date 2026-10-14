@@ -90,7 +90,7 @@ jobs:
 
     - name: Step 2 - Run analysis script
       working-directory: ./py
-      run: python ssq_analysis.py --compare-pools --non-interactive
+      run: python ssq_analysis.py --non-interactive
 
     - name: Step 3 - Run bonus calculation script
       working-directory: ./py

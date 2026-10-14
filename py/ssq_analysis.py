@@ -40,15 +40,10 @@ class AnalysisReportData:
     params: dict
     config: Any
     rejection_seed: int
-    backtest: Any
-    backtests: dict[str, Any]
     pool_mode: str
     rank_band_widths: dict[str, int]
     rank_band_labels: dict[str, str]
     pipeline_stats: list[dict]
-    rule_coverage: dict
-    hard_pipeline_coverage: dict
-    rule_audit_periods: int
     selection: Any
     recommended_blues: list[int]
     best_7_reds: list
@@ -196,7 +191,7 @@ def build_rank_band_widths(config=DEFAULT_STRATEGY_CONFIG):
 def build_analysis_report_data(history, evaluation, current, options, best_7_reds, generated_at, runtime_versions, model_training_params):
     """Map completed workflow stages into the report data contract."""
     config = options.strategy_config
-    return AnalysisReportData(latest_issue=history.latest_issue, target_issue=history.target_issue, generated_at=generated_at, params_loaded=evaluation.loaded_params.loaded_from_file, params=evaluation.loaded_params.values, config=config, rejection_seed=current.rejection_seed, backtest=evaluation.selected_backtest, backtests=evaluation.backtests, pool_mode=options.pool_mode, rank_band_widths=build_rank_band_widths(config), rank_band_labels=build_rank_band_labels(config), pipeline_stats=current.pipeline_stats, rule_coverage=evaluation.rule_coverage, hard_pipeline_coverage=evaluation.hard_pipeline_coverage, rule_audit_periods=options.rule_audit_periods, selection=current.candidate_selection, recommended_blues=current.recommended_blues, best_7_reds=best_7_reds, runtime_versions=runtime_versions, history_sha256=history.sha256, model_features=history.feature_columns, model_training_params=model_training_params)
+    return AnalysisReportData(latest_issue=history.latest_issue, target_issue=history.target_issue, generated_at=generated_at, params_loaded=evaluation.loaded_params.loaded_from_file, params=evaluation.loaded_params.values, config=config, rejection_seed=current.rejection_seed, pool_mode=options.pool_mode, rank_band_widths=build_rank_band_widths(config), rank_band_labels=build_rank_band_labels(config), pipeline_stats=current.pipeline_stats, selection=current.candidate_selection, recommended_blues=current.recommended_blues, best_7_reds=best_7_reds, runtime_versions=runtime_versions, history_sha256=history.sha256, model_features=history.feature_columns, model_training_params=model_training_params)
 
 
 # --- from ssq_anti_crowding.py ---
@@ -675,221 +670,12 @@ def generate_candidates(request):
     return _impl_generate_candidates(request, dependencies)
 
 
-# --- from ssq_backtest_evaluation.py ---
-@dataclass(frozen=True)
-class BacktestEvaluationDependencies:
-    generate_candidates: Callable = generate_candidates
-
-
 # --- from ssq_domain.py ---
 PRIZE_RULES = {(6, 1): 5000000, (6, 0): 100000, (5, 1): 3000, (5, 0): 200, (4, 1): 200, (4, 0): 10, (3, 1): 10, (2, 1): 5, (1, 1): 5, (0, 1): 5}
 
 
-# --- from ssq_backtest_evaluation.py ---
-def record_backtest_selection(current, selection, issue, red_hits_by_combo=None):
-    """Accumulate one already-generated selection into a result window."""
-    current.evaluated_periods += 1
-    current.pool_red_hits += len(set(selection.red_pool) & issue.actual_reds)
-    current.rank_band_hits.update(issue.rank_band_hits)
-    if issue.recommended_blue == issue.actual_blue:
-        current.blue_hit_periods += 1
-    if not selection.passed_combos:
-        return {}
-    if red_hits_by_combo is None:
-        red_hits_by_combo = {combo: len(set(combo) & issue.actual_reds) for combo in selection.passed_combos}
-    current.candidate_tickets += len(selection.passed_combos)
-    current.candidate_red_hit_counts.update(red_hits_by_combo.values())
-    current.active_periods += 1
-    current.tickets += len(selection.recommendations)
-    current.cost += len(selection.recommendations) * 2
-    blue_hits = int(issue.recommended_blue == issue.actual_blue)
-    for combo in selection.recommendations:
-        red_hits = red_hits_by_combo[combo]
-        current.ticket_red_hit_counts[red_hits] += 1
-        hit_key = (red_hits, blue_hits)
-        prize = PRIZE_RULES.get(hit_key, 0)
-        if prize > 0:
-            current.winnings += prize
-            current.prize_counts[hit_key] += 1
-    return red_hits_by_combo
-
-
-# --- from ssq_backtest_evaluation.py ---
-def evaluate_backtest_mode(mode, current, issue, selection_inputs, additional_accumulators=(), dependencies=None):
-    """Evaluate one pool mode for one historical issue."""
-    dependencies = dependencies or BacktestEvaluationDependencies()
-    selection = dependencies.generate_candidates(CandidateGenerationRequest(red_scores=selection_inputs.red_scores, context=selection_inputs.context, rejection_set=selection_inputs.rejection_set, config=selection_inputs.config, mode=mode))
-    red_hits_by_combo = None
-    for accumulator in (current, *additional_accumulators):
-        red_hits_by_combo = record_backtest_selection(accumulator, selection, issue, red_hits_by_combo)
-    return selection
-
-
 # --- from ssq_rank_bands.py ---
 RANK_BAND_WIDTHS = build_rank_band_widths()
-
-
-# --- from ssq_backtest_metrics.py ---
-@dataclass(frozen=True)
-class BacktestResult:
-    periods: int
-    active_periods: int
-    tickets: int
-    cost: int
-    winnings: int
-    prize_counts: Counter
-    evaluated_periods: int = 0
-    pool_red_hits: int = 0
-    ticket_red_hit_counts: Counter = field(default_factory=Counter)
-    candidate_tickets: int = 0
-    candidate_red_hit_counts: Counter = field(default_factory=Counter)
-    blue_hit_periods: int = 0
-    rank_band_hits: Counter = field(default_factory=Counter)
-    rank_band_widths: dict[str, int] = field(default_factory=lambda: RANK_BAND_WIDTHS.copy())
-    windows: dict[str, 'BacktestResult'] = field(default_factory=dict)
-
-    @property
-    def profit(self):
-        return self.winnings - self.cost
-
-    @property
-    def roi(self):
-        return self.winnings / self.cost if self.cost else 0.0
-
-    @property
-    def average_pool_red_hits(self):
-        if not self.evaluated_periods:
-            return 0.0
-        return self.pool_red_hits / self.evaluated_periods
-
-    @property
-    def average_ticket_red_hits(self):
-        if not self.tickets:
-            return 0.0
-        total_hits = sum((hits * count for hits, count in self.ticket_red_hit_counts.items()))
-        return total_hits / self.tickets
-
-    @property
-    def three_plus_red_tickets(self):
-        return sum((count for hits, count in self.ticket_red_hit_counts.items() if hits >= 3))
-
-    @property
-    def three_plus_red_rate(self):
-        return self.three_plus_red_tickets / self.tickets if self.tickets else 0.0
-
-    @property
-    def average_candidate_red_hits(self):
-        if not self.candidate_tickets:
-            return 0.0
-        total_hits = sum((hits * count for hits, count in self.candidate_red_hit_counts.items()))
-        return total_hits / self.candidate_tickets
-
-    @property
-    def candidate_three_plus_red_rate(self):
-        if not self.candidate_tickets:
-            return 0.0
-        three_plus = sum((count for hits, count in self.candidate_red_hit_counts.items() if hits >= 3))
-        return three_plus / self.candidate_tickets
-
-    @property
-    def ranking_red_hit_delta(self):
-        return self.average_ticket_red_hits - self.average_candidate_red_hits
-
-    @property
-    def ranking_three_plus_delta(self):
-        return self.three_plus_red_rate - self.candidate_three_plus_red_rate
-
-    @property
-    def blue_hit_rate(self):
-        if not self.evaluated_periods:
-            return 0.0
-        return self.blue_hit_periods / self.evaluated_periods
-
-    def rank_band_rate(self, band):
-        total_actual_reds = self.evaluated_periods * 6
-        if not total_actual_reds:
-            return 0.0
-        return self.rank_band_hits[band] / total_actual_reds
-
-    def rank_band_lift(self, band):
-        expected_rate = self.rank_band_widths[band] / sum(self.rank_band_widths.values())
-        return self.rank_band_rate(band) / expected_rate if expected_rate else 0.0
-
-
-# --- from ssq_backtest_metrics.py ---
-@dataclass
-class BacktestAccumulator:
-    prize_counts: Counter = field(default_factory=Counter)
-    cost: int = 0
-    winnings: int = 0
-    active_periods: int = 0
-    evaluated_periods: int = 0
-    tickets: int = 0
-    pool_red_hits: int = 0
-    ticket_red_hit_counts: Counter = field(default_factory=Counter)
-    candidate_tickets: int = 0
-    candidate_red_hit_counts: Counter = field(default_factory=Counter)
-    blue_hit_periods: int = 0
-    rank_band_hits: Counter = field(default_factory=Counter)
-    rank_band_widths: dict[str, int] = field(default_factory=lambda: RANK_BAND_WIDTHS.copy())
-
-    def to_result(self, periods, windows=None):
-        return BacktestResult(periods=periods, active_periods=self.active_periods, tickets=self.tickets, cost=self.cost, winnings=self.winnings, prize_counts=Counter(self.prize_counts), evaluated_periods=self.evaluated_periods, pool_red_hits=self.pool_red_hits, ticket_red_hit_counts=Counter(self.ticket_red_hit_counts), candidate_tickets=self.candidate_tickets, candidate_red_hit_counts=Counter(self.candidate_red_hit_counts), blue_hit_periods=self.blue_hit_periods, rank_band_hits=Counter(self.rank_band_hits), rank_band_widths=self.rank_band_widths.copy(), windows=dict(windows or {}))
-
-
-# --- from ssq_backtest_models.py ---
-@dataclass(frozen=True)
-class BacktestIssue:
-    actual_reds: frozenset[int]
-    actual_blue: int
-    recommended_blue: int
-    rank_band_hits: Counter
-
-
-# --- from ssq_backtest_models.py ---
-@dataclass(frozen=True)
-class BacktestSelectionInputs:
-    red_scores: dict[int, float]
-    context: RuleContext
-    rejection_set: set[tuple[int, ...]]
-    config: StrategyConfig
-
-
-# --- from ssq_backtest_models.py ---
-@dataclass(frozen=True)
-class BacktestRunContext:
-    params: dict
-    feature_columns: Sequence[str]
-    config: StrategyConfig
-
-
-# --- from ssq_backtest_models.py ---
-@dataclass(frozen=True)
-class BacktestRequest:
-    params: dict
-    feature_columns: Sequence[str]
-    num_periods: int
-    pool_modes: Sequence[str] = ('mixed',)
-    config: StrategyConfig = DEFAULT_STRATEGY_CONFIG
-
-
-# --- from ssq_backtest_models.py ---
-@dataclass(frozen=True)
-class PreparedBacktestIssue:
-    issue: BacktestIssue
-    selection_inputs: BacktestSelectionInputs
-
-
-# --- from ssq_backtest_preparation.py ---
-@dataclass(frozen=True)
-class BacktestPreparationDependencies:
-    train_models: Callable[..., Any]
-    validate_models: Callable[..., Any]
-    score_balls: Callable[..., Any]
-    count_rank_bands: Callable[..., Any]
-    build_rule_context: Callable[..., Any]
-    derive_rejection_seed: Callable[..., Any]
-    build_rejection_set: Callable[..., Any]
 
 
 # --- from ssq_rank_bands.py ---
@@ -1196,228 +982,8 @@ def train_prediction_models(training_df, feature_columns, show_progress=False, d
     return (red_models, blue_models)
 
 
-# --- from ssq_backtest_preparation.py ---
-def default_preparation_dependencies():
-    return BacktestPreparationDependencies(train_models=train_prediction_models, validate_models=validate_model_sets, score_balls=run_strategy_and_get_scores, count_rank_bands=count_actual_reds_by_rank_band, build_rule_context=historical_rule_context, derive_rejection_seed=rejection_seed_for_issue, build_rejection_set=make_rejection_set)
-
-
-# --- from ssq_backtest_preparation.py ---
-def prepare_backtest_issue(full_df, index, run_context, dependencies=None):
-    """Build model and selection inputs using only draws before one issue."""
-    if dependencies is None:
-        dependencies = default_preparation_dependencies()
-    history = full_df.iloc[:index]
-    training_data = history.iloc[5:].copy()
-    if len(training_data) < 20:
-        return None
-    red_models, blue_models = dependencies.train_models(training_data, run_context.feature_columns)
-    try:
-        dependencies.validate_models(red_models, blue_models)
-    except ValueError:
-        return None
-    red_scores, blue_scores = dependencies.score_balls(history, run_context.params, red_models, blue_models, run_context.feature_columns)
-    actual_draw = full_df.iloc[index]
-    actual_reds = frozenset(actual_draw['红球'])
-    recommended_blue = max(blue_scores, key=blue_scores.get)
-    rank_band_hits = dependencies.count_rank_bands(red_scores, actual_reds, run_context.config)
-    rejection_seed = dependencies.derive_rejection_seed(run_context.config.random_seed, actual_draw['期号'])
-    rejection_set = dependencies.build_rejection_set(run_context.config.rejection_lib_size, random.Random(rejection_seed))
-    return PreparedBacktestIssue(issue=BacktestIssue(actual_reds=actual_reds, actual_blue=actual_draw['蓝球'], recommended_blue=recommended_blue, rank_band_hits=rank_band_hits), selection_inputs=BacktestSelectionInputs(red_scores=red_scores, context=dependencies.build_rule_context(full_df, index), rejection_set=rejection_set, config=run_context.config))
-
-
-# --- from ssq_backtest_reporting.py ---
-PRIZE_DISPLAY_ORDER = ('一等奖', '二等奖', '三等奖', '四等奖', '五等奖', '六等奖')
-
-
-# --- from ssq_backtest_reporting.py ---
-def format_strategy_parameters(data):
-    config = data.config
-    lines = ['\n--- 1. 策略参数与回测 ---']
-    mode_desc = '加载已固化的参数' if data.params_loaded else '使用内置的默认参数'
-    lines.append(f'模式: {mode_desc}')
-    middle_count = config.pool_size_red - config.high_count - config.low_count
-    lines.append(f'  - red_pool_size       : {config.pool_size_red}')
-    lines.append(f'  - mixed_pool_bands    : {config.high_count} high + {middle_count} middle + {config.low_count} low')
-    lines.append(f'  - blue_count          : {config.blue_count}')
-    lines.append(f'  - recommendation_count: {config.recommendation_count}')
-    lines.append(f'  - max_shared_red_balls: {config.max_shared_red_balls}')
-    lines.append(f'  - anti_crowding_size  : {config.rejection_lib_size}')
-    lines.append(f'  - anti_crowding_seed  : {config.random_seed} -> {data.rejection_seed} (目标期派生)')
-    for key, value in data.params.items():
-        lines.append(f'  - {key:<20}: {value}')
-    return lines
-
-
-# --- from ssq_backtest_reporting.py ---
-def format_backtest_metrics(data):
-    backtest = data.backtest
-    config = data.config
-    lines = [f'\n单式策略滚动回测 ({backtest.periods}期，每期最多{config.recommendation_count}注，不含复式):']
-    lines.append(f'  - 候选池模式: {data.pool_mode}')
-    lines.append(f'  - 成功建模评估期数: {backtest.evaluated_periods}')
-    lines.append(f'  - 实际投注期数: {backtest.active_periods}')
-    lines.append(f'  - 投注注数: {backtest.tickets}')
-    lines.append(f'  - 候选池平均覆盖红球: {backtest.average_pool_red_hits:.2f}/6')
-    lines.append(f'  - 单注平均命中红球: {backtest.average_ticket_red_hits:.3f}/6')
-    lines.append(f'  - 候选全集平均命中红球: {backtest.average_candidate_red_hits:.3f}/6，最终排序增益 {backtest.ranking_red_hit_delta:+.3f}')
-    lines.append(f'  - 命中至少3个红球: {backtest.three_plus_red_tickets} 注 ({backtest.three_plus_red_rate:.2%})')
-    lines.append(f'  - 候选全集3+红比例: {backtest.candidate_three_plus_red_rate:.2%}，最终排序增益 {backtest.ranking_three_plus_delta:+.2%}')
-    lines.append(f'  - 最高分蓝球命中: {backtest.blue_hit_periods}/{backtest.evaluated_periods} ({backtest.blue_hit_rate:.2%})')
-    lines.append(f'  - 总投入: {backtest.cost:.2f} 元')
-    lines.append(f'  - 固定参考奖金: {backtest.winnings:.2f} 元')
-    lines.append(f'  - 参考净收益: {backtest.profit:.2f} 元')
-    lines.append(f'  - 参考回报率: {backtest.roi:.2%}')
-    return lines
-
-
-# --- from ssq_backtest_reporting.py ---
-def format_pool_comparison(backtests):
-    if len(backtests) <= 1:
-        return []
-    lines = ['  - 候选池对照:']
-    for name, result in backtests.items():
-        lines.append(f'    {name:<6} 投入 {result.cost:>6.0f} 元，参考奖金 {result.winnings:>6.0f} 元，参考净收益 {result.profit:>7.0f} 元，参考回报率 {result.roi:>7.2%}，池覆盖 {result.average_pool_red_hits:.2f}/6，单注红球 {result.average_ticket_red_hits:.3f}/6 ({result.ranking_red_hit_delta:+.3f})，3+红 {result.three_plus_red_rate:.2%} ({result.ranking_three_plus_delta:+.2%})')
-    return lines
-
-
-# --- from ssq_backtest_reporting.py ---
-def format_window_stability(backtest, backtests):
-    if not backtest.windows:
-        return []
-    earlier_periods = backtest.windows['earlier'].periods
-    recent_periods = backtest.windows['recent'].periods
-    lines = [f'  - 候选池分段稳定性 (较早{earlier_periods}期 / 最近{recent_periods}期验证):']
-    for name, result in backtests.items():
-        earlier = result.windows['earlier']
-        recent = result.windows['recent']
-        lines.append(f'    {name:<6} 池覆盖 {earlier.average_pool_red_hits:.2f} -> {recent.average_pool_red_hits:.2f}/6，单注红球 {earlier.average_ticket_red_hits:.3f} -> {recent.average_ticket_red_hits:.3f}/6，3+红 {earlier.three_plus_red_rate:.2%} -> {recent.three_plus_red_rate:.2%}，排序增益 {earlier.ranking_red_hit_delta:+.3f} -> {recent.ranking_red_hit_delta:+.3f}')
-    return lines
-
-
-# --- from ssq_backtest_reporting.py ---
-def format_rank_band_distribution(data):
-    backtest = data.backtest
-    lines = ['  - 实际红球在模型评分排名中的分布:']
-    total_rank_width = sum(data.rank_band_widths.values())
-    for band in RANK_BAND_NAMES:
-        label = data.rank_band_labels[band]
-        band_width = data.rank_band_widths[band]
-        lines.append(f'    {label:<13}: {backtest.rank_band_hits[band]:>3} 个 (占比 {backtest.rank_band_rate(band):.2%}，随机基线 {band_width / total_rank_width:.2%}，相对 {backtest.rank_band_lift(band):.2f}x)')
-    return lines
-
-
 # --- from ssq_domain.py ---
 PRIZE_NAMES = {(6, 1): '一等奖', (6, 0): '二等奖', (5, 1): '三等奖', (5, 0): '四等奖', (4, 1): '四等奖', (4, 0): '五等奖', (3, 1): '五等奖', (2, 1): '六等奖', (1, 1): '六等奖', (0, 1): '六等奖'}
-
-
-# --- from ssq_backtest_reporting.py ---
-def format_prize_counts(backtest):
-    lines = ['中奖详情如下：']
-    aggregated_counts = {name: 0 for name in set(PRIZE_NAMES.values())}
-    for hit, count in backtest.prize_counts.items():
-        if count > 0:
-            aggregated_counts[PRIZE_NAMES[hit]] += count
-    if sum(aggregated_counts.values()) == 0:
-        lines.append('  - 未中任何奖项。')
-    else:
-        for prize_name in PRIZE_DISPLAY_ORDER:
-            count = aggregated_counts.get(prize_name, 0)
-            if count > 0:
-                lines.append(f'  - {prize_name:<5}: {count} 次')
-    return lines
-
-
-# --- from ssq_backtest_reporting.py ---
-def format_backtest_report(data):
-    lines = format_strategy_parameters(data)
-    lines.extend(format_backtest_metrics(data))
-    lines.extend(format_pool_comparison(data.backtests))
-    lines.extend(format_window_stability(data.backtest, data.backtests))
-    lines.extend(format_rank_band_distribution(data))
-    lines.extend(format_prize_counts(data.backtest))
-    return lines
-
-
-# --- from ssq_backtest_runner.py ---
-@dataclass(frozen=True)
-class BacktestRunnerDependencies:
-    validate_request: Callable[..., Any]
-    validate_params: Callable[..., Any]
-    build_rank_band_widths: Callable[..., dict]
-    prepare_issue: Callable[..., Any]
-    evaluate_mode: Callable[..., Any]
-    progress_factory: Callable[..., Any]
-
-
-# --- from ssq_backtest_validation.py ---
-def validate_backtest_request(num_periods, pool_modes, config):
-    """Normalize and validate public backtest controls before expensive work."""
-    num_periods = normalize_integer_param('num_periods', num_periods)
-    if num_periods < 0:
-        raise ValueError('num_periods 不能为负数')
-    if isinstance(pool_modes, str):
-        raise TypeError('pool_modes 必须为候选池模式序列，不能是字符串')
-    try:
-        pool_modes = tuple(pool_modes)
-    except TypeError as exc:
-        raise TypeError('pool_modes 必须为候选池模式序列') from exc
-    if not pool_modes:
-        raise ValueError('pool_modes 不能为空')
-    if len(pool_modes) != len(set(pool_modes)):
-        raise ValueError('pool_modes 不能包含重复模式')
-    invalid_modes = sorted(set(pool_modes) - set(RED_POOL_MODES))
-    if invalid_modes:
-        raise ValueError(f'未知候选池模式: {invalid_modes}')
-    if not isinstance(config, StrategyConfig):
-        raise TypeError('config 必须为 StrategyConfig')
-    return (num_periods, pool_modes)
-
-
-# --- from ssq_backtest_runner.py ---
-def default_runner_dependencies():
-    return BacktestRunnerDependencies(validate_request=validate_backtest_request, validate_params=validate_strategy_params, build_rank_band_widths=build_rank_band_widths, prepare_issue=prepare_backtest_issue, evaluate_mode=evaluate_backtest_mode, progress_factory=tqdm)
-
-
-# --- from ssq_backtest_runner.py ---
-def run_backtest(full_df, request, dependencies=None):
-    """Run a rolling backtest that retrains using only earlier draws."""
-    if not isinstance(request, BacktestRequest):
-        raise TypeError('request 必须为 BacktestRequest')
-    dependencies = dependencies or default_runner_dependencies()
-    num_periods, pool_modes = dependencies.validate_request(request.num_periods, request.pool_modes, request.config)
-    params = dependencies.validate_params(request.params)
-    feature_columns = request.feature_columns
-    config = request.config
-    print('\n' + '=' * 70)
-    print(f'        最近 {num_periods} 期完整策略滚动回测')
-    print('=' * 70)
-    minimum_history = num_periods + 50
-    rank_band_widths = dependencies.build_rank_band_widths(config)
-    if len(full_df) < minimum_history:
-        print(f'历史数据不足 {minimum_history} 期，无法执行回测。跳过此步骤。')
-        return {mode: BacktestResult(0, 0, 0, 0, 0, Counter(), rank_band_widths=rank_band_widths.copy()) for mode in pool_modes}
-    metrics = {mode: BacktestAccumulator(rank_band_widths=rank_band_widths.copy()) for mode in pool_modes}
-    window_metrics = {name: {mode: BacktestAccumulator(rank_band_widths=rank_band_widths.copy()) for mode in pool_modes} for name in ('earlier', 'recent')}
-    backtest_range = range(len(full_df) - num_periods, len(full_df))
-    split_offset = len(backtest_range) // 2
-    window_periods = {'earlier': split_offset, 'recent': len(backtest_range) - split_offset}
-    run_context = BacktestRunContext(params, feature_columns, config)
-    with dependencies.progress_factory(total=len(backtest_range), desc='执行严谨回测', ncols=80) as progress:
-        for offset, index in enumerate(backtest_range):
-            prepared = dependencies.prepare_issue(full_df, index, run_context)
-            if prepared is None:
-                progress.update(1)
-                continue
-            window_name = 'earlier' if offset < split_offset else 'recent'
-            for mode in pool_modes:
-                dependencies.evaluate_mode(mode, metrics[mode], prepared.issue, prepared.selection_inputs, additional_accumulators=(window_metrics[window_name][mode],))
-            progress.update(1)
-    print('回测完成。\n')
-    return {mode: value.to_result(len(backtest_range), windows={name: window_metrics[name][mode].to_result(window_periods[name]) for name in ('earlier', 'recent')} if len(backtest_range) >= 2 else {}) for mode, value in metrics.items()}
-
-
-# --- from ssq_rule_definitions.py ---
-FILTER_NAMES = tuple(rule.name for rule in RED_RULES)
 
 
 # --- from ssq_config_models.py ---
@@ -1438,98 +1004,36 @@ def explain_filter_failures(combo, context, rejection_set=None):
     return _impl_explain_filter_failures(combo, context, RED_RULES, rejection_set)
 
 
-# --- from ssq_rule_auditing.py ---
-def audit_historical_rule_coverage(full_df, periods=RULE_AUDIT_PERIODS):
-    """Measure how often each strategy rule accepts actual historical draws."""
-    if periods <= 0 or len(full_df) < 11:
-        return {name: {'passed': 0, 'total': 0, 'rate': 0.0} for name in FILTER_NAMES}
-    start = max(10, len(full_df) - periods)
-    passed_counts = Counter()
-    total = 0
-    for index in range(start, len(full_df)):
-        combo = tuple(full_df.iloc[index]['红球'])
-        failures = set(explain_filter_failures(combo, historical_rule_context(full_df, index)))
-        for name in FILTER_NAMES:
-            if name not in failures:
-                passed_counts[name] += 1
-        total += 1
-    return {name: {'passed': passed_counts[name], 'total': total, 'rate': passed_counts[name] / total if total else 0.0} for name in FILTER_NAMES}
-
-
-# --- from ssq_rule_auditing.py ---
-def audit_historical_hard_pipeline(full_df, periods=RULE_AUDIT_PERIODS):
-    """Measure cumulative survival of actual draws through ordered hard rules."""
-    hard_rules = [rule for rule in RED_RULES if rule.hard]
-    if periods <= 0 or len(full_df) < 11:
-        return {'total': 0, 'passed': 0, 'rate': 0.0, 'stages': [{'rule': rule.name, 'before': 0, 'removed': 0, 'remaining': 0} for rule in hard_rules]}
-    start = max(10, len(full_df) - periods)
-    total = len(full_df) - start
-    remaining_counts = Counter()
-    for index in range(start, len(full_df)):
-        combo = tuple(full_df.iloc[index]['红球'])
-        context = historical_rule_context(full_df, index)
-        for rule in hard_rules:
-            if not rule.evaluator(combo, context):
-                break
-            remaining_counts[rule.name] += 1
-    stages = []
-    before = total
-    for rule in hard_rules:
-        remaining = remaining_counts[rule.name]
-        stages.append({'rule': rule.name, 'before': before, 'removed': before - remaining, 'remaining': remaining})
-        before = remaining
-    return {'total': total, 'passed': before, 'rate': before / total if total else 0.0, 'stages': stages}
-
-
-# --- from ssq_backtesting.py ---
-def run_full_backtest(full_df, params, feature_columns, num_periods, pool_modes=('mixed',), config=DEFAULT_STRATEGY_CONFIG):
-    """Compatibility wrapper for the request-based backtest API."""
-    return run_backtest(full_df, BacktestRequest(params=params, feature_columns=feature_columns, num_periods=num_periods, pool_modes=pool_modes, config=config))
-
-
 # --- from ssq_candidates.py ---
 def generate_red_candidates(red_scores, context, rejection_set, config=DEFAULT_STRATEGY_CONFIG, mode='mixed', show_progress=False):
     """Compatibility wrapper for request-based candidate generation."""
     return generate_candidates(CandidateGenerationRequest(red_scores=red_scores, context=context, rejection_set=rejection_set, config=config, mode=mode, show_progress=show_progress))
 
 
-# --- from ssq_config_models.py ---
-BACKTEST_PERIODS = 200
-
-
 # --- from ssq_cli.py ---
 def build_argument_parser():
     parser = argparse.ArgumentParser(description='双色球策略分析与推荐')
-    parser.add_argument('--backtest-periods', type=int, default=BACKTEST_PERIODS, help='回测期数，默认 %(default)s')
     parser.add_argument('--rejection-size', type=int, default=REJECTION_LIB_SIZE, help='反撞号随机库大小，默认 %(default)s')
     parser.add_argument('--seed', type=int, default=RANDOM_SEED, help='随机种子，默认 %(default)s')
     parser.add_argument('--pool-mode', choices=RED_POOL_MODES, default='mixed', help='红球候选池模式，默认 %(default)s')
-    parser.add_argument('--compare-pools', action='store_true', help='在一次回测中对比四种候选池模式')
     parser.add_argument('--non-interactive', action='store_true', help='不等待键盘输入，适用于自动化运行')
-    parser.add_argument('--rule-audit-periods', type=int, default=RULE_AUDIT_PERIODS, help='统计规则对真实开奖覆盖率的期数，默认 %(default)s')
     return parser
 
 
 # --- from ssq_config_models.py ---
 @dataclass(frozen=True)
 class AnalyzerOptions:
-    backtest_periods: int = BACKTEST_PERIODS
     rejection_size: int = REJECTION_LIB_SIZE
     seed: int = RANDOM_SEED
     pool_mode: str = 'mixed'
-    compare_pools: bool = False
     non_interactive: bool = False
-    rule_audit_periods: int = RULE_AUDIT_PERIODS
 
     def __post_init__(self):
-        integer_fields = ('backtest_periods', 'rejection_size', 'seed', 'rule_audit_periods')
+        integer_fields = ('rejection_size', 'seed')
         for name in integer_fields:
             object.__setattr__(self, name, normalize_integer_param(name, getattr(self, name)))
-        for name in ('compare_pools', 'non_interactive'):
-            if not isinstance(getattr(self, name), bool):
-                raise TypeError(f'{name} 必须为布尔值')
-        if self.backtest_periods < 0 or self.rule_audit_periods < 0:
-            raise ValueError('backtest-periods 和 rule-audit-periods 不能为负数')
+        if not isinstance(self.non_interactive, bool):
+            raise TypeError('non_interactive 必须为布尔值')
         if not 0 <= self.rejection_size <= TOTAL_RED_COMBINATIONS:
             raise ValueError(f'rejection-size 必须在 0 到 {TOTAL_RED_COMBINATIONS} 之间')
         if self.pool_mode not in RED_POOL_MODES:
@@ -1538,10 +1042,6 @@ class AnalyzerOptions:
     @property
     def strategy_config(self):
         return StrategyConfig(rejection_lib_size=self.rejection_size, random_seed=self.seed)
-
-    @property
-    def backtest_pool_modes(self):
-        return RED_POOL_MODES if self.compare_pools else (self.pool_mode,)
 
 
 # --- from ssq_cli.py ---
@@ -1867,9 +1367,6 @@ def atomic_write_text(path, content, encoding='utf-8'):
 @dataclass(frozen=True)
 class HistoryEvaluationDependencies:
     load_params: Callable[..., Any]
-    audit_rules: Callable[..., dict]
-    audit_hard_pipeline: Callable[..., dict]
-    run_backtest: Callable[..., dict]
 
 
 # --- from ssq_strategy_params.py ---
@@ -1886,17 +1383,13 @@ def load_strategy_params(filepath):
 
 # --- from ssq_history_evaluation.py ---
 def default_evaluation_dependencies():
-    return HistoryEvaluationDependencies(load_params=load_strategy_params, audit_rules=audit_historical_rule_coverage, audit_hard_pipeline=audit_historical_hard_pipeline, run_backtest=run_backtest)
+    return HistoryEvaluationDependencies(load_params=load_strategy_params)
 
 
 # --- from ssq_workflow_models.py ---
 @dataclass(frozen=True)
 class HistoricalEvaluation:
     loaded_params: LoadedStrategyParams
-    rule_coverage: dict
-    hard_pipeline_coverage: dict
-    backtests: dict[str, Any]
-    selected_backtest: Any
 
 
 # --- from ssq_paths.py ---
@@ -1913,7 +1406,7 @@ PARAMS_JSON_PATH = os.path.join(PROJECT_ROOT, 'best_params.json')
 
 # --- from ssq_history_evaluation.py ---
 def evaluate_history(history, options, params_path=PARAMS_JSON_PATH, dependencies=None):
-    """Load parameters, audit rules, and backtest one prepared history."""
+    """Load the strategy parameters used for the target issue."""
     params_path = params_path if params_path is not None else PARAMS_JSON_PATH
     if dependencies is None:
         dependencies = default_evaluation_dependencies()
@@ -1923,10 +1416,7 @@ def evaluate_history(history, options, params_path=PARAMS_JSON_PATH, dependencie
         raise SystemExit(f'错误: {exc}') from exc
     if not loaded_params.loaded_from_file:
         print(f'警告: 未找到参数文件 {params_path}，将使用内置的默认参数。')
-    rule_coverage = dependencies.audit_rules(history.frame, options.rule_audit_periods)
-    hard_pipeline_coverage = dependencies.audit_hard_pipeline(history.frame, options.rule_audit_periods)
-    backtests = dependencies.run_backtest(history.frame, BacktestRequest(params=loaded_params.values, feature_columns=history.feature_columns, num_periods=options.backtest_periods, pool_modes=options.backtest_pool_modes, config=options.strategy_config))
-    return HistoricalEvaluation(loaded_params=loaded_params, rule_coverage=rule_coverage, hard_pipeline_coverage=hard_pipeline_coverage, backtests=backtests, selected_backtest=backtests[options.pool_mode])
+    return HistoricalEvaluation(loaded_params=loaded_params)
 
 
 # --- from ssq_history_preparation.py ---
@@ -2134,17 +1624,6 @@ def format_recommendations_report(data):
     return lines
 
 
-# --- from ssq_rule_definitions.py ---
-HARD_FILTER_NAMES = tuple(rule.name for rule in RED_RULES if rule.hard)
-
-
-# --- from ssq_rule_reporting.py ---
-def format_audit_window(actual_periods, requested_periods):
-    if actual_periods == requested_periods:
-        return f'最近 {actual_periods} 期'
-    return f'实际 {actual_periods} 期，请求 {requested_periods} 期'
-
-
 # --- from ssq_rule_reporting.py ---
 def format_rule_audit_report(data):
     lines = ['\n硬规则过滤统计 (按流水线累计):']
@@ -2156,19 +1635,6 @@ def format_rule_audit_report(data):
         lines.append(f"  提示：本轮未淘汰组合的规则: {', '.join(inactive_rules)}")
     if aggressive_rules:
         lines.append(f"  提示：淘汰比例达到或超过50%的规则: {', '.join(aggressive_rules)}")
-    independent_total = next(iter(data.rule_coverage.values()), {}).get('total', 0)
-    independent_window = format_audit_window(independent_total, data.rule_audit_periods)
-    lines.append(f'\n真实开奖规则覆盖率 ({independent_window}，逐条独立统计):')
-    for name in FILTER_NAMES:
-        result = data.rule_coverage[name]
-        rule_type = '硬' if name in HARD_FILTER_NAMES else '软'
-        lines.append(f"  - [{rule_type}] {name:<22}: {result['passed']}/{result['total']} ({result['rate']:.2%})")
-    pipeline_total = data.hard_pipeline_coverage['total']
-    pipeline_window = format_audit_window(pipeline_total, data.rule_audit_periods)
-    lines.append(f'\n真实开奖硬规则累计覆盖率 ({pipeline_window}，不含随机撞号):')
-    for item in data.hard_pipeline_coverage['stages']:
-        lines.append(f"  - {item['rule']:<22}: {item['before']} -> {item['remaining']} (新增排除 {item['removed']} 期)")
-    lines.append(f"  - 合计保留: {data.hard_pipeline_coverage['passed']}/{data.hard_pipeline_coverage['total']} ({data.hard_pipeline_coverage['rate']:.2%})")
     return lines
 
 
@@ -2183,7 +1649,6 @@ def build_analysis_report(data):
         lines.append(f"Model_Features: {','.join(data.model_features)}")
     for name, value in data.model_training_params.items():
         lines.append(f'Model_LightGBM_{name}: {value}')
-    lines.extend(format_backtest_report(data))
     lines.extend(format_rule_audit_report(data))
     lines.extend(format_recommendations_report(data))
     lines.append('\n' + '=' * 60 + '\n报告结束。祝您好运！\n' + '=' * 60)
