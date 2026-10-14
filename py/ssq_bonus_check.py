@@ -273,6 +273,47 @@ TARGET_ISSUE_PATTERN = re.compile('^Prediction_Target_Issue:[ \\t]*(\\S+)[ \\t]*
 
 
 # --- from ssq_report_discovery.py ---
+BASIS_ISSUE_PATTERN = re.compile('^Data_Basis_Issue:[ \\t]*(\\S+)[ \\t]*$', re.MULTILINE)
+
+
+# --- from ssq_report_discovery.py ---
+def parse_report_basis_issue(content):
+    """Return the issue a report was based on (the last draw it had seen)."""
+    matches = BASIS_ISSUE_PATTERN.findall(content)
+    if len(matches) != 1:
+        raise ValueError(f'报告基准期号元数据必须恰好出现一次，实际 {len(matches)} 次')
+    return parse_issue(matches[0])
+
+
+# --- from ssq_report_discovery.py ---
+def find_report_for_basis(basis_issue, report_dir):
+    """Return the report that predicted the draw following ``basis_issue``.
+
+    A report records both the issue it was based on (``Data_Basis_Issue``) and
+    the issue it predicts (``Prediction_Target_Issue``). Matching on the basis
+    is what pairs a finished draw with the prediction made before it, and it
+    keeps working after the report directory has been pruned.
+
+    Several reports can share a basis - a later run may have predicted a more
+    distant issue - so the one predicting the nearest issue wins.
+    """
+    basis_issue = parse_issue(basis_issue)
+    report_files = glob.glob(os.path.join(report_dir, 'ssq_analysis_output_*.txt'))
+    candidates = []
+    for report_file in sorted(report_files, reverse=True):
+        try:
+            with open(report_file, encoding='utf-8') as handle:
+                content = handle.read()
+            if parse_report_basis_issue(content) == basis_issue:
+                candidates.append((parse_report_target_issue(content), report_file))
+        except (OSError, UnicodeError, TypeError, ValueError) as exc:
+            print(f'警告: 读取文件 {report_file} 时出错: {exc}')
+    if not candidates:
+        return (None, f"未找到基于期号 '{basis_issue}' 的分析报告。")
+    return (min(candidates)[1], None)
+
+
+# --- from ssq_report_discovery.py ---
 def parse_report_target_issue(content):
     """Return the report's single validated prediction target issue."""
     matches = TARGET_ISSUE_PATTERN.findall(content)
@@ -373,7 +414,12 @@ def validate_draw_dates_not_future(frame, today=None):
 
 # --- from ssq_latest_draw.py ---
 def load_latest_draw(filepath, normalize=None, validate_dates=None):
-    """Return the latest draw after applying the shared history contract."""
+    """Return the latest draw, plus the issue it was predicted from.
+
+    ``basis_issue`` is the draw immediately before the latest one: a prediction
+    for the latest draw must have been produced while history ended there, which
+    is what makes the report findable independently of run ordering.
+    """
     normalize = normalize if normalize is not None else normalize_draw_frame
     validate_dates = validate_dates if validate_dates is not None else validate_draw_dates_not_future
     frame = normalize(pd.read_csv(filepath, header=0))
@@ -381,7 +427,8 @@ def load_latest_draw(filepath, normalize=None, validate_dates=None):
     if frame.empty:
         raise ValueError('开奖数据为空')
     latest = frame.iloc[-1]
-    return {'issue': int(latest['期号']), 'red': set(latest['红球']), 'blue': latest['蓝球']}
+    basis_issue = int(frame.iloc[-2]['期号']) if len(frame) >= 2 else None
+    return {'issue': int(latest['期号']), 'red': set(latest['红球']), 'blue': latest['蓝球'], 'basis_issue': basis_issue}
 
 
 # --- from ssq_file_io.py ---
@@ -412,7 +459,7 @@ def atomic_write_text(path, content, encoding='utf-8'):
 
 # --- from ssq_bonus_workflow.py ---
 def default_bonus_dependencies():
-    return BonusCheckDependencies(load_draw=load_latest_draw, find_report=find_matching_report, parse_bets=parse_report_bets, format_report=format_bonus_report, write_text=atomic_write_text, now=local_now)
+    return BonusCheckDependencies(load_draw=load_latest_draw, find_report=find_report_for_basis, parse_bets=parse_report_bets, format_report=format_bonus_report, write_text=atomic_write_text, now=local_now)
 
 
 # --- from ssq_paths.py ---
@@ -433,16 +480,30 @@ REPORT_DIR = os.path.join(PROJECT_ROOT, 'report')
 
 # --- from ssq_bonus_workflow.py ---
 def run_bonus_check(csv_path=CSV_PATH, report_dir=REPORT_DIR, generated_at=None, dependencies=None):
-    """Run a complete prize check and return the generated report path."""
+    """Grade the newest draw using the report that predicted it.
+
+    The prediction for a draw is written by an earlier run, so the newest draw
+    may legitimately have no analysis report yet (fresh data import, or a pruned
+    report directory). The report is therefore looked up by the issue the
+    prediction was *based on* - the draw immediately before it - and when none
+    exists the check says so and stops instead of failing the whole workflow.
+    """
     dependencies = dependencies or default_bonus_dependencies()
     try:
         latest_draw = dependencies.load_draw(csv_path)
     except (OSError, UnicodeError, TypeError, ValueError, ParserError) as exc:
         raise SystemExit(f'读取 {csv_path} 文件失败: {exc}') from exc
+
     target_issue = latest_draw['issue']
-    report_filepath, error_message = dependencies.find_report(target_issue, report_dir)
-    if error_message:
-        raise SystemExit(error_message)
+    basis_issue = latest_draw.get('basis_issue')
+    if basis_issue is None:
+        print(f'跳过开奖核对：无法确定期号 {target_issue} 的预测基准期号。')
+        return None
+    report_filepath, error_message = dependencies.find_report(basis_issue, report_dir)
+    if report_filepath is None:
+        print(f'跳过开奖核对：暂无期号 {target_issue} 的预测报告（{error_message}）')
+        return None
+
     try:
         single_bets, duplex_bet = dependencies.parse_bets(report_filepath)
     except (OSError, UnicodeError, ValueError) as exc:

@@ -125,6 +125,7 @@ class LatestDrawTests(unittest.TestCase):
             'issue': 2026002,
             'red': {7, 8, 9, 10, 11, 12},
             'blue': 16,
+            'basis_issue': None,
         })
 
     def test_loader_rejects_empty_normalized_history(self):

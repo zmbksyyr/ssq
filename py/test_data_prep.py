@@ -133,7 +133,9 @@ class BonusWorkflowTests(unittest.TestCase):
         dependencies = bonus_workflow.default_bonus_dependencies()
 
         self.assertIs(dependencies.load_draw, bonus_workflow.load_latest_draw)
-        self.assertIs(dependencies.find_report, bonus_workflow.find_matching_report)
+        self.assertIs(
+            dependencies.find_report, bonus_workflow.find_report_for_basis
+        )
         self.assertIs(dependencies.parse_bets, bonus_workflow.parse_report_bets)
         self.assertIs(dependencies.format_report, bonus_workflow.format_bonus_report)
         self.assertIs(dependencies.write_text, bonus_workflow.atomic_write_text)
@@ -147,6 +149,7 @@ class BonusWorkflowTests(unittest.TestCase):
             'issue': 2026104,
             'red': {1, 2, 3, 4, 5, 6},
             'blue': 7,
+            'basis_issue': 2026103,
         }
         single_bets = [{'red': [1, 2, 3, 4, 5, 6], 'blue': 7}]
         duplex_bet = {'red': [1, 2, 3, 4, 5, 6, 7], 'blue': [7]}
@@ -175,7 +178,7 @@ class BonusWorkflowTests(unittest.TestCase):
 
         self.assertEqual(Path(result).name, 'ssq_bonus_check_20260908_010203.txt')
         load_draw.assert_called_once_with('draws.csv')
-        find_report.assert_called_once_with(2026104, 'reports')
+        find_report.assert_called_once_with(2026103, 'reports')
         parse_bets.assert_called_once_with('analysis.txt')
         now.assert_called_once_with()
         report_data = format_report.call_args.args[0]

@@ -1282,12 +1282,14 @@ class BonusCalculationTests(unittest.TestCase):
             csv_path = root / 'draws.csv'
             csv_path.write_text(
                 '期号,日期,红球,蓝球\n'
-                '2026001,2026-01-01,"01,02,03,04,05,06",07\n',
+                '2026001,2026-01-01,"01,02,03,04,05,06",07\n'
+                '2026002,2026-01-04,"01,02,03,04,05,06",07\n',
                 encoding='utf-8',
             )
-            analysis_path = root / 'ssq_analysis_output_20251231_000000.txt'
+            analysis_path = root / 'ssq_analysis_output_20260102_000000.txt'
             analysis_path.write_text(
-                'Prediction_Target_Issue: 2026001\n'
+                'Data_Basis_Issue: 2026001\n'
+                'Prediction_Target_Issue: 2026002\n'
                 '【单式推荐 (1组)】\n'
                 '组合  1: 红球 [1, 2, 3, 4, 5, 6] 蓝球 [07]\n'
                 '【7+N 复式推荐 (1组)】\n'
@@ -1308,7 +1310,7 @@ class BonusCalculationTests(unittest.TestCase):
             )
             report = Path(result).read_text(encoding='utf-8')
             self.assertIn('报告生成时间: 2026-01-02 03:04:05', report)
-            self.assertIn('核对开奖期数: 2026001', report)
+            self.assertIn('核对开奖期数: 2026002', report)
             self.assertIn('总计参考奖金:', report)
 
 
