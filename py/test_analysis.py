@@ -345,7 +345,9 @@ class AnalyzerTests(unittest.TestCase):
 
   def test_confirmation_wait_does_not_leak_previous_result(self):
     output = io.StringIO()
-    if hasattr(console, 'msvcrt'):
+    # `msvcrt` is bound to None off Windows, so test the value rather than the
+    # mere presence of the name.
+    if getattr(console, 'msvcrt', None) is not None:
       with (
           patch.object(console.sys, 'stdout', output),
           patch.object(console.msvcrt, 'kbhit', return_value=True),
