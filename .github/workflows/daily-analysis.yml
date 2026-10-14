@@ -48,7 +48,7 @@ jobs:
       run: |
         ruff check py
         python -m compileall -q py
-        python -m unittest discover -s py -p 'test_*.py' -v
+        python py/run_tests.py
 
   daily_process:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
@@ -86,15 +86,15 @@ jobs:
 
     - name: Step 1 - Run data acquisition script
       working-directory: ./py
-      run: python ssq_data_processor.py
+      run: python ssq_data_prep.py
 
     - name: Step 2 - Run analysis script
       working-directory: ./py
-      run: python ssq_analyzer.py --compare-pools --non-interactive
+      run: python ssq_analysis.py --compare-pools --non-interactive
 
     - name: Step 3 - Run bonus calculation script
       working-directory: ./py
-      run: python ssq_bonus_calculation.py
+      run: python ssq_bonus_check.py
       
     - name: Step 4 - Clean reports and create fixed-name copies
       id: file_management

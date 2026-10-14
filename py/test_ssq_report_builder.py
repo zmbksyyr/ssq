@@ -1,5 +1,5 @@
 import unittest
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -21,7 +21,7 @@ class ReportBuilderTests(unittest.TestCase):
         data = SimpleNamespace(
             latest_issue='2026103',
             target_issue=2026104,
-            generated_at=datetime(2026, 9, 7, 12, 34, 56, tzinfo=timezone.utc),
+            generated_at=datetime(2026, 9, 7, 12, 34, 56, tzinfo=UTC),
             history_sha256='',
             runtime_versions={},
             model_features=(),

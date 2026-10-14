@@ -1,7 +1,7 @@
 import io
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -19,7 +19,7 @@ class ReportOutputTests(unittest.TestCase):
 
     def test_report_is_built_and_written_with_timestamped_name(self):
         data = SimpleNamespace(
-            generated_at=datetime(2026, 9, 7, 12, 34, 56, tzinfo=timezone.utc),
+            generated_at=datetime(2026, 9, 7, 12, 34, 56, tzinfo=UTC),
         )
         dependencies = report_output.ReportOutputDependencies(
             build_report=Mock(return_value='analysis report'),
@@ -42,7 +42,7 @@ class ReportOutputTests(unittest.TestCase):
 
     def test_write_failure_becomes_workflow_exit(self):
         data = SimpleNamespace(
-            generated_at=datetime(2026, 9, 7, 12, 34, 56, tzinfo=timezone.utc),
+            generated_at=datetime(2026, 9, 7, 12, 34, 56, tzinfo=UTC),
         )
         dependencies = report_output.ReportOutputDependencies(
             build_report=Mock(return_value='analysis report'),

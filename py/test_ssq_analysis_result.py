@@ -1,6 +1,6 @@
 import sys
 import unittest
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from types import MappingProxyType, SimpleNamespace
 
@@ -42,7 +42,7 @@ class AnalysisResultTests(unittest.TestCase):
             pool_mode='mixed',
             rule_audit_periods=200,
         )
-        generated_at = datetime(2026, 9, 8, tzinfo=timezone.utc)
+        generated_at = datetime(2026, 9, 8, tzinfo=UTC)
         runtime_versions = {'python': 'test'}
         training_params = MappingProxyType({'deterministic': True})
 

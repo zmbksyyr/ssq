@@ -1,0 +1,41 @@
+{
+  "analysis": {
+    "__all__": "",
+    "FILTER_NAMES": "ssq_rule_definitions",
+    "audit_historical_hard_pipeline": "ssq_rule_auditing",
+    "audit_historical_rule_coverage": "ssq_rule_auditing",
+    "historical_rule_context": "ssq_rule_auditing",
+    "evaluate_backtest_mode": "ssq_backtest_evaluation",
+    "prepare_backtest_issue": "ssq_backtest_preparation",
+    "run_backtest": "ssq_backtest_runner",
+    "build_rank_bands": "ssq_rank_bands",
+    "build_rank_band_widths": "ssq_rank_bands",
+    "build_rank_band_labels": "ssq_rank_bands",
+    "display_passed_combinations": "ssq_console",
+    "get_user_input_with_timeout": "ssq_console",
+    "is_confirmation_input": "ssq_console",
+    "evaluate_history": "ssq_history_evaluation",
+    "load_and_preprocess_data": "ssq_history_preparation",
+    "prepare_history": "ssq_history_preparation",
+    "explain_filter_failures": "ssq_rule_diagnostics",
+    "filter_pipeline_stats": "ssq_rule_diagnostics",
+    "generate_candidates": "ssq_candidate_generation",
+    "load_strategy_params": "ssq_strategy_params",
+    "passes_red_filters": "ssq_rule_execution",
+    "run_strategy_and_get_scores": "ssq_ball_scoring",
+    "save_analysis_report": "ssq_report_output",
+    "score_combination": "ssq_combination_scoring",
+    "score_red_combination": "ssq_combination_scoring",
+    "select_current_issue": "ssq_prediction_workflow",
+    "train_final_models": "ssq_prediction_workflow",
+    "select_recommendation_portfolio": "ssq_recommendation_portfolio",
+    "train_ball_models": "ssq_model_training",
+    "train_models_for_spec": "ssq_model_training",
+    "train_prediction_models": "ssq_model_training",
+    "validate_rule_registry": "ssq_rule_validation"
+  },
+  "bonus_check": {
+    "find_matching_report": "ssq_report_discovery",
+    "load_latest_draw": "ssq_latest_draw"
+  }
+}

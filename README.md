@@ -4,12 +4,46 @@
 
 > 彩票开奖结果具有随机性。本项目用于数据分析和策略回测，不保证收益。
 
+## 三文件结构
+
+生产代码已由原先的 85 个模块合并为 `py/` 下三个自包含文件：
+
+| 文件 | 职责 | 原模块数 |
+|---|---|---|
+| `py/ssq_data_prep.py` | 数据准备：抓取、交叉核对、校验、原子落盘 | 15 |
+| `py/ssq_analysis.py` | 数据分析：特征工程、模型训练、规则过滤、回测、报告 | 65 |
+| `py/ssq_bonus_check.py` | 开奖分析：解析历史推荐、计算奖金、生成核对报告 | 13 |
+
+三条流水线相互独立（原模块闭包互不相交），可单独运行：
+
+```powershell
+python py\ssq_data_prep.py
+python py\ssq_analysis.py --compare-pools --non-interactive
+python py\ssq_bonus_check.py
+```
+
+合并过程做了等价性验证：三个入口在相同数据与参数下产出的报告与合并前**逐字节一致**（仅报告生成时间戳不同）。一次性合并工具保留在 `tools/merge/`。
+
+合并中需要人工裁决的部分记录在 `tools/merge/signatures.json`（公开签名与依赖装配）和 `tools/merge/overrides.json`（同名冲突取哪一个实现）。
+
+## 测试
+
+原测试套件按旧模块名导入，`py/ssq_compat.py` 把这些名字映射到合并后的模块，因此测试仍然直接验证合并后的代码：
+
+```powershell
+python py\run_tests.py
+```
+
+其中断言「旧 85 模块结构」本身的用例（re-export 的 `is` 同一性、旧门面是否被生产代码导入、旧模块间路径对象共享等）已列入 `py/known_obsolete_tests.py` 并报告为跳过——这些边界正是合并要消除的对象。其余 289 个用例全部通过，覆盖真实行为。
+
 ## 流程
 
-1. `ssq_data_sources.py` 获取并交叉核对 TXT/HTML 数据，`ssq_data_store.py` 校验、合并并原子保存开奖记录，`ssq_data_workflow.py` 编排更新流程；`ssq_draw_data.py` 统一三个入口的数据规范化，`ssq_data_processor.py` 保留为命令入口。
-2. `ssq_config.py` 管理策略默认值与命令行选项，`ssq_modeling.py` 负责特征工程和号码评分，`ssq_selection.py` 构建候选池并执行组合选择，`ssq_rule_auditing.py` 负责历史规则审计，`ssq_backtest_metrics.py` 管理回测指标快照与累计状态，`ssq_backtest_runner.py` 编排滚动回测，`ssq_workflow.py` 编排完整分析流程，`ssq_rules.py` 管理硬规则与软评分，`ssq_reporting.py` 生成报告；`ssq_backtesting.py` 保留回测兼容接口，`ssq_analyzer.py` 保留为命令入口。
-3. `ssq_prizes.py` 解析投注并计算参考奖金，`ssq_bonus_reporting.py` 格式化核对报告，`ssq_bonus_workflow.py` 编排核对流程；`ssq_bonus_calculation.py` 保留为命令入口。
+1. `ssq_data_prep.py` 抓取并交叉核对 TXT/HTML 数据，校验、合并并原子保存开奖记录，同时统一三个入口的数据规范化。
+2. `ssq_analysis.py` 负责特征工程与号码评分、候选池构建与组合选择、历史规则审计、滚动回测、完整分析流程编排以及报告生成，并提供命令行选项解析。
+3. `ssq_bonus_check.py` 解析投注并计算参考奖金，格式化核对报告并编排核对流程。
 4. GitHub Actions 每周一、三、五北京时间 06:00 自动运行并提交结果。
+
+> 合并前每个步骤由多个细粒度模块承担，文件与文件的对应关系见上表及 `tools/merge/overrides.json`。
 
 ## 选号策略
 
@@ -37,9 +71,9 @@
 
 ```powershell
 python -m pip install -r py\requirements.txt
-python py\ssq_data_processor.py
-python py\ssq_analyzer.py --compare-pools --non-interactive
-python py\ssq_bonus_calculation.py
+python py\ssq_data_prep.py
+python py\ssq_analysis.py --compare-pools --non-interactive
+python py\ssq_bonus_check.py
 ```
 
 分析器支持以下参数：
@@ -57,10 +91,10 @@ python py\ssq_bonus_calculation.py
 快速验证示例：
 
 ```powershell
-python py\ssq_analyzer.py --backtest-periods 1 --rejection-size 0 --compare-pools
+python py\ssq_analysis.py --backtest-periods 1 --rejection-size 0 --compare-pools
 python -m pip install -r py\requirements-dev.txt
 ruff check py
-python -m unittest py.test_ssq_analyzer -v
+python py\run_tests.py
 ```
 
 ## 输出

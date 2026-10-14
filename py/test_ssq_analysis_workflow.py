@@ -2,7 +2,7 @@ import io
 import sys
 import unittest
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -50,7 +50,7 @@ class AnalysisWorkflowTests(unittest.TestCase):
             red_scores={1: 1.0},
             rule_context='rule-context',
         )
-        generated_at = datetime(2026, 9, 8, tzinfo=timezone.utc)
+        generated_at = datetime(2026, 9, 8, tzinfo=UTC)
         prepare_history = Mock(return_value=history)
         evaluate_history = Mock(return_value=evaluation)
         train_models = Mock(return_value=('red-models', 'blue-models'))

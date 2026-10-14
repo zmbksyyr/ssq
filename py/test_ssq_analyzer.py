@@ -6,7 +6,7 @@ import sys
 import tempfile
 import unittest
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from itertools import combinations
 from pathlib import Path
 from types import SimpleNamespace
@@ -194,7 +194,7 @@ class AnalyzerTests(unittest.TestCase):
         candidate_selection=candidate_selection,
         pipeline_stats=[{'stage': 'hard'}],
     )
-    generated_at = datetime(2026, 9, 7, 12, 34, 56, tzinfo=timezone.utc)
+    generated_at = datetime(2026, 9, 7, 12, 34, 56, tzinfo=UTC)
 
     with (
         patch.object(workflow, 'prepare_history', return_value=history),
@@ -269,7 +269,7 @@ class AnalyzerTests(unittest.TestCase):
     data = analyzer.AnalysisReportData(
         latest_issue='2026103',
         target_issue=2026104,
-        generated_at=datetime(2026, 9, 7, 12, 34, 56, tzinfo=timezone.utc),
+        generated_at=datetime(2026, 9, 7, 12, 34, 56, tzinfo=UTC),
         params_loaded=False,
         params=analyzer.DEFAULT_PARAMS,
         config=analyzer.DEFAULT_STRATEGY_CONFIG,
