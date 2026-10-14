@@ -24,9 +24,17 @@ import ssq_compat  # noqa: F401  - installs the retired module aliases
 from known_obsolete_tests import EXPECTED_OBSOLETE
 
 
+def _key(test) -> str:
+    """`TestCaseClass.test_method`, independent of which file holds the test.
+
+    The tests were regrouped into per-pipeline files, so the module component of
+    a test id is not stable; the class and method names are.
+    """
+    return ".".join(test.id().split(".")[-2:])
+
+
 def _is_obsolete(test) -> bool:
-    tid = test.id()
-    return any(tid.endswith(suffix) for suffix in EXPECTED_OBSOLETE)
+    return _key(test) in EXPECTED_OBSOLETE
 
 
 def _split(suite, keep: unittest.TestSuite, dropped: unittest.TestSuite) -> None:
