@@ -15,7 +15,7 @@ behaviour, so they cannot survive the merge by construction:
 
 Everything asserted here has been verified end-to-end instead: the merged
 pipelines produce byte-identical reports to the pre-merge code for all three
-entry points (see README, "三文件结构").
+entry points, so this behaviour is covered without asserting module boundaries.
 
 Keeping the list explicit (rather than silently ignoring failures) documents
 exactly what changed. Delete an entry if that behaviour is reintroduced.
