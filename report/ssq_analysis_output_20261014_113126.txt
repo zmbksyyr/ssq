@@ -5,11 +5,11 @@
 --- 0. 报告元数据 ---
 Data_Basis_Issue: 2026117
 Prediction_Target_Issue: 2026118
-报告生成时间: 2026-10-14 10:57:01
+报告生成时间: 2026-10-14 11:31:26
 Data_History_SHA256: eff69db3622545cdd97f9c83a5c6645eeefa2a4d3e327652b2920e22d179de1b
-Runtime_python: 3.12.14
-Runtime_numpy: 2.3.5
-Runtime_pandas: 3.0.1
+Runtime_python: 3.11.17
+Runtime_numpy: 2.4.6
+Runtime_pandas: 3.0.6
 Runtime_lightgbm: 4.7.0
 Runtime_scikit-learn: 1.9.1
 Model_Features: red_sum,red_span,odd_count,blue_lag1,red_zone_small,red_zone_medium,red_zone_large,red_big_count,red_prime_count,red_sum_tail,red_consecutive_groups,red_ac_value,red_tail_uniques,red_sum_lag1,odd_count_lag1,red_sum_ma5,odd_count_ma5,blue_ma5
