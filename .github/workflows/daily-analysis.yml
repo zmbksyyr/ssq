@@ -88,13 +88,16 @@ jobs:
       working-directory: ./py
       run: python ssq_data_prep.py
 
-    - name: Step 2 - Run analysis script
-      working-directory: ./py
-      run: python ssq_analysis.py --non-interactive
-
-    - name: Step 3 - Run bonus calculation script
+    # The bonus check grades the draw that was just fetched, using the report
+    # that predicted it. That report was written by a *previous* run, so the
+    # check must happen before the analysis step rewrites the report set.
+    - name: Step 2 - Run bonus calculation script
       working-directory: ./py
       run: python ssq_bonus_check.py
+
+    - name: Step 3 - Run analysis script
+      working-directory: ./py
+      run: python ssq_analysis.py --non-interactive
       
     - name: Step 4 - Clean reports and create fixed-name copies
       id: file_management

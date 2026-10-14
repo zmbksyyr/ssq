@@ -3,7 +3,6 @@
 import argparse
 import hashlib
 import json
-import msvcrt
 import os
 import platform
 import random
@@ -11,6 +10,12 @@ import select
 import sys
 import tempfile
 import time
+
+try:  # Windows-only; get_user_input_with_timeout() falls back to select()
+    import msvcrt
+except ImportError:  # pragma: no cover - exercised on Linux/macOS
+    msvcrt = None
+
 from collections import Counter
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from contextlib import contextmanager
@@ -1091,7 +1096,7 @@ def get_user_input_with_timeout(timeout):
     sys.stdout.write(prompt)
     sys.stdout.flush()
     confirmed = False
-    if 'msvcrt' in sys.modules:
+    if msvcrt is not None:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             if msvcrt.kbhit() and is_confirmation_input(msvcrt.getch()):
