@@ -3,13 +3,13 @@
 ============================================================
 
 --- 0. 报告元数据 ---
-Data_Basis_Issue: 2026120
-Prediction_Target_Issue: 2026121
-报告生成时间: 2026-10-21 08:22:09
-Data_History_SHA256: bb76d12fee959e620d0b77fc48e301da9ab0a523ea24fbbc098796b40fdd3218
+Data_Basis_Issue: 2026121
+Prediction_Target_Issue: 2026122
+报告生成时间: 2026-10-23 08:22:57
+Data_History_SHA256: c8a012aec3b3886df615fb923242627ffd37a79395736843beb58122893648df
 Runtime_python: 3.11.17
 Runtime_numpy: 2.4.6
-Runtime_pandas: 3.0.6
+Runtime_pandas: 3.1.0
 Runtime_lightgbm: 4.7.0
 Runtime_scikit-learn: 1.9.1
 Model_Features: red_sum,red_span,odd_count,blue_lag1,red_zone_small,red_zone_medium,red_zone_large,red_big_count,red_prime_count,red_sum_tail,red_consecutive_groups,red_ac_value,red_tail_uniques,red_sum_lag1,odd_count_lag1,red_sum_ma5,odd_count_ma5,blue_ma5
@@ -19,37 +19,37 @@ Model_LightGBM_force_col_wise: True
 Model_LightGBM_verbose: -1
 
 硬规则过滤统计 (按流水线累计):
-  - highly_regular        : 12376 -> 12376 (remove 0)
-  - sum_value             : 12376 -> 10756 (remove 1620)
-  - span                  : 10756 -> 10138 (remove 618)
-  - consecutive_numbers   : 10138 -> 10069 (remove 69)
-  - zones                 : 10069 -> 10069 (remove 0)
-  - recent_overlap        : 10069 -> 9282 (remove 787)
-  - all_cold              : 9282 -> 9282 (remove 0)
-  - ending_digits         : 9282 -> 8589 (remove 693)
-  - sum_of_tails          : 8589 -> 8279 (remove 310)
-  - related_numbers       : 8279 -> 8245 (remove 34)
-  - anti_crowding         : 8245 -> 4536 (remove 3709)
-  提示：本轮未淘汰组合的规则: highly_regular, zones, all_cold
+  - highly_regular        : 12376 -> 12373 (remove 3)
+  - sum_value             : 12373 -> 12130 (remove 243)
+  - span                  : 12130 -> 11519 (remove 611)
+  - consecutive_numbers   : 11519 -> 11365 (remove 154)
+  - zones                 : 11365 -> 11365 (remove 0)
+  - recent_overlap        : 11365 -> 10924 (remove 441)
+  - all_cold              : 10924 -> 10924 (remove 0)
+  - ending_digits         : 10924 -> 10211 (remove 713)
+  - sum_of_tails          : 10211 -> 10080 (remove 131)
+  - related_numbers       : 10080 -> 10045 (remove 35)
+  - anti_crowding         : 10045 -> 5527 (remove 4518)
+  提示：本轮未淘汰组合的规则: zones, all_cold
 
 --- 2. 推荐组合 ---
 
 【单式推荐 (10组)】
   实际任意两注最大重合红球数: 4
-  组合  1: 红球 [4, 10, 13, 18, 29, 31]  蓝球 [15]
-  组合  2: 红球 [10, 11, 13, 18, 20, 29] 蓝球 [15]
-  组合  3: 红球 [4, 11, 16, 18, 29, 31]  蓝球 [15]
-  组合  4: 红球 [4, 11, 14, 20, 29, 31]  蓝球 [15]
-  组合  5: 红球 [4, 11, 13, 18, 25, 29]  蓝球 [15]
-  组合  6: 红球 [4, 5, 11, 18, 20, 29]   蓝球 [15]
-  组合  7: 红球 [5, 10, 11, 18, 20, 31]  蓝球 [15]
-  组合  8: 红球 [4, 11, 15, 18, 20, 31]  蓝球 [15]
-  组合  9: 红球 [4, 8, 11, 13, 18, 31]   蓝球 [15]
-  组合 10: 红球 [4, 8, 13, 20, 29, 31]   蓝球 [15]
+  组合  1: 红球 [10, 11, 14, 18, 24, 27] 蓝球 [15]
+  组合  2: 红球 [10, 11, 15, 18, 27, 30] 蓝球 [15]
+  组合  3: 红球 [10, 11, 15, 22, 24, 27] 蓝球 [15]
+  组合  4: 红球 [5, 10, 11, 24, 27, 30]  蓝球 [15]
+  组合  5: 红球 [5, 11, 14, 18, 27, 30]  蓝球 [15]
+  组合  6: 红球 [5, 11, 15, 22, 24, 30]  蓝球 [15]
+  组合  7: 红球 [5, 10, 11, 18, 22, 27]  蓝球 [15]
+  组合  8: 红球 [9, 11, 14, 22, 24, 30]  蓝球 [15]
+  组合  9: 红球 [10, 11, 14, 25, 27, 30] 蓝球 [15]
+  组合 10: 红球 [10, 11, 14, 24, 26, 30] 蓝球 [15]
 
 【7+N 复式推荐 (1组)】
-  红球: [4, 9, 10, 14, 18, 29, 31]
-  蓝球: [15, 1, 4, 3, 16, 5, 11]
+  红球: [5, 10, 11, 14, 18, 24, 27]
+  蓝球: [15, 4, 1, 16, 3, 11, 5]
 
 ============================================================
 报告结束。祝您好运！
