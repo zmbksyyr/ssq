@@ -1,0 +1,56 @@
+============================================================
+          双色球策略分析与推荐报告 (高级过滤版)
+============================================================
+
+--- 0. 报告元数据 ---
+Data_Basis_Issue: 2026124
+Prediction_Target_Issue: 2026125
+报告生成时间: 2026-10-30 09:31:48
+Data_History_SHA256: 1e872a261476e974b00e2794c116b55d55cd296373a4a387f2b3f07c6b801657
+Runtime_python: 3.11.17
+Runtime_numpy: 2.4.6
+Runtime_pandas: 3.1.0
+Runtime_lightgbm: 4.7.0
+Runtime_scikit-learn: 1.9.1
+Model_Features: red_sum,red_span,odd_count,blue_lag1,red_zone_small,red_zone_medium,red_zone_large,red_big_count,red_prime_count,red_sum_tail,red_consecutive_groups,red_ac_value,red_tail_uniques,red_sum_lag1,odd_count_lag1,red_sum_ma5,odd_count_ma5,blue_ma5
+Model_LightGBM_random_state: 42
+Model_LightGBM_deterministic: True
+Model_LightGBM_force_col_wise: True
+Model_LightGBM_verbose: -1
+
+硬规则过滤统计 (按流水线累计):
+  - highly_regular        : 12376 -> 12376 (remove 0)
+  - sum_value             : 12376 -> 12059 (remove 317)
+  - span                  : 12059 -> 11851 (remove 208)
+  - consecutive_numbers   : 11851 -> 11775 (remove 76)
+  - zones                 : 11775 -> 11775 (remove 0)
+  - recent_overlap        : 11775 -> 11620 (remove 155)
+  - all_cold              : 11620 -> 11620 (remove 0)
+  - ending_digits         : 11620 -> 10895 (remove 725)
+  - sum_of_tails          : 10895 -> 10851 (remove 44)
+  - related_numbers       : 10851 -> 10777 (remove 74)
+  - anti_crowding         : 10777 -> 6017 (remove 4760)
+  提示：本轮未淘汰组合的规则: highly_regular, zones, all_cold
+
+--- 2. 推荐组合 ---
+
+【单式推荐 (10组)】
+  实际任意两注最大重合红球数: 4
+  组合  1: 红球 [2, 11, 16, 17, 30, 33]  蓝球 [04]
+  组合  2: 红球 [2, 6, 17, 19, 24, 33]   蓝球 [04]
+  组合  3: 红球 [2, 6, 11, 19, 30, 33]   蓝球 [04]
+  组合  4: 红球 [2, 11, 17, 24, 30, 31]  蓝球 [04]
+  组合  5: 红球 [2, 6, 11, 17, 25, 30]   蓝球 [04]
+  组合  6: 红球 [2, 6, 17, 30, 31, 33]   蓝球 [04]
+  组合  7: 红球 [2, 19, 24, 30, 31, 33]  蓝球 [04]
+  组合  8: 红球 [8, 11, 17, 19, 24, 30]  蓝球 [04]
+  组合  9: 红球 [2, 11, 16, 19, 24, 30]  蓝球 [04]
+  组合 10: 红球 [2, 11, 16, 25, 30, 31]  蓝球 [04]
+
+【7+N 复式推荐 (1组)】
+  红球: [6, 11, 19, 24, 30, 31, 33]
+  蓝球: [4, 1, 15, 16, 3, 5, 7]
+
+============================================================
+报告结束。祝您好运！
+============================================================
